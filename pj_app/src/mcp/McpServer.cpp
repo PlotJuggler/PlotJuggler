@@ -30,6 +30,7 @@
 
 #include "MainWindow.h"
 #include "PluginPlotTabsController.h"
+#include "PresetController.h"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/toolbox_plugin_base.hpp"

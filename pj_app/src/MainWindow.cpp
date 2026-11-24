@@ -105,6 +105,7 @@
 #include "BuiltinPlugins.h"
 #include "DatasetMergeActions.h"
 #include "DebugUi.h"
+#include "DialogPresenter.h"
 #include "FanoutConfig.h"
 #include "FileLoader.h"
 #include "IngestProgressController.h"
@@ -3229,16 +3230,13 @@ void MainWindow::confirmAndRemoveDependentTransforms(
   if (names.isEmpty()) {
     names << tr("%n derived series", nullptr, static_cast<int>(dependent_outputs.size()));
   }
-  MessageBox::questionAsync(
+  dialog_presenter::questionAsync(
       this, tr("Delete derived series?"),
       tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
           .arg(names.join(u"\n• "_s)),
       {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
       [this, removed_topics, dependent_curve_keys, proceed = std::move(proceed),
-       still_allowed = std::move(still_allowed), cancelled = std::move(cancelled), on_dialog](int choice, bool) {
-        if (on_dialog) {
-          on_dialog({});
-        }
+       still_allowed = std::move(still_allowed), cancelled = std::move(cancelled)](int choice) {
         if (choice != 0 || (still_allowed && !still_allowed())) {
           if (cancelled) {
             cancelled();
@@ -3261,16 +3259,7 @@ void MainWindow::confirmAndRemoveDependentTransforms(
         session_->catalogModel().rebuildFromDatastore();
         proceed();
       },
-      /*show_dont_show_again=*/false,
-      [on_dialog](QDialog& prompt) {
-        if (on_dialog) {
-          on_dialog([prompt = QPointer<QDialog>(&prompt)] {
-            if (prompt != nullptr) {
-              prompt->reject();
-            }
-          });
-        }
-      });
+      on_dialog);
 }
 
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
@@ -5006,20 +4995,20 @@ void MainWindow::onLoadLayout() {
 void MainWindow::onSaveLayout() {
 #ifdef PJ_TARGET_WASM
   const QString file_name = u"plotjuggler-layout.pj4.xml"_s;
-  const QByteArray bytes = browserGenericLayoutDocument().toByteArray(2);
-  if (layout_xml::containsEphemeralBrowserPath(bytes)) {
-    const QString error = tr("The layout still contains an ephemeral browser path and was not downloaded.");
+  QString error;
+  const std::optional<QByteArray> bytes = layoutFileBytes({}, /*include_data_source=*/false, error);
+  if (!bytes.has_value()) {
     showBrowserLayoutWarning(this, tr("Save Layout"), error);
     emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "ephemeral-browser-path", error);
     qWarning("PJ_WASM_LAYOUT_DOWNLOAD_FAILED reason=%s", qPrintable(error));
     return;
   }
-  FileSelectionService::saveFileContent(this, bytes, file_name);
+  FileSelectionService::saveFileContent(this, *bytes, file_name);
   emitDiagnostic(
       DiagnosticLevel::kInfo, "Layout", "download-requested", tr("Requested layout download: %1").arg(file_name));
   qInfo(
       "PJ_WASM_LAYOUT_DOWNLOAD_REQUESTED name=%s bytes=%lld", qPrintable(file_name),
-      static_cast<long long>(bytes.size()));
+      static_cast<long long>(bytes->size()));
   return;
 #else
   const QString start_dir = QSettings().value(kLastLayoutDirKey, QDir::currentPath()).toString();
@@ -5032,7 +5021,7 @@ void MainWindow::onSaveLayout() {
   const FileDialog::ExtraOption save_source_opt{
       streaming ? tr("Bind to this data source (stores the stream settings, credentials included)")
                 : tr("Bind to this data source"),
-      /*default_checked=*/true};
+      /*default_checked=*/layout_xml::kBindSourcesByDefault};
   const auto result = FileDialog::getSaveFileNameWithOptions(
       this, tr("Save Layout"), start_dir, tr(kLayoutFilter), default_suffix, {save_source_opt}, this);
 
@@ -5051,22 +5040,21 @@ void MainWindow::onSaveLayout() {
 #ifdef PJ_TARGET_WASM
 void MainWindow::onSaveSourceLayout() {
   QString error;
-  const std::optional<QDomDocument> doc = browserSourceLayoutDocument(error);
-  if (!doc.has_value()) {
+  const std::optional<QByteArray> bytes = layoutFileBytes({}, /*include_data_source=*/true, error);
+  if (!bytes.has_value()) {
     showBrowserLayoutWarning(this, tr("Save Layout with Sources"), error);
     qWarning("PJ_WASM_SOURCE_LAYOUT_DOWNLOAD_FAILED reason=%s", qPrintable(error));
     return;
   }
 
   const QString file_name = u"plotjuggler-source-layout.pj4.xml"_s;
-  const QByteArray bytes = doc->toByteArray(2);
-  FileSelectionService::saveFileContent(this, bytes, file_name);
+  FileSelectionService::saveFileContent(this, *bytes, file_name);
   emitDiagnostic(
       DiagnosticLevel::kInfo, "Layout", "download-requested",
       tr("Requested source-bound layout download: %1").arg(file_name));
   qInfo(
       "PJ_WASM_SOURCE_LAYOUT_DOWNLOAD_REQUESTED name=%s bytes=%lld", qPrintable(file_name),
-      static_cast<long long>(bytes.size()));
+      static_cast<long long>(bytes->size()));
 }
 #endif
 
@@ -5249,9 +5237,41 @@ void MainWindow::onRebuildToolboxMenu() {
   }
 }
 
+std::optional<QDomDocument> MainWindow::readLayoutFile(const QString& path, QString& error) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    error = tr("Cannot open '%1' for reading.").arg(path);
+    return std::nullopt;
+  }
+  QDomDocument doc;
+  if (const QDomDocument::ParseResult parsed = doc.setContent(&file); !parsed) {
+    error = layout_xml::parseFailureMessage(path, parsed);
+    return std::nullopt;
+  }
+  return doc;
+}
+
 void MainWindow::loadLayoutFromPath(
     const QString& path, LayoutLoadInteractivity interactivity, const std::optional<QStringList>& current_data_files,
     const QStringList& chosen_files) {
+  QString error;
+  std::optional<QDomDocument> doc = readLayoutFile(path, error);
+  if (!doc.has_value()) {
+    // An automated (--layout) run must never open a modal, entry failures included.
+    reportLayoutRestoreIssue(
+        interactivity == LayoutLoadInteractivity::kInteractive ? MissingCurvePolicy::kPrompt
+                                                               : MissingCurvePolicy::kRetainAndDiagnose,
+        QFileInfo(path).isReadable() ? "layout-parse-failed" : "layout-open-failed", error);
+    emit layoutRestoreSettled(false);
+    return;
+  }
+  loadLayoutDocument(
+      std::move(*doc), LayoutOrigin{.name = path, .file_path = path}, interactivity, current_data_files, chosen_files);
+}
+
+void MainWindow::loadLayoutDocument(
+    QDomDocument doc, const LayoutOrigin& origin, LayoutLoadInteractivity interactivity,
+    const std::optional<QStringList>& current_data_files, const QStringList& chosen_files) {
   snapshotStreamWindowAtLayoutOpen();
   const bool interactive = interactivity == LayoutLoadInteractivity::kInteractive;
   // Governs every failure surface of this load, entry failures included: an automated (--layout) run must never
@@ -5260,36 +5280,19 @@ void MainWindow::loadLayoutFromPath(
       interactive ? MissingCurvePolicy::kPrompt : MissingCurvePolicy::kRetainAndDiagnose;
   // Every terminal outcome (entry failures, user cancels, both restore legs' ends) emits layoutRestoreSettled
   // exactly once: --exit-after-layout waits for it.
-  QFile file(path);
-  if (!file.open(QIODevice::ReadOnly)) {
-    reportLayoutRestoreIssue(restore_policy, "layout-open-failed", tr("Cannot open '%1' for reading.").arg(path));
-    emit layoutRestoreSettled(false);
-    return;
-  }
-  QDomDocument doc;
-  const QDomDocument::ParseResult parse_result = doc.setContent(&file);
-  if (!parse_result) {
-    file.close();
-    reportLayoutRestoreIssue(
-        restore_policy, "layout-parse-failed",
-        tr("'%1' is not a valid PJ4 layout: %2 (line %3, col %4)")
-            .arg(path, parse_result.errorMessage)
-            .arg(parse_result.errorLine)
-            .arg(parse_result.errorColumn));
-    emit layoutRestoreSettled(false);
-    return;
-  }
-  file.close();
+  const QString layout_name = QFileInfo(origin.name).fileName();
+  const std::optional<QDir> layout_dir = origin.folder();
   if (interactive) {
     usageCounters().count(UsageFeature::kLayoutLoad);  // the user's own load: an automated --layout run is not a use
   }
 #ifdef PJ_WITH_SCENE3D
-  // Robot resources may be named relative to the layout file: anchor them
-  // before anything restores from the document.
+  // Robot resources may be named relative to the layout file: anchor them before anything restores from the
+  // document. Text with no file anchors nothing, so only its absolute references resolve.
   if (QString resource_error; !pj::scene3d::resolveLayoutResourceUrls(
-          doc, QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()), &resource_error)) {
+          doc, layout_dir.has_value() ? QUrl::fromLocalFile(QFileInfo(origin.file_path).absoluteFilePath()) : QUrl(),
+          &resource_error)) {
     reportLayoutRestoreIssue(
-        restore_policy, "layout-resources-invalid", tr("'%1' cannot be loaded: %2").arg(path, resource_error));
+        restore_policy, "layout-resources-invalid", tr("'%1' cannot be loaded: %2").arg(origin.name, resource_error));
     emit layoutRestoreSettled(false);
     return;
   }
@@ -5303,14 +5306,25 @@ void MainWindow::loadLayoutFromPath(
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "schema-newer",
         tr("Layout '%1' was saved by a newer PJ4 (pj4_version=%2 > %3); loading best-effort.")
-            .arg(QFileInfo(path).fileName())
+            .arg(layout_name)
             .arg(version)
             .arg(layout_xml::kStreamingLayoutSchemaVersion));
   }
-  const QDir layout_dir(QFileInfo(path).absoluteDir());
   // Qualifiers may be stored relative to the layout; every binder compares normalized absolute paths.
-  layout_xml::resolveDatasetSourcePaths(doc, layout_dir);
+  QStringList unresolved = layout_xml::resolveDatasetSourcePaths(doc, layout_dir);
   const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
+  for (const layout_xml::DataSourceRef& replay : replays) {
+    if (replay.resolved_path.isEmpty() && !unresolved.contains(replay.serialized_path)) {
+      unresolved.push_back(replay.serialized_path);
+    }
+  }
+  for (const QString& relative : std::as_const(unresolved)) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "relative-path-unresolved",
+        tr("Layout '%1' names '%2' relative to its folder, but it has no folder: that data is neither loaded nor "
+           "bound.")
+            .arg(layout_name, relative));
+  }
   // Before the rewrites below (explicit files, stream qualifiers): the dataset choice weighs what the file named.
   const QList<layout_xml::DatasetIdentity> saved_identities = layout_xml::datasetIdentities(doc);
   // `binding` records the save-time intent; current_data_files overrides it at load.
@@ -5517,13 +5531,12 @@ void MainWindow::loadLayoutFromPath(
   // Asked only now: the report above can be a modal box, and a reload that finishes
   // under it signals no waiter, so a restore begun after it would wait forever.
   if (restoreHasPendingAsyncWork(reload_requested)) {
-    beginProgressiveLayoutRestore(doc, path, restore_policy, streams.tracks);
+    beginProgressiveLayoutRestore(doc, origin, restore_policy, streams.tracks);
     return;
   }
   chooseLayoutDatasets(
-      std::move(doc), saved_identities, interactivity != LayoutLoadInteractivity::kAutomated,
-      QFileInfo(path).fileName(), chosen_files,
-      [this, path, restore_policy, tracks = std::move(streams.tracks)](ChosenLayout chosen) {
+      std::move(doc), saved_identities, interactivity != LayoutLoadInteractivity::kAutomated, layout_name, chosen_files,
+      [this, origin, restore_policy, tracks = std::move(streams.tracks)](ChosenLayout chosen) {
         if (!chosen.removed.isEmpty()) {
           reportLayoutRestoreIssue(restore_policy, "layout-datasets-removed", chosen.removed);
         }
@@ -5531,24 +5544,27 @@ void MainWindow::loadLayoutFromPath(
           emit layoutRestoreSettled(false);  // nothing was applied yet
           return;
         }
-        applyRestoredLayout(*chosen.doc, path, restore_policy, tracks, chosen.compared);
+        applyRestoredLayout(*chosen.doc, origin, restore_policy, tracks, chosen.compared);
       });
 }
 
-void MainWindow::loadLayoutForAgent(const QString& path, bool remember) {
-  // Both restore legs reach restoreChromeAndPanels before an automated load returns, so the flag covers them.
-  const QScopedValueRollback record(record_recent_layout_, remember);
-  loadLayoutFromPath(path, LayoutLoadInteractivity::kAutomated);
+void MainWindow::loadLayoutForAgent(QDomDocument doc, const LayoutOrigin& origin) {
+  loadLayoutDocument(std::move(doc), origin, LayoutLoadInteractivity::kAutomated);
+}
+
+bool MainWindow::layoutLoadInFlight() const {
+  return progressive_layout_in_flight_ || layout_selection_pending_;
 }
 
 bool MainWindow::layoutLoadWouldDiscardWork() {
+  if (!toolboxes_.empty() || undo_states_.size() > 1 || derivedObjects().hasAny()) {
+    return true;
+  }
   bool docks = false;
   forEachTabDock([&docks](PlotDocker*, DockWidget* dock) {
-    QDomDocument doc;
-    docks = docks || !dock->xmlSaveState(doc).isNull();
+    docks = docks || dock->plotWidget() != nullptr || dock->objectWidget() != nullptr;
   });
-  QDomDocument doc;
-  return docks || derivedObjects().save(doc, SnapshotScope::kFull).hasChildNodes();
+  return docks;
 }
 
 void MainWindow::chooseLayoutDatasets(
@@ -5707,12 +5723,7 @@ void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& bro
   QDomDocument doc;
   const QDomDocument::ParseResult parse_result = doc.setContent(bytes);
   if (!parse_result) {
-    showBrowserLayoutWarning(
-        this, tr("Load Layout"),
-        tr("'%1' is not a valid PJ4 layout: %2 (line %3, col %4)")
-            .arg(browser_name, parse_result.errorMessage)
-            .arg(parse_result.errorLine)
-            .arg(parse_result.errorColumn));
+    showBrowserLayoutWarning(this, tr("Load Layout"), layout_xml::parseFailureMessage(browser_name, parse_result));
     finishBrowserLayoutLoad(browser_name, false, u"parse"_s);
     return;
   }
@@ -7016,7 +7027,7 @@ void MainWindow::restoreBrowserChromeAndPanels(const QDomDocument& doc, const QS
 }
 
 void MainWindow::applyRestoredLayout(
-    QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks,
+    QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks,
     const std::vector<DatasetId>& compared) {
   // Each curve binds to the first loaded dataset (load order) holding its topic+field, so a multi-file layout
   // restores per source and a layout reuses on a similar recording; no "which dataset?" prompt. Never reached with
@@ -7033,9 +7044,8 @@ void MainWindow::applyRestoredLayout(
   // Offsets before processors: a generator replays under the saved offsets. The rollback is captured before they
   // move.
   const CapturedWorkspace rollback = captureWorkspace();
-  const QDir layout_dir(QFileInfo(path).absoluteDir());
   const LayoutTimelinePlan timeline_plan =
-      resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, layout_dir), stream_tracks);
+      resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, origin.folder()), stream_tracks);
   // A restore that refuses (below, reported as a failure) is not rolled back, so the offsets stay put for it.
   if (!restoreRefuses(doc)) {
     static_cast<void>(applyLayoutTimelineOffsets(timeline_plan));
@@ -7066,13 +7076,13 @@ void MainWindow::applyRestoredLayout(
       break;
   }
 
-  restoreChromeAndPanels(doc, path, &timeline_plan);
+  restoreChromeAndPanels(doc, origin, &timeline_plan);
   commitRestoredLayout(doc, policy);
   emit layoutRestoreSettled(true);
 }
 
 void MainWindow::restoreChromeAndPanels(
-    const QDomDocument& doc, const QString& path, const LayoutTimelinePlan* resolved_timeline) {
+    const QDomDocument& doc, const LayoutOrigin& origin, const LayoutTimelinePlan* resolved_timeline) {
   ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(u"curve_list_state"_s));
   restoreRightPanelState(doc.documentElement().firstChildElement(u"right_panel_state"_s));
   restoreChromeState(doc.documentElement().firstChildElement(u"chrome_state"_s));
@@ -7083,8 +7093,7 @@ void MainWindow::restoreChromeAndPanels(
   } else {
     // A progressive reload may not have registered every dataset path yet: re-resolved at drain, before the marker
     // generators replay.
-    const QDir layout_dir(QFileInfo(path).absoluteDir());
-    const QList<layout_xml::DataSourceRef> sources = layout_xml::extractDataSource(doc, layout_dir);
+    const QList<layout_xml::DataSourceRef> sources = layout_xml::extractDataSource(doc, origin.folder());
     static_cast<void>(applyTimelineStateFromLayout(sources));
     if (progressive_layout_in_flight_) {
       pending_timeline_sources_ = sources;
@@ -7096,14 +7105,15 @@ void MainWindow::restoreChromeAndPanels(
 
   // Pinned toolbox tabs are restored at each leg's commit point, not here: the progressive leg runs this while it
   // can still roll back, and a cancelled restore would lose the user's live toolboxes.
-  if (record_recent_layout_) {
-    recordRecentLayout(path);
+  if (!origin.file_path.isEmpty()) {
+    recordRecentLayout(origin.file_path);
   }
-  emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "loaded", tr("Loaded layout: %1").arg(QFileInfo(path).fileName()));
+  emitDiagnostic(
+      DiagnosticLevel::kInfo, "Layout", "loaded", tr("Loaded layout: %1").arg(QFileInfo(origin.name).fileName()));
 }
 
 void MainWindow::beginProgressiveLayoutRestore(
-    QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks) {
+    QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks) {
   cancelProgressiveLayoutRestore();
   progressive_stream_tracks_ = stream_tracks;
   if (layoutImportBatchActive() && batch_workspace_checkpoint_ != nullptr) {
@@ -7130,7 +7140,7 @@ void MainWindow::beginProgressiveLayoutRestore(
     static_cast<void>(rebindCurvesToLoadedDatasets(doc));
     if (xmlLoadState(doc)) {
       collectPendingDisplayBindings(doc);
-      restoreChromeAndPanels(doc, path);
+      restoreChromeAndPanels(doc, origin);
       broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
       applied = true;
     }

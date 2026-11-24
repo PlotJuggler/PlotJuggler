@@ -324,7 +324,7 @@ double waitSeconds(const json& args, const char* key, double max) {
 namespace {
 
 #ifdef PJ_TARGET_WASM
-#define PJ_MCP_SAVE_LAYOUT_PATH "; the page cannot write your disk: save the returned xml yourself"
+#define PJ_MCP_SAVE_LAYOUT_PATH ". path is refused: the page cannot write your disk, so save the returned xml yourself"
 #define PJ_MCP_LOAD_LAYOUT_PATH "; the page cannot read your disk: pass the file's text as xml"
 #define PJ_MCP_ABOUT_SOURCES ""
 // A page's file has no saved configuration an agent's call can match, so no secret to keep.
@@ -535,28 +535,36 @@ json appToolEntries() {
               {"dock", "xml"})),
       toolEntry(
           "save_layout",
-          "The whole workspace as layout XML, exactly as File > Save Layout writes it: every tab (the user's and "
-          "yours), plots, scenes, derived series and markers. With path it is also written there (the .pj4.xml "
-          "extension added when missing; data paths then relative to its folder, else absolute)" PJ_MCP_SAVE_LAYOUT_PATH
-          ". Returns xml and path.",
+          "The whole workspace as layout XML, as File > Save Layout writes it: every tab (the user's and yours), "
+          "plots, scenes, derived series and markers. Without path it returns xml: generic unless bind_sources, "
+          "which records the loaded files and streams with absolute paths and every plugin setting's secrets as "
+          "\"<redacted>\"" PJ_MCP_SAVE_LAYOUT_PATH ".",
           schema(
-              {{"path", described(str, "absolute path to write the layout to (optional)")},
+              {{"path",
+                described(
+                    str,
+                    "absolute path ending in .xml (.pj4.xml added when it has no extension) to write the menu's file "
+                    "to, bound to its sources unless bind_sources is false, secrets kept; returns path and bytes, "
+                    "not the text")},
                {"overwrite",
-                {{"type", "boolean"}, {"default", false}, {"description", "replace a file already at path"}}},
+                {{"type", "boolean"}, {"default", false}, {"description", "replace a layout file already at path"}}},
                {"bind_sources",
                 {{"type", "boolean"},
-                 {"default", kBindSourcesByDefault},
                  {"description",
-                  "record the loaded files and running streams (stream settings, credentials included), so the "
-                  "layout reloads them; false: curves bind by topic and field to whatever is loaded"}}}})),
+                  "record the loaded files and running streams so the layout reloads them (default: true with "
+                  "path, as the menu; false for text); false: curves bind by topic and field to whatever is "
+                  "loaded"}}}})),
       toolEntry(
           "load_layout",
           "Replace the whole workspace (the user's tabs too) with a layout, as File > Load Layout does: pass xml "
-          "(the text; its file paths must be absolute), path (a .pj4.xml file)" PJ_MCP_LOAD_LAYOUT_PATH
-          " or url (http/https, data files beside it). The files and streams it names load when not loaded "
-          "already, without asking. If the workspace holds anything, the user is asked to confirm first (a job_id "
-          "after wait_s while they decide; job_kill withdraws the question). Your tabs and series in it come back "
-          "as yours. Returns loaded and the app's warnings (missing data, a newer format), or its error.",
+          "(the text), path (a layout file)" PJ_MCP_LOAD_LAYOUT_PATH
+          " or url (http/https; only the layout is downloaded). Data paths in text or from a url must be absolute; "
+          "a relative one is reported, never guessed. The files and streams it names load when not loaded "
+          "already, without asking. If the workspace holds anything (a plot, a derived series, an open toolbox, "
+          "undo history), the user is asked to confirm first (a job_id after wait_s while they decide; job_kill "
+          "withdraws the question or stops the download, but a layout already applying completes). Refused while "
+          "another layout load runs. Your tabs and series in it come back as yours. Returns loaded and the app's "
+          "warnings (missing data, a relative path, a newer format), or its error.",
           schema(
               {{"xml", described(str, "the layout's whole text")},
                {"path", described(str, "absolute path of a layout file")},

@@ -82,6 +82,7 @@
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "support/loader_test_support.h"
+#include "support/route_server.h"
 #include "ui/McpJobsDialog.h"
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
@@ -197,6 +198,23 @@ class McpTestPeer {
   /// File → Save Layout's write, past its dialog.
   static void saveLayoutAsTheMenuDoes(MainWindow& window, const QString& path, bool bind_sources) {
     window.saveLayoutToPath(path, bind_sources);
+  }
+  /// Marks a progressive layout restore as waiting for its data, as a load whose files still load leaves it.
+  static void setProgressiveLayoutInFlight(MainWindow& window, bool in_flight) {
+    window.progressive_layout_in_flight_ = in_flight;
+  }
+  /// An open toolbox as far as the layout-load question counts them (no presenter behind it): remove it before
+  /// anything saves or restores toolboxes.
+  /// One undo step more, as any edit of the user's would leave.
+  static void addUndoStep(MainWindow& window) {
+    window.undo_states_.push_back(window.undo_states_.back());
+  }
+  static void setFakeToolboxOpen(MainWindow& window, bool open) {
+    if (open) {
+      window.toolboxes_[u"probe-toolbox"_s];
+    } else {
+      window.toolboxes_.erase(u"probe-toolbox"_s);
+    }
   }
   [[nodiscard]] static QStringList recentLayouts(const MainWindow& window) {
     return window.recentLayouts();
@@ -1667,9 +1685,13 @@ class McpLayoutTest : public McpServerTest {
   void plot() {
     plotMine([this](const std::string& tool, const json& args) { return call(tool, args); });
   }
-  /// save_layout's text, with no path.
-  std::string layoutText(bool bind_sources = true) {
-    const auto [text, error] = result(call("save_layout", {{"bind_sources", bind_sources}}));
+  /// save_layout's text, with no path: bind_sources as given, or the tool's default when absent.
+  std::string layoutText(std::optional<bool> bind_sources = true) {
+    json args = json::object();
+    if (bind_sources.has_value()) {
+      args["bind_sources"] = *bind_sources;
+    }
+    const auto [text, error] = result(call("save_layout", args));
     EXPECT_FALSE(error) << text;
     return json::parse(text, nullptr, false).value("xml", "");
   }
@@ -1681,10 +1703,24 @@ class McpLayoutTest : public McpServerTest {
     }
     return texts;
   }
+  /// `text` with every `from` replaced by `to`.
+  static std::string replaced(std::string text, const std::string& from, const std::string& to) {
+    for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size())) {
+      text.replace(at, from.size(), to);
+    }
+    return text;
+  }
+  /// A window with nothing in it, its public access open: what a load replaces without asking.
+  void freshWindow() {
+    window_.reset();
+    window_ = std::make_unique<PJ::MainWindow>(extensions_.path());
+    openPublic();
+  }
 };
 
-// save_layout writes and returns exactly what File → Save Layout writes; as text alone its paths stay absolute; a
-// file already at path is kept unless overwrite.
+// save_layout with path writes exactly what File → Save Layout writes and answers the path, not the text; a file
+// already at path is kept unless overwrite, and only a layout file is ever replaced. As text alone its paths stay
+// absolute.
 TEST_F(McpLayoutTest, SaveLayoutReturnsWhatTheMenusSaveWrites) {
   ASSERT_NE(loadMock(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
@@ -1700,7 +1736,8 @@ TEST_F(McpLayoutTest, SaveLayoutReturnsWhatTheMenusSaveWrites) {
   ASSERT_FALSE(error) << text;
   const json saved = json::parse(text, nullptr, false);
   EXPECT_EQ(saved.value("path", ""), agent_path + ".pj4.xml") << "the extension is added, as the menu adds it";
-  EXPECT_EQ(saved.value("xml", ""), expected);
+  EXPECT_FALSE(saved.contains("xml")) << "the file is the answer: " << text;
+  EXPECT_EQ(saved.value("bytes", 0U), expected.size()) << text;
   EXPECT_EQ(readAll(QString::fromStdString(agent_path + ".pj4.xml")), expected);
 
   const auto [kept, kept_error] = result(call("save_layout", {{"path", agent_path + ".pj4.xml"}}));
@@ -1715,23 +1752,60 @@ TEST_F(McpLayoutTest, SaveLayoutReturnsWhatTheMenusSaveWrites) {
   const std::string generic = layoutText(/*bind_sources=*/false);
   EXPECT_EQ(generic.find("previouslyLoaded_Datafiles"), std::string::npos) << generic;
   EXPECT_NE(generic.find("binding=\"generic\""), std::string::npos) << generic;
+  EXPECT_EQ(layoutText(std::nullopt), generic) << "text is generic unless the agent asks for sources";
+}
+
+// overwrite replaces only a layout file: a file of another kind and a folder are refused, and left as they were.
+TEST_F(McpLayoutTest, SaveLayoutOverwritesOnlyALayoutFile) {
+  const QString other = data_.filePath(u"notes.txt"_s);
+  {
+    QFile file(other);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("the user's notes");
+  }
+  const auto [wrong, wrong_error] = result(call("save_layout", {{"path", other.toStdString()}, {"overwrite", true}}));
+  EXPECT_TRUE(wrong_error) << wrong;
+  EXPECT_NE(wrong.find(".xml"), std::string::npos) << wrong;
+  EXPECT_EQ(readAll(other), "the user's notes");
+
+  const QString folder = data_.filePath(u"folder.pj4.xml"_s);
+  ASSERT_TRUE(QDir().mkpath(folder));
+  const auto [dir, dir_error] = result(call("save_layout", {{"path", folder.toStdString()}, {"overwrite", true}}));
+  EXPECT_TRUE(dir_error) << dir;
+  EXPECT_NE(dir.find("folder"), std::string::npos) << dir;
+  EXPECT_TRUE(QFileInfo(folder).isDir());
+}
+
+// Source-bound text names the stream with its settings, a secret as the sentinel; the file at path keeps the secret.
+TEST_F(McpLayoutTest, SaveLayoutTextRedactsAStreamsSecretsAndTheFileKeepsThem) {
+  const auto [started, start_error] = result(call(
+      "start_stream", {{"source", "Mock Layout Stream"}, {"config", {{"topic", "live"}, {"password", "s3cret"}}}}));
+  ASSERT_FALSE(start_error) << started;
+  const std::string bound = layoutText(true);
+  EXPECT_NE(bound.find("streamInfo"), std::string::npos) << bound;
+  EXPECT_EQ(bound.find("s3cret"), std::string::npos) << bound;
+  EXPECT_NE(bound.find(PJ::mcp::kRedacted), std::string::npos) << bound;
+  EXPECT_EQ(layoutText(std::nullopt).find("streamInfo"), std::string::npos);
+
+  const QString path = data_.filePath(u"stream.pj4.xml"_s);
+  ASSERT_FALSE(result(call("save_layout", {{"path", path.toStdString()}})).second);
+  EXPECT_NE(readAll(path).find("s3cret"), std::string::npos) << "the file is the menu's, bound by default";
 }
 
 // load_layout from text and from a file restores the agent's tab, its curve and its derived series, still the agent's
 // (get_status, list_created); saving again gives the same layout. A workspace with nothing in it is replaced without
-// asking; one with work in it only after the user agrees. Layout text never becomes a recent layout.
+// asking; one with work in it only after the user agrees. Text never becomes a recent layout; a file does, by its
+// clean absolute path.
 TEST_F(McpLayoutTest, LoadLayoutFromTextOrFileRestoresTheAgentsWorkAndSavesTheSame) {
   window_->show();  // a hidden window's splitters do not keep the sizes a layout gives them
   ASSERT_NE(loadWithDependentSeries(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
   const std::string saved = layoutText();
   ASSERT_FALSE(saved.empty());
+
+  freshWindow();
+  window_->show();
   const QStringList recent_before = PJ::McpTestPeer::recentLayouts(*window_);
-
-  ASSERT_FALSE(result(call("plot_tab", {{"action", "close"}, {"tab", "mine"}})).second);
-  ASSERT_FALSE(result(call("remove_derived_series", {{"name", "doubled"}})).second);
-  ASSERT_EQ(layoutText().find("doubled"), std::string::npos);
-
   bool asked = false;
   const auto [text, error] = result(call("load_layout", {{"xml", saved}}, clicker(u"Replace"_s, asked)));
   ASSERT_FALSE(error) << text;
@@ -1745,14 +1819,24 @@ TEST_F(McpLayoutTest, LoadLayoutFromTextOrFileRestoresTheAgentsWorkAndSavesTheSa
   EXPECT_EQ(layoutText(), saved);
   EXPECT_EQ(PJ::McpTestPeer::recentLayouts(*window_), recent_before);
 
+  // Written without save_layout, which would record it itself.
   const QString path = data_.filePath(u"saved.pj4.xml"_s);
-  ASSERT_FALSE(result(call("save_layout", {{"path", path.toStdString()}})).second);
+  {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(QByteArray::fromStdString(saved));
+  }
   bool replaced = false;
+  const std::string unclean = data_.filePath(u"sub/../saved.pj4.xml"_s).toStdString();
+  ASSERT_TRUE(QDir().mkpath(data_.filePath(u"sub"_s)));
   const auto [from_file, file_error] =
-      result(call("load_layout", {{"path", path.toStdString()}}, clicker(u"Replace"_s, replaced)));
+      result(call("load_layout", {{"path", unclean}}, clicker(u"Replace"_s, replaced)));
   ASSERT_FALSE(file_error) << from_file;
   EXPECT_TRUE(replaced) << "the user's workspace had work in it";
   EXPECT_EQ(layoutText(), saved);
+  const QStringList recent = PJ::McpTestPeer::recentLayouts(*window_);
+  ASSERT_FALSE(recent.isEmpty());
+  EXPECT_EQ(recent.front(), path);
 }
 
 // The user's Cancel leaves everything as it was, and the agent hears that the user said no.
@@ -1769,7 +1853,26 @@ TEST_F(McpLayoutTest, LoadLayoutTheUserRefusesChangesNothing) {
   EXPECT_EQ(layoutText(), before);
 }
 
-// Text that is no layout is refused with the parser's reason before the user is asked, and changes nothing.
+// An open toolbox and undo history are work a load would discard: the user is asked.
+TEST_F(McpLayoutTest, LoadLayoutAsksWhenAToolboxIsOpenOrThereIsUndoHistory) {
+  freshWindow();
+  const std::string empty = layoutText();
+  PJ::McpTestPeer::setFakeToolboxOpen(*window_, true);
+  bool asked = false;
+  const auto [text, error] = result(call("load_layout", {{"xml", empty}}, clicker(u"Cancel"_s, asked)));
+  PJ::McpTestPeer::setFakeToolboxOpen(*window_, false);
+  EXPECT_TRUE(asked) << text;
+  EXPECT_TRUE(error) << text;
+
+  ASSERT_FALSE(PJ::McpTestPeer::undoSize(*window_) > 1U);
+  PJ::McpTestPeer::addUndoStep(*window_);
+  bool asked_again = false;
+  const auto [again, again_error] = result(call("load_layout", {{"xml", empty}}, clicker(u"Cancel"_s, asked_again)));
+  EXPECT_TRUE(asked_again) << again;
+}
+
+// Text that does not parse, or parses but is no layout, is refused with the reason before the user is asked, and
+// changes nothing.
 TEST_F(McpLayoutTest, LoadLayoutOfInvalidXmlFailsAndChangesNothing) {
   ASSERT_NE(loadMock(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
@@ -1778,12 +1881,35 @@ TEST_F(McpLayoutTest, LoadLayoutOfInvalidXmlFailsAndChangesNothing) {
   const auto [text, error] =
       result(call("load_layout", {{"xml", "<root><tabbed_widget>"}}, clicker(u"Cancel"_s, asked)));
   EXPECT_TRUE(error) << text;
-  EXPECT_FALSE(asked);
   EXPECT_NE(text.find("not a valid PJ4 layout"), std::string::npos) << text;
+  for (const char* other : {"<config><plot/></config>", "<root><plots/></root>"}) {
+    bool asked_here = false;
+    const auto [refused, refused_error] =
+        result(call("load_layout", {{"xml", other}}, clicker(u"Cancel"_s, asked_here)));
+    asked = asked || asked_here;
+    EXPECT_TRUE(refused_error) << refused;
+    EXPECT_NE(refused.find("not a PJ4 layout"), std::string::npos) << refused;
+  }
+  EXPECT_FALSE(asked);
   EXPECT_EQ(layoutText(), before);
   EXPECT_TRUE(result(call("load_layout", json::object())).second);
   EXPECT_TRUE(result(call("load_layout", {{"xml", before}, {"path", "/x.pj4.xml"}})).second);
   EXPECT_TRUE(result(call("load_layout", {{"path", data_.filePath(u"none.pj4.xml"_s).toStdString()}})).second);
+}
+
+// The text is Unicode already: an encoding declaration in it does not decode it a second time.
+TEST_F(McpLayoutTest, LoadLayoutIgnoresTheTextsEncodingDeclaration) {
+  ASSERT_NE(loadMock(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  const std::string named =
+      replaced(replaced(layoutText(), "encoding='UTF-8'", "encoding='ISO-8859-1'"), "\"mine\"", "\"m\xC3\xAFne\"");
+  ASSERT_NE(named.find("ISO-8859-1"), std::string::npos);
+  freshWindow();
+  bool replaced_it = false;
+  const auto [text, error] = result(call("load_layout", {{"xml", named}}, clicker(u"Replace"_s, replaced_it)));
+  ASSERT_FALSE(error) << text;
+  const json status = json::parse(result(call("get_status", json::object())).first, nullptr, false);
+  EXPECT_EQ(status["agent_tabs"], json::array({"m\xC3\xAFne"})) << status.dump();
 }
 
 // What the app reports while loading reaches the agent as text: a newer pj4_version and a data file that is gone load
@@ -1791,18 +1917,14 @@ TEST_F(McpLayoutTest, LoadLayoutOfInvalidXmlFailsAndChangesNothing) {
 TEST_F(McpLayoutTest, LoadLayoutReturnsTheAppsWarningsAndErrors) {
   ASSERT_NE(loadMock(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
-  std::string saved = layoutText();
   const std::string mock_path = data_.filePath(u"a.mock"_s).toStdString();
-  std::string missing = saved;
-  for (std::size_t at = missing.find(mock_path); at != std::string::npos; at = missing.find(mock_path)) {
-    missing.replace(at, mock_path.size(), data_.filePath(u"gone.mock"_s).toStdString());
-  }
+  std::string missing = replaced(layoutText(), mock_path, data_.filePath(u"gone.mock"_s).toStdString());
   const std::size_t version = missing.find("pj4_version=\"");
   ASSERT_NE(version, std::string::npos);
   missing.replace(version, std::string("pj4_version=\"").size(), "pj4_version=\"99");
 
-  bool replaced = false;
-  const auto [text, error] = result(call("load_layout", {{"xml", missing}}, clicker(u"Replace"_s, replaced)));
+  bool replaced_it = false;
+  const auto [text, error] = result(call("load_layout", {{"xml", missing}}, clicker(u"Replace"_s, replaced_it)));
   ASSERT_FALSE(error) << text;
   const std::string warnings = json::parse(text, nullptr, false)["warnings"].dump();
   EXPECT_NE(warnings.find("newer PJ4"), std::string::npos) << text;
@@ -1817,6 +1939,77 @@ TEST_F(McpLayoutTest, LoadLayoutReturnsTheAppsWarningsAndErrors) {
   EXPECT_TRUE(failed_error) << failed;
   EXPECT_NE(failed.find("could not be restored"), std::string::npos) << failed;
   EXPECT_TRUE(boxTexts().isEmpty()) << boxTexts().join(u" | ").toStdString();
+}
+
+// Text has no folder: a data path relative in it is reported, never resolved against the working directory.
+TEST_F(McpLayoutTest, LoadLayoutReportsARelativePathInText) {
+  ASSERT_NE(loadMock(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  const std::string relative = replaced(layoutText(), data_.filePath(u"a.mock"_s).toStdString(), "a.mock");
+  freshWindow();
+  const QString cwd = QDir::currentPath();
+  ASSERT_TRUE(QDir::setCurrent(data_.path()));  // where a.mock would be found
+  const auto [text, error] = result(call("load_layout", {{"xml", relative}}));
+  QDir::setCurrent(cwd);
+  EXPECT_NE(text.find("'a.mock' relative to its folder"), std::string::npos) << text;
+  EXPECT_TRUE(window_->appSession().catalogModel().datasets().empty()) << "a relative path was resolved";
+  EXPECT_TRUE(boxTexts().isEmpty()) << boxTexts().join(u" | ").toStdString();
+}
+
+// One layout load at a time: while one has not settled another is refused as busy, before anyone is asked.
+TEST_F(McpLayoutTest, LoadLayoutIsRefusedWhileALayoutLoadIsPending) {
+  freshWindow();
+  const std::string empty = layoutText();
+  PJ::McpTestPeer::setProgressiveLayoutInFlight(*window_, true);
+  const auto [text, error] = result(call("load_layout", {{"xml", empty}}));
+  PJ::McpTestPeer::setProgressiveLayoutInFlight(*window_, false);
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("busy"), std::string::npos) << text;
+  const auto [after, after_error] = result(call("load_layout", {{"xml", empty}}));
+  EXPECT_EQ(after.find("busy"), std::string::npos) << after;
+}
+
+// A url's layout downloads, then loads as text does: warnings back, no dialog. While it downloads another load is
+// busy, and job_kill stops the download, after which nothing loads.
+TEST_F(McpLayoutTest, LoadLayoutFromAUrlReturnsWarningsAndItsDownloadCanBeKilled) {
+  ASSERT_NE(loadMock(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  std::string missing =
+      replaced(layoutText(), data_.filePath(u"a.mock"_s).toStdString(), data_.filePath(u"gone.mock"_s).toStdString());
+  pj_app_test::RouteServer http;
+  http.route(u"/layout.pj4.xml"_s, QByteArray::fromStdString(missing));
+
+  bool replaced_it = false;
+  const auto [text, error] = result(call(
+      "load_layout", {{"url", http.url(u"/layout.pj4.xml"_s).toString().toStdString()}},
+      clicker(u"Replace"_s, replaced_it)));
+  ASSERT_FALSE(error) << text;
+  EXPECT_TRUE(replaced_it);
+  EXPECT_NE(text.find("does not exist on disk"), std::string::npos) << text;
+  EXPECT_TRUE(boxTexts().isEmpty()) << boxTexts().join(u" | ").toStdString();
+
+  const std::string before = layoutText();
+  http.hold(u"/held.pj4.xml"_s);
+  http.route(u"/held.pj4.xml"_s, QByteArray::fromStdString(missing));
+  const auto [pending, pending_error] =
+      result(call("load_layout", {{"url", http.url(u"/held.pj4.xml"_s).toString().toStdString()}, {"wait_s", 0}}));
+  ASSERT_FALSE(pending_error) << pending;
+  const json job = json::parse(pending, nullptr, false).value("job_id", json());
+  ASSERT_TRUE(job.is_number_integer()) << pending;
+  const auto [busy, busy_error] = result(call("load_layout", {{"xml", before}}));
+  EXPECT_TRUE(busy_error);
+  EXPECT_NE(busy.find("busy"), std::string::npos) << busy;
+
+  const auto [killed, killed_error] = result(call("job_kill", {{"job_id", job}}));
+  EXPECT_EQ(json::parse(killed, nullptr, false).value("state", ""), "killed") << killed;
+  http.release();
+  static_cast<void>(pumpUntil([] { return false; }, 300));
+  EXPECT_TRUE(boxTexts().isEmpty()) << "the killed download asked the user anyway";
+  EXPECT_EQ(layoutText(), before);
+  bool replaced_again = false;
+  EXPECT_FALSE(result(call("load_layout", {{"xml", before}}, clicker(u"Replace"_s, replaced_again))).second)
+      << "the killed load still holds the next one off";
+  EXPECT_TRUE(replaced_again);
 }
 
 // list_created names the agent's script series too, and remove_derived_series removes one by that id.

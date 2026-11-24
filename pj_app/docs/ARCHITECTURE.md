@@ -304,10 +304,13 @@ the global reference, and the loader subtracts it.
 **Relative paths.** A file save stores paths relative to the layout folder when the target is at or under it
 (`relocatableSubpath`): `<fileInfo>` filenames, every `*_dataset_path` qualifier of a source-bound layout (all widget
 families: `stampDatasetSourcePaths`, then `relativizeDatasetSourcePaths`) and, in both bindings, a `<robot_model>`'s
-URDF file and `file://` package roots (Scene3D's `relocateLayoutResources`). `loadLayoutFromPath` resolves them
-against the layout folder before any restore (`resolveDatasetSourcePaths`, Scene3D's `resolveLayoutResourceUrls`).
-Undo snapshots and in-memory captures stay absolute; browser layouts skip both steps; a generic layout has no dataset
-qualifier, except those startup keeps for its explicit files ("Command-line startup").
+URDF file and `file://` package roots (Scene3D's `relocateLayoutResources`). `loadLayoutDocument` resolves them
+against the folder of its `LayoutOrigin` before any restore (`resolveDatasetSourcePaths`, Scene3D's
+`resolveLayoutResourceUrls`). A document with no file (an MCP agent's text or URL) has no folder: a relative path in
+it is reported as `relative-path-unresolved` and binds nothing, and a relative robot model fails the load. A save
+with no file (`layoutFileBytes` with an empty path) writes them all absolute. Undo snapshots and in-memory captures
+stay absolute; browser layouts skip both steps; a generic layout has no dataset qualifier, except those startup keeps
+for its explicit files ("Command-line startup").
 
 **`__pj_saved_filepath`** exists only in the config handed to a plugin's `loadConfig` on a layout replay of a native
 file (`rewriteReplayFilepaths` with `SavedFilepath::kRecord`) and never reaches host state: the rewrite drops any

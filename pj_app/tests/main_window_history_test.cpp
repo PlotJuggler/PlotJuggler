@@ -108,7 +108,10 @@ class MainWindowHistoryTestPeer {
   static void beginProgressiveRestore(MainWindow& window, QDomDocument doc) {
     // kPrompt: the interactive-load policy.
     window.beginProgressiveLayoutRestore(
-        std::move(doc), u"/tmp/progressive-test.pj4.xml"_s, MainWindow::MissingCurvePolicy::kPrompt);
+        std::move(doc),
+        MainWindow::LayoutOrigin{
+            .name = u"/tmp/progressive-test.pj4.xml"_s, .file_path = u"/tmp/progressive-test.pj4.xml"_s},
+        MainWindow::MissingCurvePolicy::kPrompt);
   }
 
   static void drainProgressiveRestore(MainWindow& window) {

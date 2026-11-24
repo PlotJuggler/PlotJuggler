@@ -7,11 +7,13 @@
 #include <QByteArray>
 #include <QDir>
 #include <QDomDocument>
+#include <QDomNodeList>
 #include <QFile>
 #include <QFileInfo>
 #include <QLocale>
 #include <QPointer>
 #include <QSaveFile>
+#include <QSet>
 #include <QSettings>
 #include <QTemporaryFile>
 #include <QTimer>
@@ -28,12 +30,15 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 
+#include "DialogPresenter.h"
 #include "FileLoader.h"
 #include "LayoutXml.h"
 #include "LoadInput.h"
 #include "MainWindow.h"
 #include "PluginPlotTabsController.h"
+#include "PresetController.h"
 #include "StreamingSourceManager.h"
 #include "mcp/McpServer.h"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
@@ -47,6 +52,7 @@
 #include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_runtime/XmlCdata.h"
 #include "pj_runtime/agent_tools/derived_recipes.hpp"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_widgets/MessageBox.h"
@@ -100,6 +106,79 @@ std::optional<QString> configFromAgent(const json& given, const QString& saved, 
     return std::nullopt;
   }
   return QString::fromStdString(config.dump());
+}
+
+/// Why an agent may not write `path`, empty when it may: absolute, ending in `suffix` (any case, so a file of
+/// another kind is never written over), not a folder, and no file replaced unless `overwrite`.
+std::string outputPathError(const QString& path, const QString& suffix, bool overwrite) {
+  const QFileInfo info(path);
+  if (!info.isAbsolute()) {
+    return "path must be absolute";
+  }
+  if (!path.endsWith(suffix, Qt::CaseInsensitive)) {
+    return "path must end in " + suffix.toStdString();
+  }
+  if (info.isDir()) {
+    return "path is a folder";
+  }
+  if (info.exists() && !overwrite) {
+    return "a file is already at path: pass overwrite: true to replace it";
+  }
+  return {};
+}
+
+constexpr auto kLayoutBusy = "busy: another layout is loading; call again once it has finished";
+
+/// Why `doc`, which parsed, is not a PJ4 layout; empty when it is one.
+QString notALayout(const QDomDocument& doc, const QString& name) {
+  const QDomElement root = doc.documentElement();
+  return root.tagName() == "root"_L1 && !root.firstChildElement(u"tabbed_widget"_s).isNull()
+             ? QString()
+             : u"'%1' is not a PJ4 layout: its root element must be <root>, holding a <tabbed_widget>"_s.arg(name);
+}
+
+/// `text` as a layout document: bytes honour their encoding declaration, a QString is already decoded. nullopt with
+/// `error` when it does not parse or is no layout.
+template <typename Text>
+std::optional<QDomDocument> parseLayout(const Text& text, const QString& name, QString& error) {
+  QDomDocument doc;
+  if (const QDomDocument::ParseResult parsed = doc.setContent(text); !parsed) {
+    error = layout_xml::parseFailureMessage(name, parsed);
+    return std::nullopt;
+  }
+  error = notALayout(doc, name);
+  return error.isEmpty() ? std::optional<QDomDocument>(doc) : std::nullopt;
+}
+
+/// Layout text as an agent may read it: every plugin configuration in it (a file's or a stream's <plugin>, a
+/// <materialize> descriptor, a pinned <toolbox>) through configForAgent. One that is not JSON is left out whole.
+QByteArray layoutForAgent(const QByteArray& bytes) {
+  QDomDocument doc;
+  if (!doc.setContent(bytes)) {
+    return {};
+  }
+  for (const QString& tag : {u"plugin"_s, u"materialize"_s, u"toolbox"_s}) {
+    const QDomNodeList elements = doc.elementsByTagName(tag);
+    for (int index = 0; index < elements.size(); ++index) {
+      QDomElement element = elements.at(index).toElement();
+      const QString config = directCdataText(element);
+      if (config.trimmed().isEmpty()) {
+        continue;
+      }
+      for (QDomNode child = element.firstChild(); !child.isNull();) {
+        const QDomNode next = child.nextSibling();
+        if (child.isCDATASection() || child.isText()) {
+          element.removeChild(child);
+        }
+        child = next;
+      }
+      const json redacted = configForAgent(config);
+      if (!redacted.is_null()) {
+        appendJsonAsCdata(doc, element, QString::fromStdString(redacted.dump()));
+      }
+    }
+  }
+  return doc.toByteArray(2);
 }
 
 /// A string array argument; nullopt when absent or not a non-empty array of strings.
@@ -955,18 +1034,11 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
   run->requested_path = qs(args, "path");
   run->overwrite = args.value("overwrite", false);
   if (!run->requested_path.isEmpty()) {
-    const QFileInfo info(run->requested_path);
-    if (!info.isAbsolute()) {
-      reply(fail("path must be absolute"));
-      return;
-    }
-    // The extension names the format, so an agent cannot write over a file of another kind by mistake.
-    if (info.suffix().compare(QString::fromStdString(format), Qt::CaseInsensitive) != 0) {
-      reply(fail("path must end in ." + format + " for format " + format));
-      return;
-    }
-    if (info.exists() && (info.isDir() || !run->overwrite)) {
-      reply(fail(info.isDir() ? "path is a folder" : "a file is already at path: pass overwrite: true to replace it"));
+    // The extension names the format.
+    if (const std::string refused =
+            outputPathError(run->requested_path, u"."_s + QString::fromStdString(format), run->overwrite);
+        !refused.empty()) {
+      reply(fail(refused));
       return;
     }
   }
@@ -1189,40 +1261,29 @@ void McpServer::screenshot(const json& args, const Caller&, Reply reply) {
 
 void McpServer::saveLayout(const json& args, const Caller&, Reply reply) {
   QString path = qs(args, "path");
-#ifdef PJ_TARGET_WASM
-  if (!path.isEmpty()) {
-    reply(fail("in the browser save_layout writes no file (the page cannot reach your disk): save the xml yourself"));
+  if (path.isEmpty()) {
+    // Text reaches the agent: generic unless asked, and never with a plugin setting's secret.
+    QString error;
+    const std::optional<QByteArray> bytes = window_.layoutFileBytes({}, args.value("bind_sources", false), error);
+    reply(bytes.has_value() ? ok({{"xml", layoutForAgent(*bytes).toStdString()}}) : fail(error.toStdString()));
     return;
   }
+#ifdef PJ_TARGET_WASM
+  reply(fail("in the browser save_layout writes no file (the page cannot reach your disk): save the xml yourself"));
 #else
-  if (!path.isEmpty()) {
-    if (!QFileInfo(path).isAbsolute()) {
-      reply(fail("path must be absolute"));
-      return;
-    }
-    path = layout_xml::ensureLayoutExtension(path);
-    if (!args.value("overwrite", false) && QFileInfo::exists(path)) {
-      reply(fail("a file is already at " + path.toStdString() + ": pass overwrite: true to replace it"));
-      return;
-    }
+  path = layout_xml::ensureLayoutExtension(path);
+  if (const std::string refused = outputPathError(path, u".xml"_s, args.value("overwrite", false)); !refused.empty()) {
+    reply(fail(refused));
+    return;
   }
-#endif
   QString error;
   const std::optional<QByteArray> bytes =
-      window_.layoutFileBytes(path, args.value("bind_sources", mcp::kBindSourcesByDefault), error);
-  if (!bytes.has_value()) {
-    reply(fail(error.toStdString()));
-    return;
+      window_.layoutFileBytes(path, args.value("bind_sources", layout_xml::kBindSourcesByDefault), error);
+  if (bytes.has_value()) {
+    error = window_.writeLayoutFile(path, *bytes);
   }
-  json result = {{"xml", bytes->toStdString()}};
-  if (!path.isEmpty()) {
-    if (const QString write_error = window_.writeLayoutFile(path, *bytes); !write_error.isEmpty()) {
-      reply(fail(write_error.toStdString()));
-      return;
-    }
-    result["path"] = path.toStdString();
-  }
-  reply(ok(result));
+  reply(error.isEmpty() ? ok({{"path", path.toStdString()}, {"bytes", bytes->size()}}) : fail(error.toStdString()));
+#endif
 }
 
 void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) {
@@ -1233,143 +1294,189 @@ void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) 
     reply(fail("pass exactly one of xml, path and url"));
     return;
   }
-  QByteArray bytes = xml.toUtf8();
-  if (!path.isEmpty()) {
+  // One load at a time: a load's end (layoutRestoreSettled) does not say whose load it was.
+  if (layout_load_busy_ || window_.layoutLoadInFlight()) {
+    reply(fail(kLayoutBusy));
+    return;
+  }
+  if (!url.isEmpty()) {
+    if (url.scheme() != "http"_L1 && url.scheme() != "https"_L1) {
+      reply(fail("url must be http or https"));
+      return;
+    }
+    layout_load_busy_ = true;
+    if (layout_download_ == nullptr) {
+      layout_download_ = std::make_unique<PresetController>();
+    }
+    // Checked like text once downloaded, before the user is asked.
+    layout_download_->download(
+        url, [self = QPointer<McpServer>(this), caller, reply, url](QByteArray bytes, const QUrl&, QString error) {
+          if (self == nullptr) {
+            return;
+          }
+          if (Job* job = self->liveJob(caller.job)) {
+            job->kill = nullptr;
+          }
+          std::optional<QDomDocument> doc;
+          const QString name = url.toString();
+          if (error.isEmpty()) {
+            doc = parseLayout(bytes, name, error);
+          } else {
+            error = "cannot download the layout: " + error;
+          }
+          if (!doc.has_value()) {
+            self->layout_load_busy_ = false;
+            reply(fail(error.toStdString()));
+            return;
+          }
+          self->confirmLayoutLoad(std::move(*doc), name, {}, caller, reply);
+        });
+    if (Job* job = liveJob(caller.job)) {
+      job->kill = [self = QPointer<McpServer>(this), reply](bool) {
+        if (self != nullptr) {
+          self->layout_download_->cancel();
+          self->layout_load_busy_ = false;
+          reply(fail("killed while downloading the layout"));
+        }
+      };
+    }
+    return;
+  }
+  QString error;
+  std::optional<QDomDocument> doc;
+  QString name = u"xml"_s;
+  QString file_path;
+  if (!xml.isEmpty()) {
+    // The text is already Unicode: an encoding declaration in it is ignored, never applied to it again.
+    doc = parseLayout(xml, name, error);
+  } else {
 #ifdef PJ_TARGET_WASM
     reply(fail("in the browser the page cannot read your disk: pass the layout file's text as xml"));
     return;
 #else
-    QFile file(path);
-    if (!QFileInfo(path).isAbsolute() || !file.open(QIODevice::ReadOnly)) {
-      reply(fail("path must be the absolute path of a readable layout file"));
+    if (!QFileInfo(path).isAbsolute()) {
+      reply(fail("path must be the absolute path of a layout file"));
       return;
     }
-    bytes = file.readAll();
+    name = file_path = QDir::cleanPath(path);
+    doc = MainWindow::readLayoutFile(file_path, error);
+    if (doc.has_value()) {
+      error = notALayout(*doc, name);
+      if (!error.isEmpty()) {
+        doc.reset();
+      }
+    }
 #endif
   }
-  if (!url.isEmpty() && url.scheme() != "http"_L1 && url.scheme() != "https"_L1) {
-    reply(fail("url must be http or https"));
+  if (!doc.has_value()) {
+    reply(fail(error.toStdString()));
     return;
   }
-  // Checked before the user is asked: a layout that cannot load is no reason to interrupt them.
-  if (url.isEmpty()) {
-    QDomDocument doc;
-    if (const QDomDocument::ParseResult parsed = doc.setContent(bytes); !parsed) {
-      reply(fail(
-          (path.isEmpty() ? u"xml"_s : u"'%1'"_s.arg(path)).toStdString() +
-          " is not a valid PJ4 layout: " + parsed.errorMessage.toStdString() + " (line " +
-          std::to_string(parsed.errorLine) + ", col " + std::to_string(parsed.errorColumn) + ")"));
-      return;
-    }
-  }
-  const auto begin = [self = QPointer<McpServer>(this), bytes, path, url, reply] {
+  layout_load_busy_ = true;
+  confirmLayoutLoad(std::move(*doc), name, file_path, caller, std::move(reply));
+}
+
+void McpServer::confirmLayoutLoad(
+    QDomDocument doc, const QString& name, const QString& file_path, const Caller& caller, Reply reply) {
+  auto begin = [self = QPointer<McpServer>(this), doc, name, file_path, job = caller.job, reply]() mutable {
     if (self == nullptr) {
       return;
     }
-    if (!url.isEmpty() || !path.isEmpty()) {
-      self->startLayoutLoad(path, /*remember=*/true, url, reply);
+    // Rechecked: the user may have started a load while deciding, or the download ran.
+    if (self->window_.layoutLoadInFlight()) {
+      self->layout_load_busy_ = false;
+      reply(fail(kLayoutBusy));
       return;
     }
-    // Read before loadLayoutForAgent returns, so the file can go with this scope.
-    QTemporaryFile file(QDir::temp().filePath(u"pj-agent-layout-XXXXXX.pj4.xml"_s));
-    if (!file.open() || file.write(bytes) != bytes.size() || !file.flush()) {
-      reply(fail("cannot write the layout to a temporary file: " + file.errorString().toStdString()));
-      return;
-    }
-    self->startLayoutLoad(file.fileName(), /*remember=*/false, {}, reply);
+    self->startLayoutLoad(std::move(doc), name, file_path, job, std::move(reply));
   };
   if (!window_.layoutLoadWouldDiscardWork()) {
     begin();
     return;
   }
-  const dialog_presenter::DialogWatch on_dialog = dialogWatch(caller.job);
-  MessageBox::questionAsync(
+  dialog_presenter::questionAsync(
       &window_, tr("Load Layout"),
       tr("An AI agent wants to load a layout. It replaces your tabs, plots, scenes and derived series."),
       {{tr("Replace"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
-      [begin, reply, on_dialog, still_allowed = stillAuthorized(caller)](int choice, bool) {
-        if (on_dialog) {
-          on_dialog({});
+      [self = QPointer<McpServer>(this), begin, reply, still_allowed = stillAuthorized(caller)](int choice) mutable {
+        if (self == nullptr) {
+          return;
         }
         if (choice != 0 || !still_allowed()) {
+          self->layout_load_busy_ = false;
           reply(fail("not loaded: the user kept their workspace, or the question was withdrawn"));
           return;
         }
         begin();
       },
-      /*show_dont_show_again=*/false,
-      [on_dialog](QDialog& prompt) {
-        if (on_dialog) {
-          on_dialog([prompt = QPointer<QDialog>(&prompt)] {
-            if (prompt != nullptr) {
-              prompt->reject();
-            }
-          });
-        }
-      });
+      dialogWatch(caller.job));
 }
 
-void McpServer::startLayoutLoad(const QString& path, bool remember, const QUrl& url, Reply reply) {
+void McpServer::startLayoutLoad(
+    QDomDocument doc, const QString& name, const QString& file_path, quint64 job, Reply reply) {
+  if (Job* running = liveJob(job)) {
+    // A restore cannot be stopped halfway without leaving data of a layout the workspace no longer shows: it
+    // completes, and the stop says so instead of claiming a kill.
+    running->kill = [self = QPointer<McpServer>(this), job](bool) {
+      Job* stopping = self != nullptr ? self->liveJob(job) : nullptr;
+      if (stopping != nullptr) {
+        stopping->killing = false;
+        stopping->progress = [] {
+          return json{{"note", "the layout is being applied and completes; it cannot be stopped"}};
+        };
+      }
+    };
+  }
+  QtDiagnosticBridge* bridge = window_.diagnosticBridge();
+  // Diagnostics reach the bridge queued: those posted before this load are delivered now, before the capture.
+  QCoreApplication::sendPostedEvents(bridge, QEvent::MetaCall);
   auto* receiver = new QObject(this);
-  auto warnings = std::make_shared<QStringList>();
+  struct Reported {
+    QStringList lines;
+    QSet<QString> seen;
+    QString apply_failed;
+  };
+  auto reported = std::make_shared<Reported>();
   connect(
-      window_.diagnosticBridge(), &QtDiagnosticBridge::diagnosticReported, receiver,
-      [warnings](int level, const QString& source, const QString&, const QString& message) {
-        if (source == "Layout"_L1 && level >= static_cast<int>(DiagnosticLevel::kWarning)) {
-          warnings->push_back(message);
+      bridge, &QtDiagnosticBridge::diagnosticReported, receiver,
+      [reported](int level, const QString& source, const QString& id, const QString& message) {
+        const bool layout = source == "Layout"_L1 && level >= static_cast<int>(DiagnosticLevel::kWarning);
+        if (!layout && !(source == "File Loader"_L1 && id == "data-source-load-failed"_L1)) {
+          return;
+        }
+        // The apply failure's summary quotes the issues it collected, each also reported on its own.
+        if (id == "layout-apply-failed"_L1) {
+          reported->apply_failed = message;
+        } else if (!reported->seen.contains(id + message)) {
+          reported->seen.insert(id + message);
+          reported->lines.push_back(message);
         }
       });
-  auto settled = std::make_shared<bool>(false);
-  const auto settle = [receiver, warnings, settled, reply, path, remember, url](bool loaded, const QString& reason) {
-    if (std::exchange(*settled, true)) {
-      return;
-    }
-    // Diagnostics reach the bridge queued: this load's arrive before a call queued now.
-    QTimer::singleShot(0, receiver, [receiver, warnings, reply, path, remember, url, loaded, reason] {
-      receiver->deleteLater();
-      json lines = json::array();
-      for (QString line : std::as_const(*warnings)) {
-        // A failure's summary quotes the issues it collected, which were reported on their own too.
-        if (std::any_of(warnings->begin(), warnings->end(), [&line](const QString& other) {
-              return other != line && other.contains(line);
-            })) {
-          continue;
-        }
-        if (!remember) {  // the agent's text, in a temporary file it never named
-          line.replace(path, u"xml"_s).replace(QFileInfo(path).fileName(), u"xml"_s);
-        }
-        lines.push_back(line.toStdString());
-      }
-      if (loaded) {
-        reply(ok({{"loaded", true}, {"warnings", lines}}));
-        return;
-      }
-      std::string why = "layout not loaded";
-      if (!reason.isEmpty()) {
-        why += " (" + reason.toStdString() + ")";
-      }
-      for (const json& line : lines) {
-        why += "\n" + line.get<std::string>();
-      }
-      if (!url.isEmpty()) {
-        why += "\nPlotJuggler shows the user why in a message box.";
-      }
-      reply(fail(why));
-    });
-  };
-  if (url.isEmpty()) {
-    connect(&window_, &MainWindow::layoutRestoreSettled, receiver, [settle](bool loaded) { settle(loaded, {}); });
-    window_.loadLayoutForAgent(path, remember);
-  } else {
-    connect(
-        &window_, &MainWindow::layoutUrlLoadFinished, receiver,
-        [settle, url](const QUrl& finished, bool loaded, const QString& reason) {
-          if (finished == url) {
-            settle(loaded, reason);
+  connect(
+      &window_, &MainWindow::layoutRestoreSettled, receiver,
+      [this, receiver, reported, reply](bool loaded) {
+        // This load's diagnostics, queued to the bridge, arrive before a call queued now. `receiver` is this
+        // server's child, so the call is dropped with the server.
+        QTimer::singleShot(0, receiver, [this, receiver, reported, reply, loaded] {
+          receiver->deleteLater();
+          layout_load_busy_ = false;
+          QStringList& lines = reported->lines;
+          if (lines.isEmpty() && !reported->apply_failed.isEmpty()) {
+            lines.push_back(reported->apply_failed);
           }
+          if (loaded) {
+            json warnings = json::array();
+            for (const QString& line : std::as_const(lines)) {
+              warnings.push_back(line.toStdString());
+            }
+            reply(ok({{"loaded", true}, {"warnings", warnings}}));
+            return;
+          }
+          reply(fail(("layout not loaded\n" + lines.join(u'\n')).trimmed().toStdString()));
         });
-    window_.loadLayoutFromUrl(url);
-  }
+      },
+      Qt::SingleShotConnection);
+  window_.loadLayoutForAgent(std::move(doc), MainWindow::LayoutOrigin{.name = name, .file_path = file_path});
 }
 
 }  // namespace PJ

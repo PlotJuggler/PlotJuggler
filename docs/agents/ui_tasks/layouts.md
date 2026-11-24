@@ -41,9 +41,10 @@ cursor), "Preserve Topic Name" and "Remove all Datasets", which asks nothing and
 - **UI (browser):** File → Save Layout... downloads a generic `plotjuggler-layout.pj4.xml`; File → Save Layout with
   Sources... downloads a source-bound one.
 - **Extension:** `.pj4.xml`, added when missing.
-- **MCP:** `save_layout` returns the layout's XML exactly as this menu writes it; with `path` it also writes the file
-  (desktop). `bind_sources` is the checkbox (default: checked on the desktop, generic in the browser). Agent tabs and
-  agent-created series, objects and markers are saved with the user's layout.
+- **MCP:** `save_layout` with `path` (desktop, ending in `.xml`) writes the file this menu writes, bound to its
+  sources unless `bind_sources` is false, and answers its path. Without `path` it returns the XML: generic unless
+  `bind_sources`, and then with absolute data paths and every plugin setting's secrets as `<redacted>`. Agent tabs
+  and agent-created series, objects and markers are saved with the user's layout.
 - **Gotchas:** a source-bound layout with a stream stores that plugin's configuration as is, credentials included.
   The streaming buffer is saved only in a stream-bound layout.
 
@@ -59,11 +60,13 @@ cursor), "Preserve Topic Name" and "Remove all Datasets", which asks nothing and
   allows one check.
 - **Missing data:** curves the loaded data lacks prompt "Missing curves" / "Missing layout data" with "Remove from
   plots", "Continue without them" or "Cancel".
-- **MCP:** `load_layout` with `xml` (the text), `path` (desktop) or `url` (http/https). It loads as `--layout` does:
-  the layout's data files and streams load without the reload question, missing curves are kept, several fitting
-  datasets give the first one, and the call returns these warnings instead of dialogs. When the workspace holds
-  anything the user is asked first ("Load Layout": "Replace" / "Cancel"). An agent's tabs and series come back as
-  that agent's.
+- **MCP:** `load_layout` with `xml` (the text), `path` (desktop) or `url` (http/https, the layout alone). It loads as
+  `--layout` does: the layout's data files and streams load without the reload question, missing curves are kept,
+  several fitting datasets give the first one, and the call returns these warnings instead of dialogs. Text and a
+  URL have no folder, so their data paths must be absolute: a relative one is reported. When the workspace holds
+  anything (a plot, a derived series, an open toolbox, undo history) the user is asked first ("Load Layout":
+  "Replace" / "Cancel"). Refused while another layout load runs. An agent's tabs and series come back as that
+  agent's.
 - **Gotchas:** a layout dropped onto the window is treated as a data file and fails: use Load Layout. A layout naming
   several datasets is never asked about; its curves bind only to the files it names.
 

@@ -133,14 +133,6 @@ inline constexpr char kRedacted[] = "<redacted>";
 /// changes it) and text past it never reaches the model; this keeps a margin under that default.
 inline constexpr std::size_t kMaxInstructionsChars = 3900;
 
-/// save_layout's bind_sources when the call names none: what the Save Layout menu writes by default (the desktop
-/// dialog's "Bind to this data source" checked; the browser's Save Layout, generic).
-#ifdef PJ_TARGET_WASM
-inline constexpr bool kBindSourcesByDefault = false;
-#else
-inline constexpr bool kBindSourcesByDefault = true;
-#endif
-
 /// screenshot's max_width when the call names none.
 inline constexpr int kDefaultScreenshotWidth = 1600;
 
