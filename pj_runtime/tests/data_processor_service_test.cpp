@@ -340,6 +340,42 @@ return { { id="boom", name="Boom",
   EXPECT_FALSE(result.has_value());  // the script error is surfaced, not swallowed
 }
 
+// A catalogue filter that needs numbers is refused over a text column, naming the input and the filter, instead of
+// differentiating the text as 0.
+TEST(DataProcessorServiceTest, NumericFilterOverTextIsRefusedNamingTheInput) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  constexpr const char* kDerivativeSrc = R"LUAU(
+return { { id="derivative", name="Derivative",
+  create = function(p)
+    local has_prev, pt, pv = false, 0.0, 0.0
+    return { calculate = function(t, v)
+      if not has_prev then has_prev, pt, pv = true, t, v; return nil end
+      local d = (v - pv) / (t - pt); pt, pv = t, v; return d
+    end } end } }
+)LUAU";
+  service.setFilterCatalogue(catalogueFromSource(kDerivativeSrc));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+
+  DataWriter writer = engine.createWriter();
+  const TopicId src =
+      *writer.registerTopic(ds, TopicDescriptor{.name = "robot_state", .schema_id = 0, .dataset_id = ds});
+  ASSERT_TRUE(writer.ensureColumn(src, "data", PrimitiveType::kString).has_value());
+  const std::vector<std::string_view> states{"walking", "falling", "walking"};
+  for (std::size_t i = 0; i < states.size(); ++i) {
+    ASSERT_TRUE(writer.beginRow(src, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());
+    writer.set<std::string_view>(src, 0, states[i]);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  }
+  engine.commitChunks(writer.flushAll());
+
+  const auto result = service.applyFilter(src, ds, "derivative", "robot_state[Derivative]");
+  ASSERT_FALSE(result.has_value()) << "a derivative of text must not materialize";
+  EXPECT_NE(result.error().find("robot_state/data is text"), std::string::npos) << result.error();
+  EXPECT_NE(result.error().find("Derivative needs numbers"), std::string::npos) << result.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
 TEST(DataProcessorServiceTest, ReloadRecomputesFilterOutput) {
   // After a dataset reload swaps the input chunks wholesale, the filter's output must
   // be RESET + REPLAYED over the new input, not left stale (or appended).

@@ -46,6 +46,7 @@
 #endif
 #include <memory>
 #include <string>
+#include <variant>
 
 #include "BrowserPersistence.h"
 #include "BundledFont.h"
@@ -64,7 +65,6 @@
 #include "mcp/McpProtocol.h"
 #endif
 #include "pj_datastore/data_processor.hpp"
-#include "pj_datastore/processor_detail.hpp"
 #include "pj_plotting/PlotWidgetBase.h"
 #ifndef PJ_TARGET_WASM
 #include "pj_runtime/PluginRuntimeCatalog.h"
@@ -152,7 +152,7 @@ class T:
     return EXIT_FAILURE;
   }
   const auto out = (*processor)->calculateNextPoint(PJ::proc::Sample::scalar(0, PJ::VarValue{144.0}));
-  if (!out.has_value() || PJ::proc::detail::toDouble(out->value()) != 12.0) {
+  if (!out.has_value() || !std::holds_alternative<double>(out->value()) || std::get<double>(out->value()) != 12.0) {
     std::fprintf(stderr, "[selftest-python] FAILED: sqrt(144) did not yield 12\n");
     return EXIT_FAILURE;
   }

@@ -454,7 +454,10 @@ json appToolEntries() {
           "it. Returns each output topic with its fields.",
           schema(
               {{"name", described(str, "series name; your series of this name is replaced")},
-               {"inputs", paths},
+               {"inputs", described(
+                              paths,
+                              "series paths as read_series takes them; a text series arrives as a string "
+                              "(value == \"walking\")")},
                {"outputs",
                 {{"type", "array"},
                  {"items", str},
@@ -464,7 +467,8 @@ json appToolEntries() {
               {"name", "inputs", "script"})),
       toolEntry(
           "add_filter",
-          "Create a derived series by applying one of PlotJuggler's built-in filters to one series; params "
+          "Create a derived series by applying one of PlotJuggler's built-in filters to one series (those reading the "
+          "value refuse a text series); params "
           "override the filter's defaults (for a formula of your own use create_derived_series; for Python or a "
           "class with state, add_script_series). Like add_script_series: listed under Custom Topics, removable with "
           "remove_script_series, outside the user's undo, the same name replaces it. Returns the output topic and "

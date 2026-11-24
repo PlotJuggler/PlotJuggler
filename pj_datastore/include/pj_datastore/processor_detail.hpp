@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <string_view>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -21,13 +22,14 @@ inline std::vector<PJ::StorageKind> mirrorInputKind(PJ::Span<const PJ::StorageKi
   return {in[0]};
 }
 
-/// int64 and uint64 widen to double; a string is 0.0.
-inline double toDouble(const PJ::VarValue& v) {
+/// A sample value as a script sees it: int64 and uint64 widen to double, a string stays text (a view into `v`, valid
+/// while `v` lives).
+inline std::variant<double, std::string_view> numberOrText(const PJ::VarValue& v) {
   return std::visit(
-      [](auto&& arg) -> double {
+      [](auto&& arg) -> std::variant<double, std::string_view> {
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, std::string>) {
-          return 0.0;
+          return std::string_view(arg);
         } else {
           return static_cast<double>(arg);
         }

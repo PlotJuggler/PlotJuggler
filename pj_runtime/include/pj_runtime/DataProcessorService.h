@@ -130,7 +130,8 @@ class DataProcessorService {
 
   /// Applies the catalogue filter `processor_id` to column `input_column_index` of `input_topic_id`, materializing
   /// `output_name` in `dataset_id` and running it over every committed input row. Errors: unknown id, engine
-  /// rejection, empty output, column out of range, or a preview transform's output as input (a filter persists).
+  /// rejection, empty output, column out of range, a preview transform's output as input (a filter persists), or a
+  /// failing run; a run failing over a text column is reported as "<input> is text; <filter> needs numbers".
   [[nodiscard]] Expected<FilterHandle> applyFilter(
       TopicId input_topic_id, DatasetId dataset_id, std::string_view processor_id, std::string output_name,
       std::size_t input_column_index = 0);
@@ -216,7 +217,8 @@ class DataProcessorService {
   /// A new persistent key replays the input history time-sliced: only the first `kMaterializationSliceBudget` slice
   /// runs in the call (so a script failing on its first rows is still rejected), the rest from a zero-timer
   /// (`stepMaterialization`). Recipe and output exist on return and the output grows in time order to what a
-  /// synchronous replay gives. Previews and in-place replacements replay synchronously.
+  /// synchronous replay gives. Previews and in-place replacements replay synchronously. A text input reaches the
+  /// script as a string; when the first run fails, the error names each text input.
   [[nodiscard]] Expected<TransformRecipe> upsertTransform(
       std::string_view plugin_id, std::string_view id, std::vector<std::string> inputs,
       std::vector<std::string> outputs, std::string_view script, std::string_view params_json, bool ephemeral = false,

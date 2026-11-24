@@ -42,6 +42,31 @@ namespace PJ {
 namespace {
 std::vector<std::string> inputFieldPaths(const DataEngine& engine, const TopicStorage& storage);
 std::string normalizedFieldPath(std::string path);
+
+/// "<topic>/<field>" of each input column of `node` (reading `topics`, in order) that holds text, for an error that
+/// names it.
+std::vector<std::string> textInputNames(
+    DataEngine& engine, const IncrementalEngine& derived, NodeId node, const std::vector<TopicId>& topics) {
+  std::vector<std::string> names;
+  const auto binding = derived.inputBindingState(node);
+  if (!binding.has_value()) {
+    return names;
+  }
+  const auto engine_lock = engine.lockEngine();
+  for (std::size_t i = 0; i < binding->kinds.size() && i < topics.size() && i < binding->columns.size(); ++i) {
+    const TopicStorage* storage = engine.getTopicStorage(topics[i]);
+    if (binding->kinds[i] != StorageKind::kString || storage == nullptr) {
+      continue;
+    }
+    std::string name = storage->descriptor().name;
+    const std::vector<std::string> paths = inputFieldPaths(engine, *storage);
+    if (binding->columns[i] < paths.size() && !paths[binding->columns[i]].empty()) {
+      name += "/" + paths[binding->columns[i]];
+    }
+    names.push_back(std::move(name));
+  }
+  return names;
+}
 }  // namespace
 
 DataProcessorService::DataProcessorService(DataEngine& engine)
@@ -109,6 +134,11 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
   // Eager run over the already-committed input (file path: a single full pass).
   derived_->onSourceCommitted(std::vector<TopicId>{input_topic_id});
   if (Status scheduled = derived_->scheduleAll(); !scheduled.has_value()) {
+    // A catalogue filter that fails over text needs numbers (the timestamp-only ones accept text and do not fail).
+    std::string error = scheduled.error();
+    if (const auto text = textInputNames(engine_, *derived_, *node, {input_topic_id}); !text.empty()) {
+      error = text.front() + " is text; " + shared->bracketLabel() + " needs numbers (" + error + ")";
+    }
     // Roll back the just-registered node + output topic. Leaving them reserves the output
     // name forever (no recipe is stored yet, so clearAllFilters can't reach it). Capture the
     // outputs BEFORE removeNode — afterwards outputTopics(*node) returns {}.
@@ -117,7 +147,7 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
     for (TopicId out : outs) {
       engine_.retireTopic(out);
     }
-    return PJ::unexpected(scheduled.error());
+    return PJ::unexpected(error);
   }
 
   const std::vector<TopicId> outputs = derived_->outputTopics(*node);
@@ -1171,13 +1201,17 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
     materialized = derived_->scheduleAll();
   }
   if (!materialized.has_value()) {
+    std::string error = materialized.error();
+    for (const std::string& text : textInputNames(engine_, *derived_, *node, input_topic_ids)) {
+      error += "; " + text + " is text";
+    }
     // Roll back the half-installed node + its output topic (capture outputs first).
     const std::vector<TopicId> outs = derived_->outputTopics(*node);
     (void)derived_->removeNode(*node);
     for (const TopicId out : outs) {
       engine_.retireTopic(out);
     }
-    return PJ::unexpected(materialized.error());
+    return PJ::unexpected(error);
   }
   const std::vector<TopicId> outputs = derived_->outputTopics(*node);
   if (outputs.empty()) {

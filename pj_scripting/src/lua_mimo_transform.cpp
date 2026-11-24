@@ -11,7 +11,7 @@
 #include <utility>
 #include <variant>
 
-#include "pj_datastore/processor_detail.hpp"  // proc::detail::toDouble / mirrorInputKind
+#include "pj_datastore/processor_detail.hpp"  // proc::detail::numberOrText / mirrorInputKind
 
 namespace PJ::scripting {
 namespace {
@@ -153,13 +153,13 @@ bool LuaMimoTransform::calculate(
   }
   const double t_sec = static_cast<double>(time - session_start_ns_) * 1e-9;
 
-  std::vector<double> input_doubles;
-  input_doubles.reserve(inputs.size());
+  std::vector<FilterInstance::InputValue> script_inputs;
+  script_inputs.reserve(inputs.size());
   for (const PJ::VarValue& v : inputs) {
-    input_doubles.push_back(proc::detail::toDouble(v));
+    script_inputs.push_back(proc::detail::numberOrText(v));
   }
 
-  FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, input_doubles);
+  FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, script_inputs);
   if (instance_->failed()) {
     error_ = instance_->error();
     return false;

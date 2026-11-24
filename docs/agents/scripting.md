@@ -39,8 +39,9 @@ plot's Apply Filter... panel under their names.
 | `binary_filter` | Binary Filter | `binary_op`: enum 0 `== a`, 1 `< a`, 2 `<= a`, 3 `> a`, 4 `>= a`, 5 `in [a, b]`; `binary_a`, `binary_b`, `binary_tol`: number | 0/1 (int64) |
 | `time_since_previous` | Time Since Previous | none | seconds since the previous sample; first sample dropped |
 
-Windows count samples, not seconds: on a 1 kHz IMU a `window` of 100 is 0.1 s. Source:
-`resources/filters/builtin_filters.luau`.
+Windows count samples, not seconds: on a 1 kHz IMU a `window` of 100 is 0.1 s. The filters that read the value need
+numbers and refuse a text series, naming it; `samples_counter` and `time_since_previous` read only the timestamps and
+accept one. Source: `resources/filters/builtin_filters.luau`.
 
 ## Filters: the Luau class
 
@@ -90,8 +91,8 @@ return Lowpass
 - **Several outputs:** return M numbers (`return a, b, c`); they map by position to the declared outputs
   (`add_script_series` `outputs`, which become `<name>/<output>`).
 - **Errors are sticky:** a runtime error, a non-number result or an exhausted budget fails the node for good.
-- **No `os`, `coroutine`, `debug`, `setfenv`, `getfenv`;** the standard library is read-only. A string input reaches
-  the filter as `0.0`.
+- **No `os`, `coroutine`, `debug`, `setfenv`, `getfenv`;** the standard library is read-only. A text input arrives
+  as a string (`if v == "walking" then ...`); arithmetic on it fails the node ("Text inputs" below).
 - **`t` is relative:** seconds since the first sample this node processed, not epoch time. Two filters on the same
   series may start at different instants.
 
@@ -131,6 +132,23 @@ body:   local x, y, z, w = value, v1, v2, v3
         local yaw   = math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
         return roll, pitch, yaw
 ```
+
+### Text inputs
+
+A text series (a ROS `std_msgs/String`, a CSV word column, another formula's `output_type` "string")
+arrives as a string, so a formula compares it with a label. Counting the entries into `"falling"`:
+
+```text
+inputs: ["/robot_state/data"]
+global: local prev = nil
+        local falls = 0
+body:   if value == "falling" and prev ~= "falling" then falls = falls + 1 end
+        prev = value
+        return falls
+```
+
+In Python `value` is a `str`: `return 1 if value == "falling" else 0`. Arithmetic on a text value (`value * 2`) fails
+the series with the engine's error, such as `attempt to perform arithmetic (mul) on string and number`.
 
 ## Filters: Python
 

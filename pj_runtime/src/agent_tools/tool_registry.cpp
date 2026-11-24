@@ -173,16 +173,19 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"create_derived_series",
-       "Create a new derived timeseries computed live from one or more inputs. Each sample sees "
+       "Create a derived timeseries computed live from its inputs. Each sample sees "
        "'value' (first input), 'v1'..'vN' (further inputs, in order), and 'time' (seconds). Use "
-       "'expression' for a stateless formula (e.g. 'value * 2'); for stateful transforms like a "
+       "'expression' for a stateless formula ('value * 2'); for stateful transforms like a "
        "derivative, use 'global' (runs once, persistent locals) + 'body' (statements ending in "
-       "return; return nothing to suppress a sample). For Python or a script class: add_script_series; a "
+       "return; no value suppresses the sample). For Python or a script class: add_script_series; a "
        "built-in filter: add_filter (where listed). Saved in layouts. Reports whether undo protection held.",
        {{"type", "object"},
         {"properties",
-         {{"name", {{"type", "string"}, {"description", "name of the new series"}}},
-          {"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "topic/field paths"}}},
+         {{"name", {{"type", "string"}, {"description", "series name"}}},
+          {"inputs",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "topic/field paths; a text series arrives as a string (value == \"walking\")"}}},
           {"outputs",
            {{"type", "array"},
             {"items", {{"type", "string"}}},
@@ -190,10 +193,8 @@ ToolRegistry::ToolRegistry() {
              "OPTIONAL — several series from ONE node (default: just 'name'). The body then returns one value per "
              "output, in order: outputs ['roll','pitch','yaw'] with a body ending 'return r, p, y'."}}},
           {"expression", {{"type", "string"}, {"description", "stateless Luau expression over value/v1../time"}}},
-          {"body",
-           {{"type", "string"}, {"description", "full Luau statements ending in return (overrides expression)"}}},
-          {"global",
-           {{"type", "string"}, {"description", "Luau run once per instance; locals persist across samples"}}},
+          {"body", {{"type", "string"}, {"description", "Luau statements ending in return (overrides expression)"}}},
+          {"global", {{"type", "string"}, {"description", "Luau run once; its locals persist across samples"}}},
           {"output_type", {{"type", "string"}, {"description", "'string': text labels (State Transitions)"}}}}},
         {"required", json::array({"name", "inputs"})}},
        &createDerivedSeries});

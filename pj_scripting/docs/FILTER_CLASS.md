@@ -153,7 +153,8 @@ globals are the VM's own and persist for the instance.
 ## Time / value contract
 
 - `t` = **seconds since the first sample the filter processes** (a double), and
-  `v` = the sample value (a double). The origin is captured again after a reset.
+  `v` = the sample value: a number (an integer input widens to a double), or a string for a text input. The origin
+  is captured again after a reset.
   Do not assume `t` is wall-clock or epoch time, or that two filters on the same
   series started at the same instant.
 - The host rebases time on the **int64 nanosecond spine** (`raw_ns − first_sample_ns`)
@@ -163,7 +164,10 @@ globals are the VM's own and persist for the instance.
   catastrophic cancellation. A first-sample-relative double steps by about 0.5 ps
   after an hour and stays within 1 ns up to about 97 days.
 - Consequence for authors: `t` differences (`dt`) are accurate to that resolution.
-- Non-numeric inputs: a string-valued input reaches a Luau filter as `0.0`.
+- Text inputs: a text column (`kString`) reaches the filter as a Luau string or a Python `str`, so `v == "walking"`
+  works. Arithmetic or an ordered comparison with a number on it is a runtime error, which fails the filter: a filter
+  that needs numbers fails over text instead of reading it as 0. The bundled filters that read the value need numbers;
+  `samples_counter` and `time_since_previous` look only at the time and accept text.
 
 ---
 
@@ -184,14 +188,14 @@ PJ3 custom Lua functions are not source-compatible. In PJ4:
 
 ## Double-only engine limitations
 
-Luau's only number type is `double`, and the host hands filters `double` time/value.
+Luau's only number type is `double`, and the host hands filters a `double` time and numeric values as `double`.
 A few builtins therefore have narrow, **documented** inexactness (their behavior,
 including these within-range limits, is golden-tested by `builtin_golden_test`):
 
 - **Mirror builtins** (`none`, `absolute`, `outlier_removal`) preserve an int64/uint64
   column kind, but a value above **2^53** loses its low bits through the double seam.
-  Within ±2^53 they are exact (tested). Over a text series a mirror builtin gets a text
-  column, but its double result cannot be stored there: the cells stay empty.
+  Within ±2^53 they are exact (tested). Over a text series a mirror builtin fails, like
+  every builtin that reads the value.
 - **`time_since_previous`** emits the gap in seconds as a double `(t − prev_t)`; its
   resolution is the double's at the session-relative magnitude (see above).
 - **Explicit-timestamp filters** (`scale` time offset, `moving_average` with a
@@ -306,7 +310,8 @@ class T:
   runtime error fails the node (sticky).
 - **MIMO.** The secondary inputs arrive in `*args`, and `calculate` returns a tuple or list
   of M numbers (a bare number is one output; `None` suppresses).
-- **Text.** With `output = "string"`, every value is a `str` instead ("Text outputs").
+- **Text.** A text input arrives as a `str`. With `output = "string"`, every returned value is a `str` instead
+  ("Text outputs").
 - **No parameter schema.** The engine reads only `id`, `name`, `description`, `version` and
   `output` from the class, so a Python filter gets no generated `ParameterForm`; `create`
   receives the params JSON as a dict.

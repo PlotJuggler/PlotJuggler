@@ -13,8 +13,11 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
+#include "pj_scripting/lua_mimo_transform.h"
+#include "pj_scripting/lua_siso_transform.h"
 #include "pj_scripting/script_engine.h"
 
 using namespace PJ::scripting;
@@ -84,8 +87,8 @@ class T:
   ASSERT_TRUE(timed.out_time.has_value());
   EXPECT_DOUBLE_EQ(*timed.out_time, 3.0);
   EXPECT_EQ(timed.text, "walking");
-  const double inputs[] = {1.0, 2.0};
-  auto mimo = (*inst)->calculateMimo(0.0, PJ::Span<const double>(inputs, 2));
+  const FilterInstance::InputValue inputs[] = {1.0, 2.0};
+  auto mimo = (*inst)->calculateMimo(0.0, PJ::Span<const FilterInstance::InputValue>(inputs, 2));
   EXPECT_FALSE(mimo.suppress);
   EXPECT_EQ(mimo.texts, (std::vector<std::string>{"a", "b"}));
 
@@ -487,4 +490,83 @@ TEST(PythonEngine, AMemoryStopIsReportedEvenWhenTheTimeAlsoRunsOut) {
           "                    x = (x,)\n            except MemoryError:\n                pass"),
       limits);
   EXPECT_NE(error.find("MemoryError: script memory limit (1 MB) exceeded"), std::string::npos) << error;
+}
+
+namespace {
+PJ::scripting::FilterClass pythonClass(const std::shared_ptr<ScriptEngine>& engine, const char* source) {
+  auto classes = engine->inspectModule(source, "test");
+  EXPECT_TRUE(classes.has_value()) << (classes.has_value() ? "" : classes.error());
+  return classes.has_value() ? classes->front() : PJ::scripting::FilterClass{};
+}
+}  // namespace
+
+// A text input reaches calculate() as a str, so a formula can compare it with a label.
+TEST(PythonEngine, TextInputArrivesAsStr) {
+  constexpr const char* kIsWalking = R"PY(# pj-script: python
+class T:
+    id = "is_walking"
+    name = "IsWalking"
+    @staticmethod
+    def create(params):
+        return T()
+    def calculate(self, time, value, *args):
+        if not isinstance(value, str):
+            return -1
+        return 1 if value == "walking" else 0
+)PY";
+  auto engine = makePythonEngine();
+  LuaSisoTransform xf(engine, pythonClass(engine, kIsWalking), "{}");
+  auto walking = xf.calculateNextPoint(PJ::proc::Sample::scalar(0, PJ::VarValue{std::string("walking")}));
+  ASSERT_TRUE(walking.has_value()) << xf.error();
+  EXPECT_DOUBLE_EQ(std::get<double>(walking->value()), 1.0);
+  auto falling = xf.calculateNextPoint(PJ::proc::Sample::scalar(1, PJ::VarValue{std::string("falling")}));
+  ASSERT_TRUE(falling.has_value()) << xf.error();
+  EXPECT_DOUBLE_EQ(std::get<double>(falling->value()), 0.0);
+  EXPECT_FALSE(xf.failed());
+}
+
+// A MIMO formula sees each input with its own kind: an integer widens to a float, text stays a str.
+TEST(PythonEngine, MimoInputsKeepTheirKinds) {
+  constexpr const char* kGate = R"PY(# pj-script: python
+class T:
+    id = "gate"
+    name = "Gate"
+    @staticmethod
+    def create(params):
+        return T()
+    def calculate(self, time, speed, state):
+        if not isinstance(speed, float) or not isinstance(state, str):
+            return -1
+        return speed if state == "walking" else 0
+)PY";
+  auto engine = makePythonEngine();
+  LuaMimoTransform xf(engine, pythonClass(engine, kGate), "{}", 1);
+  std::vector<PJ::VarValue> output(1);
+  PJ::Timestamp out_time = 0;
+  const std::vector<PJ::VarValue> walking{PJ::VarValue{std::int64_t{3}}, PJ::VarValue{std::string("walking")}};
+  ASSERT_TRUE(xf.calculate(0, PJ::Span<const PJ::VarValue>(walking), out_time, output)) << xf.error();
+  EXPECT_DOUBLE_EQ(std::get<double>(output[0]), 3.0);
+  const std::vector<PJ::VarValue> falling{PJ::VarValue{2.5}, PJ::VarValue{std::string("falling")}};
+  ASSERT_TRUE(xf.calculate(1, PJ::Span<const PJ::VarValue>(falling), out_time, output)) << xf.error();
+  EXPECT_DOUBLE_EQ(std::get<double>(output[0]), 0.0);
+  EXPECT_FALSE(xf.failed());
+}
+
+// Arithmetic on a text input is a Python TypeError naming the str, never a silent 0.
+TEST(PythonEngine, ArithmeticOnTextFailsNamingTheStr) {
+  constexpr const char* kPlusOne = R"PY(# pj-script: python
+class T:
+    id = "plus_one"
+    name = "PlusOne"
+    @staticmethod
+    def create(params):
+        return T()
+    def calculate(self, time, value, *args):
+        return value + 1
+)PY";
+  auto engine = makePythonEngine();
+  LuaSisoTransform xf(engine, pythonClass(engine, kPlusOne), "{}");
+  EXPECT_FALSE(xf.calculateNextPoint(PJ::proc::Sample::scalar(0, PJ::VarValue{std::string("walking")})).has_value());
+  EXPECT_TRUE(xf.failed());
+  EXPECT_NE(xf.error().find("str"), std::string::npos) << xf.error();
 }

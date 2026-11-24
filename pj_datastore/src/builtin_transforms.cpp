@@ -3,12 +3,17 @@
 
 #include "pj_datastore/builtin_transforms.hpp"
 
+#include <string>
+#include <type_traits>
+#include <variant>
+
 namespace PJ {
 
 void DerivativeTransform::reset() {
   has_prev_ = false;
   prev_value_ = 0.0;
   prev_time_ = 0;
+  error_.clear();
 }
 
 StorageKind DerivativeTransform::outputKind(StorageKind /*input_kind*/) const {
@@ -17,11 +22,16 @@ StorageKind DerivativeTransform::outputKind(StorageKind /*input_kind*/) const {
 
 bool DerivativeTransform::calculate(
     PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) {
-  double v = std::visit(
+  if (std::holds_alternative<std::string>(input)) {
+    error_ = "derivative needs numbers; the input is text";
+  }
+  if (failed()) {
+    return false;
+  }
+  const double v = std::visit(
       [](const auto& val) -> double {
-        using T = std::decay_t<decltype(val)>;
-        if constexpr (std::is_same_v<T, std::string>) {
-          return 0.0;
+        if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
+          return 0.0;  // unreachable: text failed above
         } else {
           return static_cast<double>(val);
         }

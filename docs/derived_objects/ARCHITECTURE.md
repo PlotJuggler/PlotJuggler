@@ -46,8 +46,8 @@ evaluates at an arbitrary `t` with no scene open.
 
 A `transform` writes numbers by default; a script class declaring `output = "string"` writes a string series instead
 (state labels the State Transitions panel shows), the type carried by the script itself, so a layout saved without
-the field restores numbers. Its inputs are numbers only. The filter-author contract:
-[FILTER_CLASS.md](../../pj_scripting/docs/FILTER_CLASS.md) "Text outputs".
+the field restores numbers. Its inputs keep their kind: a text input reaches the script as a string. The
+filter-author contract: [FILTER_CLASS.md](../../pj_scripting/docs/FILTER_CLASS.md) "Text outputs".
 
 ## Invariants
 
