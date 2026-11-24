@@ -96,7 +96,11 @@ void attachFetchedTextures(
 
 }  // namespace
 
-MeshLoadQueue::MeshLoadQueue(QObject* context) : context_(context), loader_(std::make_unique<MeshLoader>()) {}
+MeshLoadQueue::MeshLoadQueue(QObject* context)
+    : MeshLoadQueue(context, maxConcurrentMeshLoads(), maxConcurrentMeshImports()) {}
+
+MeshLoadQueue::MeshLoadQueue(QObject* context, std::size_t max_loads, std::size_t max_imports)
+    : context_(context), max_loads_(max_loads), max_imports_(max_imports), loader_(std::make_unique<MeshLoader>()) {}
 
 MeshLoadQueue::~MeshLoadQueue() = default;
 
@@ -127,26 +131,46 @@ void MeshLoadQueue::cancel(JobId id) {
   if (running == running_.end()) {
     return;
   }
+  if (running->second.waiting) {
+    running_.erase(running);
+    return;
+  }
   running->second.done = nullptr;
-  if (running->second.import == nullptr) {
+  if (fetching(running->second)) {
     abortObsoleteFetches();
   }
 }
 
 void MeshLoadQueue::cancelAll() {
   queued_.clear();
-  bool fetching = pending_fetches_ > 0;
+  std::erase_if(running_, [](const auto& entry) { return entry.second.waiting; });
+  bool any_fetching = pending_fetches_ > 0;
   for (auto& [id, job] : running_) {
     job.done = nullptr;
-    fetching = fetching || job.import == nullptr;
+    any_fetching = any_fetching || fetching(job);
   }
-  if (fetching) {
+  if (any_fetching) {
     retireFetcher();
   }
 }
 
 void MeshLoadQueue::pump() {
-  while (running_.size() < maxConcurrentMeshLoads() && !queued_.empty()) {
+  while (true) {
+    JobId oldest_waiting = 0;
+    if (importsRunning() < max_imports_) {
+      for (const auto& [id, job] : running_) {
+        if (job.waiting && (oldest_waiting == 0 || id < oldest_waiting)) {
+          oldest_waiting = id;
+        }
+      }
+    }
+    if (oldest_waiting != 0) {
+      startImport(oldest_waiting);
+      continue;
+    }
+    if (running_.size() >= max_loads_ || queued_.empty()) {
+      return;
+    }
     Queued next = std::move(queued_.front());
     queued_.pop_front();
     std::optional<Source> source = next.resolve();
@@ -154,11 +178,11 @@ void MeshLoadQueue::pump() {
       continue;
     }
     const bool fetch = source->kind == Source::Kind::kUrl;
-    running_.emplace(next.id, Running{.done = std::move(next.done), .source = std::move(*source), .import = nullptr});
+    running_.emplace(
+        next.id,
+        Running{.done = std::move(next.done), .source = std::move(*source), .import = nullptr, .waiting = !fetch});
     if (fetch) {
       startFetch(next.id);
-    } else {
-      startImport(next.id, {});
     }
   }
 }
@@ -197,21 +221,21 @@ void MeshLoadQueue::onFetched(JobId id, FetchResult result) {
     outcome.fetch_failed = true;
     settle(id, std::move(outcome));
   } else {
-    startImport(id, std::move(result.bytes));
+    running->second.source.bytes = std::move(result.bytes);
+    running->second.waiting = true;
   }
   pump();
 }
 
-void MeshLoadQueue::startImport(JobId id, QByteArray bytes) {
+void MeshLoadQueue::startImport(JobId id) {
   Running& job = running_.at(id);
+  job.waiting = false;
   QString error;
   try {
     const Source& source = job.source;
-    QFuture<MeshData> future =
-        source.kind == Source::Kind::kPath
-            ? loader_->load(source.location, source.flip_override)
-            : loader_->loadFromMemory(
-                  source.kind == Source::Kind::kBytes ? source.bytes : bytes, source.format_hint, source.flip_override);
+    QFuture<MeshData> future = source.kind == Source::Kind::kPath
+                                   ? loader_->load(source.location, source.flip_override)
+                                   : loader_->loadFromMemory(source.bytes, source.format_hint, source.flip_override);
     job.source.bytes = {};  // the worker holds its own reference
     job.import = std::make_unique<MeshImport>(
         std::move(future), context_, [this, id]() { onImported(id); }, source.kind == Source::Kind::kPath);
@@ -319,17 +343,17 @@ void MeshLoadQueue::abortObsoleteFetches() {
   if (pending_fetches_ > 0) {
     return;
   }
-  bool fetching = false;
+  bool any_fetching = false;
   for (const auto& [id, job] : running_) {
-    if (job.import != nullptr) {
+    if (!fetching(job)) {
       continue;
     }
     if (job.done != nullptr) {
       return;  // still wanted: the obsolete ones complete and are ignored
     }
-    fetching = true;
+    any_fetching = true;
   }
-  if (fetching) {
+  if (any_fetching) {
     retireFetcher();
   }
 }
@@ -346,7 +370,7 @@ void MeshLoadQueue::retireFetcher() {
   obsolete->setParent(context_);
   obsolete->deleteLater();
   pending_fetches_ = 0;
-  std::erase_if(running_, [](const auto& entry) { return entry.second.import == nullptr; });
+  std::erase_if(running_, [](const auto& entry) { return fetching(entry.second); });
 }
 
 }  // namespace pj::scene3d

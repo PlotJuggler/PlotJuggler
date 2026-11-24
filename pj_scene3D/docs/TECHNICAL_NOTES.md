@@ -180,6 +180,15 @@ All on Intel Iris Xe (RPL-P), Mesa 26, unless a row names another GPU.
   depend on the cursor: on the same playback 0 of 386 rendered frames were displaced, 156 of which still drew the
   previous sweep's cloud while the next one decoded. Re-test if placement goes back through a frame above the
   shared one.
+- **Mesh downloads overlap, imports stay bounded.** The browser sample Microduck (`?preset=microduck`, a URDF with 38
+  binary STL meshes up to 1 MB on the asset host, HTTP/2, immutable caching; production package, headless Chromium
+  with `--use-gl=angle --use-angle=gl-egl` on the Iris Xe, 2026-11-24) filled in its robot over 5.8 s on a first
+  visit when one slot covered fetch and import: each mesh was requested only after the previous one finished, so the
+  ~210-360 ms time to first byte was paid 38 times. An import and its draw take ~18 ms per mesh. With up to
+  `maxConcurrentMeshLoads()` jobs in flight and one import at a time, six requests are in flight from the start and
+  the meshes span 1.09-1.27 s on a first visit (3 runs) and 0.44-0.48 s from the HTTP disk cache (0.68 s before).
+  Re-test if the asset host moves off HTTP/2 (a browser opens at most six HTTP/1.1 connections per host) or if
+  browser imports move to more than one worker.
 - **First upload Immutable:** a 10M static cloud's DRM total dropped from 684 to 428 MiB on Vulkan, which frees an
   Immutable buffer's staging and keeps a Static one's.
 

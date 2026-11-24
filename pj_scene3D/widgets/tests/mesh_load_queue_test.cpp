@@ -1,10 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// MeshLoadQueue: the per-layer bound over fetches + imports (cancelled imports
-// keep their slots until their workers finish), cancellation that never reaches
-// `done`, aborting fetches nobody wants, destruction during fetch/import, and a
-// URL mesh's relative textures fetched beside it.
+// MeshLoadQueue: the per-layer bounds (fetches overlap up to the load bound while
+// imports stay within theirs; cancelled imports keep their slots until their
+// workers finish), cancellation that never reaches `done`, aborting fetches nobody
+// wants, destruction during fetch/import, and a URL mesh's relative textures
+// fetched beside it.
 
 #include "mesh_load_queue.h"
 
@@ -13,24 +14,28 @@
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFile>
+#include <QHash>
 #include <QHostAddress>
 #include <QObject>
 #include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "mesh_import.h"  // maxConcurrentMeshLoads
+#include "mesh_import.h"  // maxConcurrentMeshLoads, maxConcurrentMeshImports
 #include "mock_parser_support.h"
 #include "url_fetcher.h"
 
 using namespace Qt::StringLiterals;
+using pj::scene3d::maxConcurrentMeshImports;
 using pj::scene3d::maxConcurrentMeshLoads;
 using pj::scene3d::MeshLoadQueue;
 using pj::scene3d::test::cubeCopies;
@@ -76,6 +81,21 @@ std::optional<MeshLoadQueue::Outcome> loadQuadFrom(const FileHttpServer& server)
   queue.pump();
   EXPECT_TRUE(pumpUntil([&] { return outcome.has_value(); }, std::chrono::seconds(5)));
   return outcome;
+}
+
+// `count` binary STL meshes at /meshes/<index>.stl.
+QHash<QString, QByteArray> stlFiles(int count) {
+  QHash<QString, QByteArray> files;
+  for (int index = 0; index < count; ++index) {
+    files.insert(u"/meshes/%1.stl"_s.arg(index), readFixtureBytes("cube.stl"));
+  }
+  return files;
+}
+
+MeshLoadQueue::Source stlUrlSource(const FileHttpServer& server, int index) {
+  MeshLoadQueue::Source source = urlSource(server.url(u"/meshes/%1.stl"_s.arg(index)));
+  source.format_hint = u"stl"_s;
+  return source;
 }
 
 }  // namespace
@@ -124,7 +144,7 @@ TEST(MeshLoadQueueTest, UrlMeshNeverRequestsANonNetworkTexture) {
 TEST(MeshLoadQueueTest, CancelledImportsKeepTheirSlotsAndNeverDeliver) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
-  const std::size_t limit = maxConcurrentMeshLoads();
+  const std::size_t limit = maxConcurrentMeshImports();
   const std::vector<QString> paths = cubeCopies(dir, static_cast<int>(2 * limit + 1));
   QObject context;
   MeshLoadQueue queue(&context);
@@ -145,11 +165,11 @@ TEST(MeshLoadQueueTest, CancelledImportsKeepTheirSlotsAndNeverDeliver) {
     wanted.push_back(paths[index].toStdString() + ":ok");
   }
   queue.pump();
-  EXPECT_LE(queue.runningCount(), limit);
+  EXPECT_LE(queue.importsRunning(), limit);
 
   EXPECT_TRUE(pumpUntil(
       [&] {
-        EXPECT_LE(queue.runningCount(), limit);
+        EXPECT_LE(queue.importsRunning(), limit);
         return log.size() == wanted.size() && queue.runningCount() == 0;
       },
       std::chrono::seconds(10)));
@@ -309,4 +329,96 @@ TEST(MeshLoadQueueTest, DestructionDuringImportDropsTheCompletion) {
   queue.reset();  // the worker runs on, detached
   pumpUntil([] { return false; }, std::chrono::milliseconds(500));
   EXPECT_TRUE(log.empty());
+}
+
+// URL meshes download side by side up to the load bound, however tight the import
+// bound: a fetch does not wait for another job's import.
+TEST(MeshLoadQueueTest, UrlFetchesOverlapUpToTheLoadBound) {
+  QTcpServer server;
+  QObject context;
+  MeshLoadQueue queue(&context, /*max_loads=*/3, /*max_imports=*/1);
+  std::vector<std::string> log;
+  for (int index = 0; index < 5; ++index) {
+    enqueue(queue, urlSource(silentServerUrl(server, u"%1.glb"_s.arg(index))), log);
+  }
+  queue.pump();
+  EXPECT_EQ(queue.runningCount(), 3U) << "fetches did not overlap";
+  int connections = 0;
+  pumpUntil(
+      [&] {
+        while (server.hasPendingConnections()) {
+          server.nextPendingConnection();
+          ++connections;
+        }
+        return false;
+      },
+      std::chrono::milliseconds(300));
+  EXPECT_EQ(connections, 3) << "requests in flight at once";
+  EXPECT_EQ(queue.importsRunning(), 0U);
+  queue.cancelAll();
+  EXPECT_EQ(queue.runningCount(), 0U);
+  EXPECT_TRUE(log.empty());
+}
+
+// Landed bytes wait for an import slot: imports never exceed their bound while
+// the next meshes download, and every mesh loads.
+TEST(MeshLoadQueueTest, ImportsStayWithinTheirBoundWhileFetchesOverlap) {
+  constexpr int kMeshes = 8;
+  const FileHttpServer server(stlFiles(kMeshes));
+  QObject context;
+  MeshLoadQueue queue(&context, /*max_loads=*/4, /*max_imports=*/1);
+  std::vector<std::string> log;
+  std::vector<std::string> wanted;
+  for (int index = 0; index < kMeshes; ++index) {
+    const MeshLoadQueue::Source source = stlUrlSource(server, index);
+    enqueue(queue, source, log);
+    wanted.push_back(source.location.toStdString() + ":ok");
+  }
+  queue.pump();
+  EXPECT_EQ(queue.runningCount(), 4U);
+  std::size_t peak_imports = 0;
+  EXPECT_TRUE(pumpUntil(
+      [&] {
+        peak_imports = std::max(peak_imports, queue.importsRunning());
+        EXPECT_LE(queue.runningCount(), 4U);
+        return queue.runningCount() == 0 && log.size() == wanted.size();
+      },
+      std::chrono::seconds(10)));
+  EXPECT_EQ(peak_imports, 1U);
+  std::sort(log.begin(), log.end());
+  std::sort(wanted.begin(), wanted.end());
+  EXPECT_EQ(log, wanted);
+}
+
+// cancelAll() while several meshes are downloading, waiting for the import slot or
+// importing: none of them delivers, every slot drains, and later jobs load.
+TEST(MeshLoadQueueTest, CancelAllWhileFetchesOverlapNeverDelivers) {
+  constexpr int kMeshes = 8;
+  const FileHttpServer server(stlFiles(kMeshes + 2));
+  QObject context;
+  MeshLoadQueue queue(&context, /*max_loads=*/4, /*max_imports=*/1);
+  std::vector<std::string> log;
+  for (int index = 0; index < kMeshes; ++index) {
+    enqueue(queue, stlUrlSource(server, index), log);
+  }
+  queue.pump();
+  ASSERT_TRUE(pumpUntil([&] { return !log.empty(); }, std::chrono::seconds(10)));
+  queue.cancelAll();
+  const std::size_t delivered_before = log.size();
+  std::vector<std::string> wanted;
+  for (int index = kMeshes; index < kMeshes + 2; ++index) {
+    const MeshLoadQueue::Source source = stlUrlSource(server, index);
+    enqueue(queue, source, log);
+    wanted.push_back(source.location.toStdString() + ":ok");
+  }
+  queue.pump();
+  EXPECT_TRUE(pumpUntil(
+      [&] {
+        EXPECT_LE(queue.importsRunning(), 1U);
+        return queue.runningCount() == 0 && log.size() == delivered_before + wanted.size();
+      },
+      std::chrono::seconds(10)));
+  std::vector<std::string> after(log.begin() + static_cast<std::ptrdiff_t>(delivered_before), log.end());
+  std::sort(after.begin(), after.end());
+  EXPECT_EQ(after, wanted) << "a cancelled job delivered, or a wanted one did not";
 }

@@ -20,16 +20,22 @@
 
 namespace pj::scene3d {
 
-// How many mesh fetches + imports one layer keeps in flight. The browser has a
-// single worker, so one; desktop overlaps a few CPU-bound assimp imports. Each
-// result is admitted against the byte budgets when it lands, on the GUI thread,
-// so parallelism never lets a layer exceed them.
-[[nodiscard]] inline std::size_t maxConcurrentMeshLoads() {
+// How many mesh imports one layer runs at once. The browser has a single worker,
+// so one; desktop overlaps a few CPU-bound assimp imports.
+[[nodiscard]] inline std::size_t maxConcurrentMeshImports() {
 #ifdef PJ_TARGET_WASM
   return 1;
 #else
   return static_cast<std::size_t>(std::clamp(QThread::idealThreadCount(), 1, 4));
 #endif
+}
+
+// How many mesh jobs one layer keeps in flight, whatever their phase: downloads
+// overlap their latency up to this, and it bounds the fetched bytes held while
+// they wait for an import slot. Each result is admitted against the byte budgets
+// when it lands, on the GUI thread, so parallelism never lets a layer exceed them.
+[[nodiscard]] inline std::size_t maxConcurrentMeshLoads() {
+  return std::max<std::size_t>(maxConcurrentMeshImports(), 6);
 }
 
 [[nodiscard]] inline std::uint64_t encodedTextureBytes(const MeshData& mesh) {

@@ -27,22 +27,27 @@ class MeshLoader;
 class UrlFetcher;
 struct FetchResult;
 
-// Bounded fetch -> import scheduling for ONE model layer: at most maxConcurrentMeshLoads() jobs fetch or import at
-// once. What to load, whether to load at all (remote-fetch permission, source-size caps) and whether a result fits the
-// layer's byte budget stay with the layer; the queue runs the jobs it is handed and delivers the results still wanted.
+// Bounded fetch -> import scheduling for ONE model layer: at most `max_loads` jobs are in flight (fetching, holding
+// their bytes until an import slot frees, importing or fetching textures), and at most `max_imports` of them import at
+// once, so downloads overlap their latency while imports stay bounded. Waiting jobs import in enqueue order. What to
+// load, whether to load at all (remote-fetch permission, source-size caps) and whether a result fits the layer's byte
+// budget stay with the layer; the queue runs the jobs it is handed and delivers the results still wanted.
 //
 // Invariants:
-//  - A cancelled job never reaches its `done`. A cancelled running import keeps its slot until its worker finishes
-//    (the worker cannot be stopped), so replacing sources never runs more than the bound at once.
+//  - Bytes fetched or handed in but not yet imported are held by at most `max_loads` jobs: a job keeps its load slot
+//    until it settles, so a slow import throttles the downloads behind it.
+//  - A cancelled job never reaches its `done`. A cancelled running import keeps its slots until its worker finishes
+//    (the worker cannot be stopped), so replacing sources never runs more than the bounds at once. A cancelled job
+//    waiting for an import slot drops its bytes and frees its slot at once.
 //  - A cancelled fetch keeps its slot until it completes, except that once no running fetch is still wanted the
 //    fetcher is retired: its requests abort and their slots free at once. cancelAll() retires it whenever a request is
 //    in flight, fetch() ones included.
 //  - `done` runs on the GUI thread through the event loop, except when an import cannot even be started: that failure
-//    is delivered from inside pump(). The queue pumps itself after every settled job.
+//    is delivered from inside pump(). The queue pumps itself after every settled job and every landed fetch.
 //  - A kUrl job also fetches the external textures its mesh left unresolved (TextureSource::unresolved_ref, resolved
 //    against the mesh URL, http(s) only, each distinct URL once) through the same fetcher before it settles, holding
-//    its slot meanwhile. A texture that fails to fetch, is not an image or exceeds the per-mesh encoded-texture budget
-//    leaves its slot empty; it never fails the mesh.
+//    its load slot (not an import slot) meanwhile. A texture that fails to fetch, is not an image or exceeds the
+//    per-mesh encoded-texture budget leaves its slot empty; it never fails the mesh.
 //  - GUI-thread only. Owned by `context`'s object (a layer member); the retired fetchers are parented to `context`
 //    and die with it.
 class MeshLoadQueue {
@@ -67,7 +72,9 @@ class MeshLoadQueue {
     bool fetch_failed = false;  // failed while fetching, before any import
   };
 
+  // Bounds: maxConcurrentMeshLoads() and maxConcurrentMeshImports().
   explicit MeshLoadQueue(QObject* context);
+  MeshLoadQueue(QObject* context, std::size_t max_loads, std::size_t max_imports);
   ~MeshLoadQueue();
   MeshLoadQueue(const MeshLoadQueue&) = delete;
   MeshLoadQueue& operator=(const MeshLoadQueue&) = delete;
@@ -88,11 +95,11 @@ class MeshLoadQueue {
   void pump();
   void clearLoaderCache();
 
-  // Running jobs, cancelled ones included: what the bound limits.
+  // Running jobs, cancelled ones included: what `max_loads` limits.
   [[nodiscard]] std::size_t runningCount() const {
     return running_.size();
   }
-  // Imports whose worker has not finished, cancelled ones included.
+  // Imports whose worker has not finished, cancelled ones included: what `max_imports` limits.
   [[nodiscard]] std::size_t importsRunning() const;
 
  private:
@@ -102,9 +109,10 @@ class MeshLoadQueue {
     std::function<void(Outcome)> done;
   };
   struct Running {
-    std::function<void(Outcome)> done;  // empty once cancelled
-    Source source;
-    std::unique_ptr<MeshImport> import;  // null while fetching (the mesh or its textures)
+    std::function<void(Outcome)> done;   // empty once cancelled
+    Source source;                       // a kUrl job's fetched bytes land in `source.bytes`
+    std::unique_ptr<MeshImport> import;  // null while fetching (the mesh or its textures) or waiting
+    bool waiting = false;                // holds its bytes until an import slot frees
     MeshData mesh{};                     // imported, waiting for its textures
     std::vector<std::shared_ptr<Material>> materials{};
     std::unordered_map<std::string, QByteArray> textures{};
@@ -114,9 +122,12 @@ class MeshLoadQueue {
   UrlFetcher& fetcher();
   void startFetch(JobId id);
   // Fetch completion: frees a cancelled job's slot, settles a failure, else
-  // starts the import. Ignores jobs already dropped by a retirement.
+  // queues the import. Ignores jobs already dropped by a retirement.
   void onFetched(JobId id, FetchResult result);
-  void startImport(JobId id, QByteArray bytes);
+  [[nodiscard]] static bool fetching(const Running& job) {
+    return job.import == nullptr && !job.waiting;
+  }
+  void startImport(JobId id);
   void onImported(JobId id);
   // A kUrl job's import landed: starts fetching the textures `mesh` left unresolved, taking `mesh` into the job. False,
   // leaving `mesh` with the caller, when none is fetchable.
@@ -127,6 +138,8 @@ class MeshLoadQueue {
   void retireFetcher();
 
   QObject* context_;
+  std::size_t max_loads_;
+  std::size_t max_imports_;
   std::unique_ptr<MeshLoader> loader_;
   std::unique_ptr<UrlFetcher> fetcher_;
   int pending_fetches_ = 0;  // fetch() calls the current fetcher still owes

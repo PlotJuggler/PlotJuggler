@@ -28,7 +28,7 @@
 #include <utility>
 #include <vector>
 
-#include "mesh_import.h"  // maxConcurrentMeshLoads
+#include "mesh_import.h"  // maxConcurrentMeshImports
 #include "mock_parser_support.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/time.hpp"
@@ -755,7 +755,7 @@ TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender
 
 // Rapidly replacing one entity's model source must not stack imports: a
 // superseded import keeps its slot until its worker finishes, so the imports
-// still running never exceed maxConcurrentMeshLoads(), and every one settles.
+// still running never exceed maxConcurrentMeshImports(), and every one settles.
 TEST(SceneEntitiesLayerModelTest, RapidModelReplacementStaysWithinImportBound) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -772,7 +772,7 @@ TEST(SceneEntitiesLayerModelTest, RapidModelReplacementStaysWithinImportBound) {
   ASSERT_TRUE(layer.attach(ctx));
   for (int index = 1; index <= kReplacements; ++index) {
     layer.setTrackerTime(PJ::fromRaw(10 * index));
-    ASSERT_LE(layer.modelImportsOutstandingForTest(), pj::scene3d::maxConcurrentMeshLoads())
+    ASSERT_LE(layer.modelImportsOutstandingForTest(), pj::scene3d::maxConcurrentMeshImports())
         << "after replacement " << index;
   }
   EXPECT_TRUE(pumpUntil([&] { return layer.modelImportsOutstandingForTest() == 0; }, std::chrono::seconds(10)))
