@@ -127,8 +127,6 @@ void noteLayoutActivity();
 // An easter egg GIF's character: its base name (up to the first '.') before the last '_' ("llama-coat" for
 // "llama-coat_A.gif.enc"), or the whole base name when it has no '_'.
 [[nodiscard]] QString easterEggCharacter(const QString& gif_path);
-// A random GIF of `pool` among the variants of `character`; any GIF of `pool` when none matches (the user's first
-// easter egg, or a character no longer shipped). Empty only when `pool` is.
 // The encrypted easter egg files: resource paths on the desktop; in the browser, file names for the fetch hook
 // (setEasterEggFetch), and none until it is set.
 [[nodiscard]] QStringList easterEggPool();
@@ -146,6 +144,8 @@ void setEasterEggFetch(EasterEggFetch fetch);
 // Encrypts or decrypts (the same XOR) an easter egg file: a SHA-256 counter keystream over `key` and the file `name`.
 // scripts/pack_easter_eggs.py implements the same cipher; the two must stay byte-identical.
 [[nodiscard]] QByteArray easterEggCipher(QByteArray data, const QByteArray& key, const QString& name);
+// A random GIF of `pool` among the variants of `character`; any GIF of `pool` when none matches (the user's first
+// easter egg, or a character no longer shipped). Empty only when `pool` is.
 [[nodiscard]] QString pickEasterEggGif(const QStringList& pool, const QString& character);
 
 }  // namespace PJ

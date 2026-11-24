@@ -194,7 +194,10 @@ class IdleEasterEgg : public QObject {
     easterEggFetch()(path_, this, [this](const QByteArray& encrypted) {
       fetching_ = false;
       gif_ = decryptEasterEgg(encrypted, path_);
-      show();
+      // Layout activity during the download restarted the countdown: its timeout shows the GIF.
+      if (!idle_.isActive()) {
+        show();
+      }
     });
 #else
     gif_ = loadEasterEgg(path_);

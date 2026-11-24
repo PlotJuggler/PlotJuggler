@@ -23,12 +23,12 @@
 # package as a release: stamped with the tag's version and the
 # PJ_EASTER_EGG_KEY secret, with its GPL-3.0 source offer (sources/), and the
 # wasm-release job attaches it to the tag's GitHub Release as
-# PlotJuggler4-web-bundle.zip once the Chromium suite passes. A manual run
-# builds the same archive as the wasm-release artifact, without the Release
-# upload, like the other release workflows. The name carries
-# no version, so releases/latest/download/PlotJuggler4-web-bundle.zip is a
-# stable link. The hosted app (app.plotjuggler.io) is still deployed by hand
-# (packaging/web/README.md).
+# PlotJuggler4-web-bundle.zip once the Chromium suite passes. The name carries
+# no version, so releases/latest/download/PlotJuggler4-web-bundle.zip reaches
+# the latest release's copy once that job has finished. A manual run on a
+# branch builds the same archive as the wasm-release artifact, without the
+# Release upload, like the other release workflows. The hosted app
+# (app.plotjuggler.io) is still deployed by hand (packaging/web/README.md).
 name: WASM CI
 
 on:
@@ -77,6 +77,10 @@ jobs:
     runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     # Generous ceiling for a cold run (Qt + emsdk + ccache); warm runs take 20-30 minutes.
     timeout-minutes: 120
+    env:
+      # Tags only: CMake stamps the binary with it and package_wasm.mjs the manifest and loading page. Empty means
+      # versions.env's.
+      PJ_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
     steps:
       - name: Free up runner disk space
@@ -202,9 +206,8 @@ jobs:
       - name: Build production package (shipped defaults, probes off)
         shell: bash
         env:
-          # Release archives only (tags and manual runs): the tag's version, and the key that decrypts the empty-dock
-          # easter egg GIFs (pj_widgets). Empty values leave versions.env's version and no key.
-          PJ_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          # Release archives only (tags and manual runs): the key that decrypts the empty-dock easter egg GIFs
+          # (pj_widgets). Empty means no key.
           PJ_EASTER_EGG_KEY: >-
             ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && secrets.PJ_EASTER_EGG_KEY || '' }}
         run: |
@@ -274,6 +277,13 @@ jobs:
           cp LICENSE build-wasm-prod/deploy/LICENSE
           for f in LICENSE THIRD_PARTY_NOTICES.txt sources/SOURCE-OFFER.txt; do
             test -s "build-wasm-prod/deploy/${f}" || { echo "::error::the web bundle has no ${f}"; exit 1; }
+          done
+          # The bundle fetches each easter egg GIF by name from the asset host (pj_app/src/main.cpp): one missing or
+          # stale there never shows.
+          for f in resources/gif/*.gif.enc; do
+            url="https://assets.plotjuggler.io/v1/gif/$(basename "${f}")"
+            remote=$(curl -fsSL "${url}" | sha256sum | cut -d' ' -f1) || remote=missing
+            [ "${remote}" = "$(sha256sum "${f}" | cut -d' ' -f1)" ] || { echo "::error::${url} does not serve ${f}"; exit 1; }
           done
           (cd build-wasm-prod/deploy && zip -qr ../PlotJuggler4-web-bundle.zip .)
 
