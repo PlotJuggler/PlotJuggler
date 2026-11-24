@@ -231,7 +231,7 @@ The packager refuses, before writing anything:
   an `id`/`title`/`description`/`layout`/`thumbnail` that is not a string, or a
   `listed` that is not a boolean), or
   naming a relative `layout`/`thumbnail` the tree does not deploy (absolute
-  http(s) references pass: they live elsewhere);
+  http(s) references pass: they live elsewhere; an empty thumbnail is none);
 - **symbolic links** — they can point outside the tree, to a relative `..` or
   an absolute target, so they are refused rather than followed;
 - **names outside the segment rule** — dotfiles and dot folders (`.git`,
