@@ -1,0 +1,139 @@
+# SPDX-License-Identifier: MPL-2.0
+# Proposes the newest pj-official-plugins commit as the browser build's pin
+# (cmake/PjWasmDependencies.cmake, bumped by scripts/bump_wasm_plugins.sh) in one PR at a time: nothing
+# happens while a PR from bot/wasm-plugins-pin is open, and nothing is merged automatically.
+#
+# A PR made with GITHUB_TOKEN gets no checks, because a push or PR made with it starts no workflow, and a
+# dispatched WASM CI run does not attach to the PR's check list either. The run is therefore linked in a PR
+# comment, and the PR must not merge before that run is green.
+#
+# Requires the repo setting "Allow GitHub Actions to create and approve pull requests"
+# (Settings -> Actions -> General) for the PR step.
+name: WASM plugins pin
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: pj-official-plugins branch, tag or full commit sha to pin (main only ever moves forward)
+        default: main
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: wasm-plugins-pin
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: bot/wasm-plugins-pin
+      PLUGINS_REPO: PlotJuggler/pj-official-plugins
+      PLUGINS_REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Stop while a bot PR is open
+        id: open
+        run: |
+          set -euo pipefail
+          # --head matches the branch name of fork PRs too: only a PR from this repository counts.
+          url="$(gh pr list --head "${BRANCH}" --state open --limit 100 --json url,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not)][0].url // empty')"
+          [ -z "${url}" ] || echo "${url} is open: nothing to do until it is merged or closed"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout main
+        if: steps.open.outputs.url == ''
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Bump the pin
+        id: bump
+        if: steps.open.outputs.url == ''
+        run: |
+          set -euo pipefail
+          out="$(scripts/bump_wasm_plugins.sh "${PLUGINS_REF}")"
+          read -r old new <<<"${out}"
+          if [ "${old}" = "${new}" ]; then
+            echo "pin already at ${new}"
+            exit 0
+          fi
+          gh api "repos/${PLUGINS_REPO}/compare/${old}...${new}?per_page=100" > "${RUNNER_TEMP}/compare.json"
+          status="$(jq -r .status "${RUNNER_TEMP}/compare.json")"
+          if [ "${PLUGINS_REF}" = main ] && [ "${status}" != ahead ]; then
+            echo "plugins main is ${status} the pin ${old}: not proposing ${new}"
+            exit 0
+          fi
+          { echo "old=${old}"; echo "new=${new}"; echo "short=${new:0:10}"; echo "status=${status}"; } >> "${GITHUB_OUTPUT}"
+
+      - name: Write the pull request body
+        if: steps.bump.outputs.new != ''
+        env:
+          OLD: ${{ steps.bump.outputs.old }}
+          NEW: ${{ steps.bump.outputs.new }}
+          STATUS: ${{ steps.bump.outputs.status }}
+        run: |
+          set -euo pipefail
+          compare="${RUNNER_TEMP}/compare.json"
+          total="$(jq .total_commits "${compare}")"
+          listed="$(jq '.commits | length' "${compare}")"
+          {
+            echo "The browser build's \`pj-official-plugins\` pin moves from \`${OLD}\` to \`${NEW}\`."
+            echo
+            if [ "${STATUS}" != ahead ]; then
+              echo "\`${PLUGINS_REF}\` is **${STATUS}** the current pin, so this bump does not move forward."
+              echo
+            fi
+            echo "Plugin commits in between ([compare](https://github.com/${PLUGINS_REPO}/compare/${OLD}...${NEW})):"
+            echo
+            echo '~~~text'
+            jq -r '.commits[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"' "${compare}"
+            [ "${listed}" -gt 0 ] || echo "(no commits)"
+            [ "${total}" -le "${listed}" ] || echo "+$((total - listed)) more"
+            echo '~~~'
+            echo
+            echo "CI does not attach to PRs opened by a workflow: the WASM CI run linked in the comment below must be" \
+              "green before this merges. There is no auto-merge."
+          } > "${RUNNER_TEMP}/body.md"
+
+      - name: Open the pull request
+        id: cpr
+        if: steps.bump.outputs.new != ''
+        uses: peter-evans/create-pull-request@v7
+        with:
+          add-paths: cmake/PjWasmDependencies.cmake
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          branch: ${{ env.BRANCH }}
+          commit-message: "build(wasm): official plugins at ${{ steps.bump.outputs.short }}"
+          title: "build(wasm): official plugins at ${{ steps.bump.outputs.short }}"
+          body-path: ${{ runner.temp }}/body.md
+
+      - name: Run WASM CI on the branch and link the run
+        if: steps.cpr.outputs.pull-request-operation == 'created'
+        env:
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+          HEAD_SHA: ${{ steps.cpr.outputs.pull-request-head-sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run wasm-ci.yml --ref "${BRANCH}"
+          run_url=""
+          for _ in $(seq 12); do
+            sleep 5
+            run_url="$(gh run list --workflow wasm-ci.yml --branch "${BRANCH}" --event workflow_dispatch \
+              --limit 10 --json url,headSha --jq "[.[] | select(.headSha == \"${HEAD_SHA}\")][0].url // empty")"
+            [ -z "${run_url}" ] || break
+          done
+          if [ -z "${run_url}" ]; then
+            run_url="${GITHUB_SERVER_URL}/${GH_REPO}/actions/workflows/wasm-ci.yml?query=branch%3A${BRANCH//\//%2F}"
+            echo "the dispatched run did not show up in a minute; linking the branch's runs instead"
+          fi
+          gh pr comment "${PR}" --body "WASM CI on this branch: ${run_url}"
