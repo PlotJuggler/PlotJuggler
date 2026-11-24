@@ -1143,7 +1143,7 @@ class MainWindow : public QMainWindow {
   // An on-demand recipe's object topic or a transform output. Only the Custom Topics editor's rows are deleted;
   // another owner's is refused with a warning (the backstop behind the panel's disabled action).
   void deleteCustomTopic(const QString& catalog_key);
-  // Each recipe once, however many of its rows are among `catalog_keys`, then the transform outputs.
+  // Each recipe and each transform once, however many of its rows are among `catalog_keys`.
   void deleteCustomTopics(const QStringList& catalog_keys);
   // Confirms when other recipes read it (they stay, missing their input). A non-exempt removal is one undo step.
   void deleteOnDemandRecipe(const std::string& key);

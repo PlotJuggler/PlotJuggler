@@ -1370,8 +1370,10 @@ QString RobotModelLayer::loadFailureClause() const {
   // Per mesh reference, like the loaded/total count beside it (links sharing a file each count); then the files.
   QStringList files;
   for (const auto& [key, error] : mesh_errors_) {
-    const QString path = QString::fromStdString(key);
-    files.push_back(path.mid(path.lastIndexOf(u'/') + 1));
+    // A URL's query or fragment can carry a token: only the file name is shown.
+    const QString path =
+        QDir::fromNativeSeparators(QString::fromStdString(key)).section(u'?', 0, 0).section(u'#', 0, 0);
+    files.push_back(path.section(u'/', -1));
   }
   files.sort();
   constexpr qsizetype kNamedFiles = 3;

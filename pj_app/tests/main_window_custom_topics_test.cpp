@@ -415,7 +415,7 @@ return { id="split", name="Split",
     EXPECT_TRUE(row->text(0) == u"pair/a"_s || row->text(0) == u"pair/b"_s) << row->text(0).toStdString();
   }
 
-  // Deleting its rows together removes the transform once; the rows after the first find it gone.
+  // Deleting its rows together removes the transform once; the rows after the first are skipped.
   MainWindowCustomTopicsTestPeer::deleteCustomTopics(fx.window, keys);
   EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty());
   for (const QString& key : keys) {
