@@ -1863,6 +1863,24 @@ bool parserEnsureField(
   });
 }
 
+bool parserSetFieldMetadata(
+    void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
+    auto [core, engine_locks] = pinCore(*impl);
+    // The parser is bound to one topic: a handle for another topic is not its to modify.
+    if (field.topic.id != impl->topic.id) {
+      propagateError(out_error, "set_field_metadata: field does not belong to the parser's bound topic");
+      return false;
+    }
+    if (!core->setFieldMetadata(field, toStringView(metadata_json))) {
+      propagateError(out_error, core->lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
 bool parserAppendRecord(
     void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields, uint64_t field_count,
     PJ_error_t* out_error) noexcept {
@@ -1938,6 +1956,30 @@ bool toolboxEnsureField(
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
     if (!impl->core.write.ensureField(topic, toStringView(field_name), type, out_field)) {
+      propagateError(out_error, impl->core.write.lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+bool toolboxSetFieldMetadata(
+    void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    if (!impl->core.write.setFieldMetadata(field, toStringView(metadata_json))) {
+      propagateError(out_error, impl->core.write.lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+bool toolboxSetTopicMetadata(
+    void* ctx, TopicHandle topic, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    if (!impl->core.write.setTopicMetadata(topic, toStringView(metadata_json))) {
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
@@ -2608,6 +2650,7 @@ const PJ_parser_write_host_vtable_t kParserWriteVTable = {
     PJ_PLUGIN_DATA_API_VERSION, sizeof(PJ_parser_write_host_vtable_t),
     parserEnsureField,          parserAppendRecord,
     parserAppendBoundRecord,    parserAppendArrowStream,
+    parserSetFieldMetadata,
 };
 
 const PJ_toolbox_host_vtable_t kToolboxVTable = {
@@ -2626,6 +2669,8 @@ const PJ_toolbox_host_vtable_t kToolboxVTable = {
     toolboxRegisterObjectTopicOnDataset,
     toolboxSetObjectTopicRetention,
     toolboxAcquireCatalogSnapshotV2,
+    toolboxSetFieldMetadata,
+    toolboxSetTopicMetadata,
 };
 
 const PJ_object_write_host_vtable_t kSourceObjectWriteVTable = {

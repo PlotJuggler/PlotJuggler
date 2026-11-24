@@ -13,6 +13,7 @@
 #include "pj_base/dataset.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_datastore/topic_storage.hpp"
 
@@ -234,6 +235,59 @@ TEST_F(FieldMetadataTest, TopicMetadataSurvivesClearingTheTopicChunks) {
     engine.getTopicStorage(topic.id)->clearChunks();
   }
   EXPECT_EQ(topicMetadata(topic), json);
+}
+
+TEST_F(FieldMetadataTest, ParserHostStoresFieldMetadataOnItsBoundTopic) {
+  const auto ax = field("ax");
+  DatastoreParserWriteHost parser_impl(engine, PJ_topic_handle_t{topic.id});
+  sdk::ParserWriteHostView parser(parser_impl.raw());
+  ASSERT_TRUE(parser.supportsFieldMetadata());
+
+  const std::string json = sdk::FieldMetadataBuilder().description("parsed ax").build();
+  ASSERT_TRUE(parser.setFieldMetadata(ax, json).has_value());
+  EXPECT_EQ(metadata(ax), json);
+
+  ASSERT_TRUE(parser.setFieldMetadata(ax, "{}").has_value());
+  EXPECT_TRUE(metadata(ax).empty());
+}
+
+TEST_F(FieldMetadataTest, ParserHostRejectsBadDocumentsAndForeignTopics) {
+  const auto ax = field("ax");
+  const auto other_topic = *writer->ensureTopic("gps");
+  const auto other_field = *writer->ensureField(other_topic, "lat", PrimitiveType::kFloat64);
+  DatastoreParserWriteHost parser_impl(engine, PJ_topic_handle_t{topic.id});
+  sdk::ParserWriteHostView parser(parser_impl.raw());
+
+  const std::string kept = R"({"description":"kept"})";
+  ASSERT_TRUE(parser.setFieldMetadata(ax, kept).has_value());
+  EXPECT_FALSE(parser.setFieldMetadata(ax, "not json").has_value());
+  EXPECT_EQ(metadata(ax), kept);
+
+  EXPECT_FALSE(parser.setFieldMetadata(other_field, kept).has_value());
+  EXPECT_TRUE(metadata(other_field).empty());
+}
+
+TEST_F(FieldMetadataTest, ToolboxHostStoresFieldAndTopicMetadata) {
+  ObjectStore object_store;
+  DatastoreToolboxHost toolbox_impl(engine, object_store);
+  sdk::ToolboxHostView toolbox(toolbox_impl.raw());
+  ASSERT_TRUE(toolbox.supportsFieldMetadata());
+  ASSERT_TRUE(toolbox.supportsTopicMetadata());
+
+  const auto source = *toolbox.createDataSource("derived");
+  const auto derived_topic = *toolbox.ensureTopic(source, "filtered");
+  const auto derived_field = *toolbox.ensureField(derived_topic, "x", PrimitiveType::kFloat64);
+
+  const std::string field_json = sdk::FieldMetadataBuilder().description("filtered x").build();
+  const std::string topic_json = sdk::FieldMetadataBuilder().description("filter output").build();
+  ASSERT_TRUE(toolbox.setFieldMetadata(derived_field, field_json).has_value());
+  ASSERT_TRUE(toolbox.setTopicMetadata(derived_topic, topic_json).has_value());
+  EXPECT_EQ(metadata(derived_field), field_json);
+  EXPECT_EQ(topicMetadata(derived_topic), topic_json);
+
+  EXPECT_FALSE(toolbox.setFieldMetadata(derived_field, "not json").has_value());
+  EXPECT_FALSE(toolbox.setTopicMetadata(sdk::TopicHandle{.id = 9999}, "{}").has_value());
+  EXPECT_EQ(metadata(derived_field), field_json);
 }
 
 }  // namespace
