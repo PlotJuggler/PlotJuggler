@@ -105,6 +105,9 @@ constexpr std::array kPreferenceRules{
     PreferenceRule{"MainWindow.cloudSource", ValueKind::kShortIdentifier},
     PreferenceRule{"CurveListPanel/show_topics", ValueKind::kBool},
     PreferenceRule{"CurveListPanel/show_values", ValueKind::kBool},
+    // VisualizationPlaceholderWidget's idle GIF schedule: an ISO date and a file-name stem, counted across visits.
+    PreferenceRule{"EasterEgg/next_date", ValueKind::kShortIdentifier},
+    PreferenceRule{"EasterEgg/character", ValueKind::kShortIdentifier},
 };
 
 const PreferenceRule* preferenceRule(const QString& key) {

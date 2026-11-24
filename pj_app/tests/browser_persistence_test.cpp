@@ -96,6 +96,8 @@ TEST(BrowserPersistencePolicy, DurablePreferenceAllowlistIsAnExactClosedSet) {
       u"MainWindow.cloudSource"_s,
       u"CurveListPanel/show_topics"_s,
       u"CurveListPanel/show_values"_s,
+      u"EasterEgg/next_date"_s,
+      u"EasterEgg/character"_s,
   };
 
   EXPECT_EQ(BrowserPersistence::durablePreferenceKeys(), expected);
