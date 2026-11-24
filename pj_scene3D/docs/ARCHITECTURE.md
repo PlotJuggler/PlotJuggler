@@ -784,7 +784,7 @@ An `sdk::MeshMap` (navigation, cost and semantic meshes with named face and vert
   completions never outlive the layer. assimp covers STL, DAE, OBJ and glTF; `MeshData` carries UV0, tangents and a
   glTF metallic-roughness `Material` per submesh; embedded glTF images are kept as encoded bytes keyed by content
   hash; a map that fails or is over budget leaves its slot empty, never the mesh.
-- **Rendering:** unit primitives scaled by the model matrix; an unresolved mesh draws a magenta unit cube.
+- **Rendering:** unit primitives scaled by the model matrix; an unresolved or failed mesh draws a magenta unit cube; one still loading draws nothing until it lands.
   Collision geometry without a material gets an orange tint, translucent below full opacity.
 - **Time contract:** `timeRange()` returns the inverted sentinel `{Timepoint::max(), Timepoint::min()}`, so a static
   decoration neither widens the timeline nor clamps the playhead; the dock skips inverted ranges.

@@ -7925,13 +7925,14 @@ void MainWindow::refreshCustomTopicsPanel() {
     custom_topic_transform_rows_.clear();
     // Not filtered by owner: a restored transform's plugin may not be loaded (the layout carries the script).
     const auto transforms = session_->sessionManager().dataProcessorService().transformRecipes();
-    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset. A
-    // grouped output ("t:a,b", one topic with a column per field) has no row, so the whole topic stays in Datasets.
+    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset. An
+    // output topic with several columns (a grouped "t:a,b") has no row: a row is one column, and the rest of the topic
+    // would stay in Datasets.
     for (const auto& recipe : transforms) {
-      if (DataProcessorService::materializedTopicNames(recipe) != recipe.outputs) {
-        continue;
-      }
       for (const TopicId output : recipe.output_topic_ids) {
+        if (catalog.scalarColumnKey(recipe.dataset_id, output, 1).has_value()) {
+          continue;
+        }
         if (const std::optional<QString> key = catalog.scalarColumnKey(recipe.dataset_id, output, 0)) {
           custom_topic_transform_rows_.push_back({.key = *key, .owner = QString::fromStdString(recipe.owner_plugin)});
         }

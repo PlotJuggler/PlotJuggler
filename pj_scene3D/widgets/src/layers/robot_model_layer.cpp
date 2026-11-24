@@ -595,6 +595,8 @@ void RobotModelLayer::rebuildDrawCalls() {
         if (mesh->resolved && meshReady(mesh->resolved_path)) {
           call.mesh_key = mesh->resolved_path;
           call.use_material = !explicit_color;
+        } else if (mesh->resolved && !mesh->resolved_path.empty() && !mesh_errors_.contains(mesh->resolved_path)) {
+          return;  // still loading: the placeholder means unresolved or failed (admitMesh rebuilds when it lands)
         } else {
           call.override_color = kPlaceholderColor;
         }

@@ -383,8 +383,8 @@ TEST(MainWindowCustomTopicsTest, ATransformRowIsItsOutputNotATopicOfTheSameName)
   EXPECT_EQ(findRowByKey(fx.tree->invisibleRootItem(), output_key), nullptr);
 }
 
-// A grouped output ("t:a,b", one topic with a column per field) stays whole in the Datasets tree, as it always was:
-// no column of it moves to Custom Topics on its own.
+// A grouped output ("t:a,b", one topic with a column per field) stays whole in the Datasets tree: no column of it
+// moves to Custom Topics on its own.
 TEST(MainWindowCustomTopicsTest, AGroupedTransformOutputStaysWholeInOneTree) {
   constexpr const char* kSplit = R"LUAU(-- pj-script: luau
 return { id="split", name="Split",

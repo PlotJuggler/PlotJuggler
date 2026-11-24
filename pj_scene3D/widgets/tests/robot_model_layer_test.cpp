@@ -542,8 +542,8 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
 }
 
 // A finished async URDF mesh load must itself request the repaint that consumes it (QFutureWatcher -> pollMeshLoads):
-// the app paints strictly on demand, so a result drained only inside render() would leave the magenta placeholder until
-// the user scrubbed. Only the event loop is pumped after attach() kicks the load.
+// the app paints strictly on demand, so a result drained only inside render() would leave the mesh undrawn until the
+// user scrubbed. Only the event loop is pumped after attach() kicks the load.
 TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -567,6 +567,33 @@ TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
   EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
+}
+
+// A mesh still loading draws nothing: the magenta placeholder means unresolved or failed, and a large model loading
+// one mesh after another would otherwise fill the view with unit cubes. The mesh draws once it arrives.
+TEST(RobotModelLayerTest, AMeshStillLoadingDrawsNoPlaceholder) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, resolvedMeshParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_EQ(layer.unresolvedMeshCount(), 0) << "fixture mesh must resolve";
+  ASSERT_EQ(layer.loadedMeshCount(), 0) << "the load is asynchronous";
+  for (const auto& call : layer.modelDrawCalls()) {
+    EXPECT_NE(call.mesh_key, "robot:placeholder") << "a loading mesh drew the failure placeholder";
+  }
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.loadedMeshCount() == 0 && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  ASSERT_EQ(layer.loadedMeshCount(), 1);
+  ASSERT_EQ(layer.modelDrawCalls().size(), 1U);
+  EXPECT_NE(layer.modelDrawCalls().front().mesh_key, "robot:placeholder");
 }
 
 // The "Ignore COLLADA up_axis" toggle must reload the model (the flip is baked into the loaded MeshData, so a bare
