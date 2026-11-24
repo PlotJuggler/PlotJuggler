@@ -990,11 +990,10 @@ const microduckReady = models => models.robots.live === 1 && models.robots.missi
   && models.robots.draws > 0 && /\b(\d+)\/\1 meshes/.test(models.robots.status[0]);
 
 // The Microduck sample's two derived series restored from the layout's <data_processors> (the numeric tilt and the
-// text state the State Transitions strip shows), its three plots, its two video cameras, and its robot walking in 3D.
+// text state the State Transitions strip shows), its tilt plot (which also shows the fall markers of the layout's
+// Marker Editor rule), its two video cameras, and its robot walking in 3D.
 async function expectMicroduckViews(run) {
-  await expectPlots(run, [
-    ['tilt_deg/value'], ['state/base_pos_z'], ['state/joint_vel_3', 'state/joint_vel_12'],
-  ]);
+  await expectPlots(run, [['tilt_deg/value']]);
   const from = run.messages.length;
   await run.page.evaluate(() => window.pjWasmReportToolboxTransformResultProbe());
   const outputs = () => run.messages.slice(from).map(message => message.match(/TOOLBOX_TRANSFORM key_b64=.* outputs_b64=(\S+)/))

@@ -189,21 +189,21 @@
    "sha256": "eae4bd0c8c0ebf8353def977313e2f0ad0bad72abbf7753ec99afd8c496aaf7f",
    "bytes": 28006
   },
-  "v1/microduck/README.txt": {
-   "sha256": "56676935d2386f19631bae4e0438e605ebe5941855904b24797e3440d89cc392",
-   "bytes": 1968
+  "v1/microduck/README_v2.txt": {
+   "sha256": "afea17376d3dd415fc612cd03c7cbe035ac0e69f9488a449932691fa3dabbcab",
+   "bytes": 2470
   },
-  "v1/microduck/microduck_layout.pj4.xml": {
-   "sha256": "6007e7b2b84b361c735863059c0dd53d772996e61a882d85ad04e889d5e850db",
-   "bytes": 11785
+  "v1/microduck/microduck_layout_v2.pj4.xml": {
+   "sha256": "c40cc9d8a11a004eb4ab43190db128103d4265c0789c21c77536cca4b7034c93",
+   "bytes": 12936
   },
-  "v1/microduck/microduck_thumbnail.png": {
-   "sha256": "265b163190530ccc989713045a4ed14fa808ef177e4d70947af90b6039892d97",
-   "bytes": 20508
+  "v1/microduck/microduck_thumbnail_v2.png": {
+   "sha256": "9ad465062d1556f00ed1515953d1b64bc3f84dbc86dbc8803d86ad82e7a234e9",
+   "bytes": 17812
   },
-  "v1/microduck/microduck_walk.mcap": {
-   "sha256": "2beaf3dfef8fb58971468814d4c500b63a4519ed54a74a77b2994584cf377141",
-   "bytes": 6282516
+  "v1/microduck/microduck_walk_v2.mcap": {
+   "sha256": "a3d614d42a77dea9f14744f6d66983b8588127def1f0de9e4c661c9273837c1e",
+   "bytes": 6676989
   },
   "v1/microduck_description/LICENSE": {
    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
