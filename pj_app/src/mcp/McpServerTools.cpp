@@ -136,7 +136,8 @@ const std::array<QString, 6> kLayoutConfigTags = {u"plugin"_s, u"materialize"_s,
                                                   u"config"_s, u"processor"_s,   u"params"_s};
 
 /// Why `doc`, which parsed, cannot be loaded for an agent; empty when it can: not a PJ4 layout, or a configuration
-/// still holding a secret save_layout's text redacted, which would otherwise be applied as the sentinel itself.
+/// holding mcp::kRedacted where save_layout's text redacts a secret (mcp::holdsRedactedSecret), which would otherwise
+/// be applied as the sentinel itself. Text that is not JSON is not checked: redaction never wrote it.
 QString notALayout(const QDomDocument& doc, const QString& name) {
   const QDomElement root = doc.documentElement();
   if (root.tagName() != "root"_L1 || root.firstChildElement(u"tabbed_widget"_s).isNull()) {
@@ -145,10 +146,16 @@ QString notALayout(const QDomDocument& doc, const QString& name) {
   for (const QString& tag : kLayoutConfigTags) {
     const QDomNodeList elements = doc.elementsByTagName(tag);
     for (int index = 0; index < elements.size(); ++index) {
-      if (directCdataText(elements.at(index).toElement()).contains(QLatin1StringView(mcp::kRedacted))) {
+      const json config = parseOrNull(directCdataText(elements.at(index).toElement()));
+      if (!config.is_discarded() && mcp::holdsRedactedSecret(config)) {
+#ifdef PJ_TARGET_WASM
+        return u"'%1' holds secrets that save_layout's text redacted (%2): put the real values in place of %2"_s.arg(
+            name, QString::fromLatin1(mcp::kRedacted));
+#else
         return u"'%1' holds secrets that save_layout's text redacted (%2): save_layout {path} writes a file that "
                u"keeps them, for load_layout {path}; or put the real values in place of %2"_s.arg(
                    name, QString::fromLatin1(mcp::kRedacted));
+#endif
       }
     }
   }
@@ -1333,7 +1340,8 @@ void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) 
     }
     // Checked like text once downloaded, before the user is asked.
     layout_download_->download(
-        url, [self = QPointer<McpServer>(this), caller, reply, url](QByteArray bytes, const QUrl&, QString error) {
+        url,
+        [self = QPointer<McpServer>(this), caller, reply, url](QByteArray bytes, const QUrl& final_url, QString error) {
           if (self == nullptr) {
             return;
           }
@@ -1352,7 +1360,8 @@ void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) 
             reply(fail(error.toStdString()));
             return;
           }
-          self->confirmLayoutLoad(std::move(*doc), name, {}, url, caller, reply);
+          // Relative Scene3D resources resolve where the layout came from, after any redirect.
+          self->confirmLayoutLoad(std::move(*doc), name, {}, final_url, caller, reply);
         });
     if (Job* job = liveJob(caller.job)) {
       job->kill = [self = QPointer<McpServer>(this), reply](bool) {

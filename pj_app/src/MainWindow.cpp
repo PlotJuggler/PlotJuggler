@@ -5544,7 +5544,7 @@ void MainWindow::loadLayoutDocument(
   // Asked only now: the report above can be a modal box, and a reload that finishes
   // under it signals no waiter, so a restore begun after it would wait forever.
   if (restoreHasPendingAsyncWork(reload_requested)) {
-    beginProgressiveLayoutRestore(doc, origin, restore_policy, streams.tracks);
+    beginProgressiveLayoutRestore(doc, origin, restore_policy, load, streams.tracks);
     return;
   }
   chooseLayoutDatasets(
@@ -6387,6 +6387,9 @@ void MainWindow::startBrowserReplayImports() {
     return;
   }
 
+  // The user committed to this layout: an agent's restore still waiting for its data must not take these imports
+  // for its own, as the desktop's reload supersedes before it enqueues.
+  supersedeActiveRestore();
   // Both die with the replay's receiver, so `replay` exists inside them. Other loads may run meanwhile.
   connect(
       file_loader_.get(), &FileLoader::fileLoadFailed, replay.receiver.get(),
@@ -6997,6 +7000,9 @@ bool MainWindow::applyBrowserRestoredLayout(
         this, tr("Load Layout"), tr("No data is loaded. Open a data source before applying this layout."));
     return false;
   }
+  // Commit point, as the desktop's: an agent's restore still waiting for its data would otherwise commit over this
+  // layout later (a no-op when this load's imports already superseded it).
+  supersedeActiveRestore();
 
   // kExact: an unresolved curve or scene fails and rolls back, never dropped silently. The duration log feeds
   // tests/wasm/presets.spec.js.
@@ -7126,7 +7132,8 @@ void MainWindow::restoreChromeAndPanels(
 }
 
 void MainWindow::beginProgressiveLayoutRestore(
-    QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks) {
+    QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy, quint64 load,
+    const LayoutTimelinePlan& stream_tracks) {
   cancelProgressiveLayoutRestore();
   progressive_stream_tracks_ = stream_tracks;
   if (layoutImportBatchActive() && batch_workspace_checkpoint_ != nullptr) {
@@ -7140,7 +7147,7 @@ void MainWindow::beginProgressiveLayoutRestore(
   // returned.
   progressive_missing_curve_policy_ = policy;
   progressive_layout_in_flight_ = true;
-  progressive_load_ = layout_loads_;
+  progressive_load_ = load;
   progressive_layout_doc_ = doc;
 
   bool applied = false;

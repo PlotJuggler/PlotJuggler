@@ -208,6 +208,21 @@ void redactIn(json& value, bool secret) {
   }
 }
 
+bool redactedIn(const json& value, bool secret) {
+  if (value.is_object()) {
+    for (auto it = value.begin(); it != value.end(); ++it) {
+      if (redactedIn(it.value(), secret || isSecretKey(it.key()))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (value.is_array()) {
+    return std::any_of(value.begin(), value.end(), [secret](const json& item) { return redactedIn(item, secret); });
+  }
+  return secret && value.is_string() && value.get_ref<const std::string&>() == kRedacted;
+}
+
 /// `value` without the keys naming a secret, at any depth.
 json withoutSecrets(const json& value) {
   if (value.is_object()) {
@@ -261,6 +276,10 @@ std::string restoreIn(json& given, const json* saved, const std::string& path, b
 json redactSecrets(json config) {
   redactIn(config, false);
   return config;
+}
+
+bool holdsRedactedSecret(const json& config) {
+  return redactedIn(config, false);
 }
 
 std::string restoreSecrets(json& given, const json& saved) {
@@ -326,12 +345,14 @@ namespace {
 #ifdef PJ_TARGET_WASM
 #define PJ_MCP_SAVE_LAYOUT_PATH ". path is refused: the page cannot write your disk, so save the returned xml yourself"
 #define PJ_MCP_LOAD_LAYOUT_PATH "; the page cannot read your disk: pass the file's text as xml"
+#define PJ_MCP_LOAD_LAYOUT_REDACTED "put the real values in"
 #define PJ_MCP_ABOUT_SOURCES ""
 // A page's file has no saved configuration an agent's call can match, so no secret to keep.
 #define PJ_MCP_OPEN_FILE_SECRETS "; pass a secret itself, never \"<redacted>\"."
 #else
 #define PJ_MCP_SAVE_LAYOUT_PATH ""
 #define PJ_MCP_LOAD_LAYOUT_PATH ""
+#define PJ_MCP_LOAD_LAYOUT_REDACTED "load the file save_layout wrote with path, or put the real values in"
 #define PJ_MCP_ABOUT_SOURCES "; about says what each one is"
 #define PJ_MCP_OPEN_FILE_SECRETS                                                                               \
   "; a \"<redacted>\" passed back in config keeps the value this file was loaded with, only when the rest of " \
@@ -563,10 +584,9 @@ json appToolEntries() {
           "already, without asking. If the workspace holds anything (a plot, a derived series, an open toolbox, "
           "undo history), the user is asked to confirm first (a job_id after wait_s while they decide; job_kill "
           "withdraws the question or stops the download, but a layout already applying completes). Refused while "
-          "another layout load runs, and for text still holding \"<redacted>\" (load the file save_layout wrote "
-          "with path, or put the real values in). Your tabs and series in it come back as yours. Returns loaded "
-          "and the app's "
-          "warnings (missing data, a relative path, a newer format), or its error.",
+          "another layout load runs, and for a secret still reading \"<redacted>\" (" PJ_MCP_LOAD_LAYOUT_REDACTED
+          "). Your tabs and series in it come back as yours. Returns loaded and the app's warnings (missing data, a "
+          "relative path, a newer format), or its error.",
           schema(
               {{"xml", described(str, "the layout's whole text")},
                {"path", described(str, "absolute path of a layout file")},
@@ -578,6 +598,7 @@ json appToolEntries() {
 
 #undef PJ_MCP_SAVE_LAYOUT_PATH
 #undef PJ_MCP_LOAD_LAYOUT_PATH
+#undef PJ_MCP_LOAD_LAYOUT_REDACTED
 #undef PJ_MCP_ABOUT_SOURCES
 #undef PJ_MCP_OPEN_FILE_SECRETS
 

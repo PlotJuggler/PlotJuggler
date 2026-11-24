@@ -111,7 +111,7 @@ class MainWindowHistoryTestPeer {
         std::move(doc),
         MainWindow::LayoutOrigin{
             .name = u"/tmp/progressive-test.pj4.xml"_s, .file_path = u"/tmp/progressive-test.pj4.xml"_s, .url = {}},
-        MainWindow::MissingCurvePolicy::kPrompt);
+        MainWindow::MissingCurvePolicy::kPrompt, window.nextLayoutLoad());
   }
 
   static void drainProgressiveRestore(MainWindow& window) {

@@ -574,39 +574,46 @@ dock with no state).
   byte (a stream's configuration text is how a load finds it running). In the browser `path` is refused: the page
   cannot write the agent's disk.
 - **Load.** One of `xml`, `path` or `url`, each parsed and checked to be a layout (a `<root>` holding a
-  `<tabbed_widget>`) whose configurations hold no `mcp::kRedacted` before anyone is asked. A redacted secret would be
-  applied as the sentinel itself (a stream would not match the running one, and a second session would start with
-  `<redacted>` as its password), so the refusal says to round-trip through `save_layout {path}` and
-  `load_layout {path}`, whose file keeps the secrets, or to put the real values in. Text is parsed as a QString, so an
-  encoding declaration in it is ignored; a file
-  through `MainWindow::readLayoutFile`; a `url` once `PresetController` has downloaded it (only the layout: data files
-  beside it are not fetched). The parsed document goes to `MainWindow::loadLayoutForAgent`, the body of
+  `<tabbed_widget>`) with no redacted secret before anyone is asked: no configuration (the tags save's text redacts)
+  holds `mcp::kRedacted` where redaction puts it, a string under a key naming a secret (`mcp::holdsRedactedSecret`). A
+  redacted secret would be applied as the sentinel itself (a stream would not match the running one, and a second
+  session would start with `<redacted>` as its password), so the refusal says to round-trip through
+  `save_layout {path}` and `load_layout {path}`, whose file keeps the secrets, or (in the browser, which has neither)
+  to put the real values in. The sentinel under any other key is a value like any other, and text that is not JSON is
+  not checked. Text is parsed as a QString, so an encoding declaration in it is ignored; a file through
+  `MainWindow::readLayoutFile`; a `url` once `PresetController` has downloaded it (only the layout: data files beside it
+  are not fetched). The parsed document goes to `MainWindow::loadLayoutForAgent`, the body of
   `loadLayoutFromPath` past its read (`loadLayoutDocument`) as `--layout` runs it
   (`LayoutLoadInteractivity::kAutomated`): the layout's data files and streams load when not loaded already, missing
   curves are kept and reported, and no dialog opens. Its `LayoutOrigin` names it in messages (`xml`, the URL, the path)
   and, for a file only, gives the folder relative paths and Scene3D resources resolve against and the recent-layout
   entry (the cleaned absolute path). Text and a URL have no folder: a relative data path in them is reported
   (`relative-path-unresolved`) and binds nothing. A URL anchors the layout's relative Scene3D resources (robot models
-  and their package roots); in text a relative one fails the load. In the browser `path` is refused (pass the file's
-  text).
+  and their package roots) where the download ended, after any redirect, while messages name the URL asked for; in
+  text a relative one fails the load. In the browser `path` is refused (pass the file's text).
 - **One load at a time.** The diagnostics a reply quotes do not say which load reported them, so `load_layout` is
   refused as busy while an agent's load runs (from its checks to its reply) or `MainWindow::layoutLoadInFlight` (a
   progressive restore waiting for its data, a browser pick or URL load). The check is repeated when a download ends,
   before the user is asked, and once they have answered. A download that ends while the user has a modal dialog open
   is refused as a call under it is.
 - **Whose end.** `layoutRestoreSettled` carries the id of the load that ended (`MainWindow::nextLayoutLoad`, read
-  just before `loadLayoutForAgent`), and the reply takes only its own. The user's own load supersedes an agent's
-  progressive restore (as it would their own); the superseded restore settles false with a "Layout" diagnostic
-  (`layout-superseded`), so the agent hears its layout was not loaded, and the user's load settles on its own.
+  just before `loadLayoutForAgent`), and the reply takes only its own. A load keeps the id it took on entry through
+  its questions, so a load started from one of their nested event loops never takes it. The user's own load
+  supersedes an agent's progressive restore (as it would their own) at its commit point: on the desktop before a
+  reload enqueues or the sync apply; in the browser before a source-bound layout's imports start or the apply. The
+  superseded restore settles false with a "Layout" diagnostic (`layout-superseded`), so the agent hears its layout was
+  not loaded, and the user's load settles on its own.
 - **The user's consent.** Unlike every other tool, a load replaces the user's tabs and derived series. When
   `MainWindow::layoutLoadWouldDiscardWork` says the workspace holds anything (a dock holding a plot or a widget, a
   derived series, object or marker rule, an open toolbox, undo history), the user is asked first ("Replace" /
   "Cancel"), as a job: past `wait_s` the agent gets its job id, `job_kill` withdraws the question, and a call that
   hangs up withdraws it too. Cancel loads nothing. A workspace with nothing in it is replaced without asking.
-- **Stopping.** `job_kill` withdraws the question or cancels the download, and the job ends `killed`. Once the
-  layout applies it cannot be stopped halfway (a restore waiting for its files would leave their data behind a
-  workspace that no longer shows it): the stop is declined at once, its answer (the job's status, whose progress says
-  the load completes) comes without waiting, and the job ends with the load's own outcome.
+- **Stopping.** `job_kill` withdraws the question or cancels the download, and the job ends `killed`; a stop that
+  reaches the job just before the user's answer is handled wins too, since the answer asks `stillAuthorized`, which
+  refuses a job being stopped. Once the layout applies it cannot be stopped halfway (a restore waiting for its files
+  would leave their data behind a workspace that no longer shows it): the stop is declined at once, its answer (the
+  job's status, whose progress says the load completes) comes without waiting, and the job ends with the load's own
+  outcome.
 - **The answer** is `loaded` and the warnings reported meanwhile (every "Layout" diagnostic at warning level or
   above, such as a newer `pj4_version`, a data file that is gone, a relative path, curves the data lacks or a dataset
   chosen for the layout, and a layout data file's "File Loader" load failure), each once; the apply failure's
@@ -756,6 +763,8 @@ dock with no state).
   name a file on this machine or start a stream; an agent's own `xml` can carry the same.
 - A layout's `owner_plugin` and transform owners are taken as written: text an agent passes can name another
   client's tabs and series as theirs.
+- `save_layout`'s text drops a `<config>`, `<processor>` or `<params>` whose text is not JSON: redaction cannot see
+  into it, so keeping it could hand the agent a secret. The file at `path` keeps it.
 - `widget_state` lists only what a parser checks. A value set from data (a point cloud's colour field, a frame name)
   is reported as `text`: the agent learns the field names from `describe_topic`, not from `get`. A Custom Widget
   plugin's state is opaque to the host and reports no options; its `set_widget_state` is not validated before the plugin's own

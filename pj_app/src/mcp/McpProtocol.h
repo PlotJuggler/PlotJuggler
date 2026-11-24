@@ -121,6 +121,10 @@ inline constexpr char kRedacted[] = "<redacted>";
 /// by kRedacted, at any depth; every string inside an object or array under such a key too.
 [[nodiscard]] nlohmann::json redactSecrets(nlohmann::json config);
 
+/// Whether `config` holds kRedacted where redactSecrets puts it: a string under a key naming a
+/// secret, at any depth. A kRedacted under any other key is a value like any other.
+[[nodiscard]] bool holdsRedactedSecret(const nlohmann::json& config);
+
 /// Replaces each kRedacted string in `given` with the string at the same key path in `saved`, only
 /// when `given` without its secret keys equals `saved` without them: a saved secret never goes to a
 /// changed host, server or entry. Returns "" when filled (or when `given` holds no kRedacted), else

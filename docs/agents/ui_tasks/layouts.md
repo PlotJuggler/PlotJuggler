@@ -67,9 +67,9 @@ cursor), "Preserve Topic Name" and "Remove all Datasets", which asks nothing and
   URL have no folder, so their data paths must be absolute: a relative one is reported. When the workspace holds
   anything (a plot, a derived series, an open toolbox, undo history) the user is asked first ("Load Layout":
   "Replace" / "Cancel"). Refused while another layout load runs or the user has a dialog open, and for text still
-  holding `<redacted>`: load the file `save_layout` wrote with `path` (it keeps the secrets), or put the real values
-  in. The user's own layout load replaces an agent's that still waits for its data; the agent is told it was not
-  loaded. An agent's tabs and series come back as that agent's.
+  holding `<redacted>` in place of a secret: load the file `save_layout` wrote with `path` (it keeps the secrets), or
+  put the real values in (the only way in the browser). The user's own layout load replaces an agent's that still
+  waits for its data; the agent is told it was not loaded. An agent's tabs and series come back as that agent's.
 - **Gotchas:** a layout dropped onto the window is treated as a data file and fails: use Load Layout. A layout naming
   several datasets is never asked about; its curves bind only to the files it names.
 

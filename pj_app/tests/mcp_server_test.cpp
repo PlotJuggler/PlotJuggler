@@ -57,6 +57,7 @@
 #include "PreferencesDialog.h"
 #include "StreamingSourceManager.h"
 #include "dataset_test_helpers.h"
+#include "in_process_widget_plugin.h"
 #include "mcp/McpBrowserLink.h"
 #include "mcp/McpProtocol.h"
 #include "mcp/McpServer.h"
@@ -227,6 +228,10 @@ class McpTestPeer {
   /// File → Load Layout's load of `path`, past its dialog.
   static void loadLayoutAsTheUser(MainWindow& window, const QString& path) {
     window.loadLayoutFromPath(path, MainWindow::LayoutLoadInteractivity::kInteractive);
+  }
+  /// A --layout load of `path`: no dialog opens.
+  static void loadLayoutUnattended(MainWindow& window, const QString& path) {
+    window.loadLayoutFromPath(path, MainWindow::LayoutLoadInteractivity::kAutomated);
   }
   /// A load_layout holds the server, from its checks to its reply.
   [[nodiscard]] static bool layoutLoadBusy(const McpServer& server) {
@@ -1867,6 +1872,61 @@ TEST_F(McpLayoutTest, SaveLayoutTextRedactsADerivedSeriesSecretParams) {
   EXPECT_NE(loaded.find(PJ::mcp::kRedacted), std::string::npos) << loaded;
 }
 
+// A "<redacted>" under a key that names no secret is a value like any other, never taken for a redacted secret: a
+// derived series whose label reads it saves to a file and loads back from it, and from save_layout's text.
+TEST_F(McpLayoutTest, ASentinelValueUnderAKeyThatIsNoSecretLoads) {
+  ASSERT_NE(loadMock(), 0);
+  const auto [added, add_error] = result(call(
+      "add_script_series", {{"name", "labelled"},
+                            {"inputs", {"mock/file_data/value"}},
+                            {"params", {{"label", PJ::mcp::kRedacted}, {"gain", 2}}},
+                            {"script",
+                             "return { name = \"labelled\", create = function(params) return { calculate = "
+                             "function(t, v) return v * params.gain end } end }"}}));
+  ASSERT_FALSE(add_error) << added;
+  const QString path = data_.filePath(u"labelled.pj4.xml"_s);
+  ASSERT_FALSE(result(call("save_layout", {{"path", path.toStdString()}})).second);
+  ASSERT_NE(readAll(path).find(PJ::mcp::kRedacted), std::string::npos);
+
+  bool replaced_file = false;
+  const auto [from_file, file_error] =
+      result(call("load_layout", {{"path", path.toStdString()}}, clicker(u"Replace"_s, replaced_file)));
+  EXPECT_FALSE(file_error) << from_file;
+  const std::string text = layoutText();
+  ASSERT_NE(text.find(PJ::mcp::kRedacted), std::string::npos) << text;
+  bool replaced_text = false;
+  const auto [from_text, text_error] =
+      result(call("load_layout", {{"xml", text}}, clicker(u"Replace"_s, replaced_text)));
+  EXPECT_FALSE(text_error) << from_text;
+}
+
+// A Custom Widget's configuration is redacted in save_layout's text as a plugin's is, its other settings kept; the file
+// keeps the secret.
+TEST_F(McpLayoutTest, SaveLayoutTextRedactsACustomWidgetsSecret) {
+  pj_cw_test::g = pj_cw_test::PluginStats{};
+  ASSERT_TRUE(window_->appSession().extensionCatalog().pluginCatalog().registerStaticWidget(pj_cw_test::goodVtable()));
+  ASSERT_NE(loadMock(), 0);
+  const std::string widget_layout =
+      R"(<?xml version='1.0' encoding='UTF-8'?><root format="PlotJuggler" pj4_version="4">)"
+      R"(<tabbed_widget parent="main_window"><Tab id="t1" containers="1"><Container><DockArea id="a1" name="Widget">)"
+      R"(<CustomWidget plugin="test_widgets" type="gauge" plugin_version="1.2.3">)"
+      R"(<config><![CDATA[{"unit":"km","api_token":"s3cret"}]]></config></CustomWidget>)"
+      R"(</DockArea></Container></Tab></tabbed_widget></root>)";
+  bool replaced_it = false;
+  const auto [loaded, load_error] =
+      result(call("load_layout", {{"xml", widget_layout}}, clicker(u"Replace"_s, replaced_it)));
+  ASSERT_FALSE(load_error) << loaded;
+  ASSERT_NE(pj_cw_test::g.last_config.find("s3cret"), std::string::npos) << pj_cw_test::g.last_config;
+
+  const std::string text = layoutText(false);
+  EXPECT_EQ(text.find("s3cret"), std::string::npos) << text;
+  EXPECT_NE(text.find(PJ::mcp::kRedacted), std::string::npos) << text;
+  EXPECT_NE(text.find("km"), std::string::npos) << text;
+  const QString path = data_.filePath(u"widget.pj4.xml"_s);
+  ASSERT_FALSE(result(call("save_layout", {{"path", path.toStdString()}})).second);
+  EXPECT_NE(readAll(path).find("s3cret"), std::string::npos);
+}
+
 // load_layout from text and from a file restores the agent's tab, its curve and its derived series, still the agent's
 // (get_status, list_created); saving again gives the same layout. A workspace with nothing in it is replaced without
 // asking; one with work in it only after the user agrees. Text never becomes a recent layout; a file does, by its
@@ -2068,23 +2128,60 @@ TEST_F(McpLayoutTest, LoadLayoutIsRefusedWhileALayoutLoadIsPending) {
   EXPECT_TRUE(asked_after);
 }
 
-// The agent's own question holds other loads off: busy is set while the user decides, and cleared by the answer.
-TEST_F(McpLayoutTest, LoadLayoutStaysBusyWhileItsQuestionIsOpen) {
+// While the user is asked, a second load_layout is refused by the question itself, a dialog of the user's like any
+// other (named in the refusal), and the first call holds the server busy until the answer.
+TEST_F(McpLayoutTest, ASecondLoadUnderTheQuestionIsRefusedByItAndBusyHoldsUntilTheAnswer) {
   ASSERT_NE(loadMock(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
   const std::string layout = layoutText();
   std::optional<bool> busy_under_question;
+  std::optional<json> second;
+  QTcpSocket other;  // stands for a second call's connection
   bool cancelled = false;
   const std::function<void()> click = clicker(u"Cancel"_s, cancelled);
   const auto [text, error] = result(call("load_layout", {{"xml", layout}}, [&] {
     if (!busy_under_question.has_value() && !visible<PJ::MessageBox>().empty()) {
       busy_under_question = PJ::McpTestPeer::layoutLoadBusy(*server());
+      PJ::McpTestPeer::callTool(
+          *server(), QByteArray::fromStdString(token_), &other, "load_layout", {{"xml", layout}},
+          [&second](json reply) { second = std::move(reply); });
     }
     click();
   }));
   EXPECT_TRUE(cancelled);
   ASSERT_TRUE(busy_under_question.has_value());
   EXPECT_TRUE(*busy_under_question);
+  ASSERT_TRUE(second.has_value()) << "the second call was never answered";
+  EXPECT_TRUE(second->value("isError", false)) << second->dump();
+  EXPECT_NE(second->dump().find("'Load Layout'"), std::string::npos) << second->dump();
+  EXPECT_FALSE(PJ::McpTestPeer::layoutLoadBusy(*server()));
+}
+
+// A download that ends while another layout load is in flight is refused as busy, and asks nothing.
+TEST_F(McpLayoutTest, ALayoutDownloadedWhileAnotherLoadIsInFlightIsRefused) {
+  ASSERT_NE(loadMock(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  const std::string layout = layoutText();
+  pj_app_test::RouteServer http;
+  http.hold(u"/held.pj4.xml"_s);
+  http.route(u"/held.pj4.xml"_s, QByteArray::fromStdString(layout));
+  bool asked = false;
+  const std::function<void()> click = clicker(u"Cancel"_s, asked);
+  bool released = false;
+  const auto [text, error] =
+      result(call("load_layout", {{"url", http.url(u"/held.pj4.xml"_s).toString().toStdString()}}, [&] {
+        if (!released && PJ::McpTestPeer::layoutLoadBusy(*server())) {
+          released = true;
+          PJ::McpTestPeer::setProgressiveLayoutInFlight(*window_, true);  // a load of the user's, mid-download
+          http.release();
+        }
+        click();
+      }));
+  PJ::McpTestPeer::setProgressiveLayoutInFlight(*window_, false);
+  EXPECT_TRUE(released);
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("busy"), std::string::npos) << text;
+  EXPECT_FALSE(asked) << "the user was asked about a load that was refused";
   EXPECT_FALSE(PJ::McpTestPeer::layoutLoadBusy(*server()));
 }
 
@@ -2116,25 +2213,49 @@ TEST_F(McpLayoutTest, ALayoutDownloadedUnderTheUsersDialogIsRefused) {
 }
 
 #ifdef PJ_WITH_SCENE3D
+// A layout whose one tab holds a 3D scene with a robot model, its package root relative to where the layout is.
+constexpr const char* kRelativeRobotRootLayout =
+    R"(<?xml version='1.0' encoding='UTF-8'?><root format="PlotJuggler" pj4_version="4">)"
+    R"(<tabbed_widget parent="main_window"><Tab id="t1" tab_name="robot" containers="1"><Container>)"
+    R"(<DockArea id="a1" name="robot"><scene3d version="1"><layer local="true" dataset_id="0" topic_name="" )"
+    R"(object_type="kRobotDescription" display_name="robot" order="0" visible="true">)"
+    R"(<robot_model source_type="topic" package_url_roots='{"pkg":"assets/pkg/"}'/></layer></scene3d>)"
+    R"(</DockArea></Container></Tab></tabbed_widget></root>)";
+
 // A url's layout anchors its relative Scene3D resources at the url; text has nothing to anchor them to.
 TEST_F(McpLayoutTest, ALayoutFromAUrlAnchorsItsSceneResourcesThere) {
   ASSERT_NE(loadMock(), 0);
-  const std::string anchored = replaced(
-      layoutText(), "</root>",
-      R"(<robot_model source_type="topic" package_url_roots='{"pkg":"assets/pkg/"}'/></root>)");
-  ASSERT_NE(anchored.find("robot_model"), std::string::npos) << anchored;
   pj_app_test::RouteServer http;
-  http.route(u"/presets/robot.pj4.xml"_s, QByteArray::fromStdString(anchored));
+  http.route(u"/presets/robot.pj4.xml"_s, kRelativeRobotRootLayout);
   bool replaced_it = false;
   const auto [text, error] = result(call(
       "load_layout", {{"url", http.url(u"/presets/robot.pj4.xml"_s).toString().toStdString()}},
       clicker(u"Replace"_s, replaced_it)));
-  EXPECT_FALSE(error) << text;
+  ASSERT_FALSE(error) << text;
+  const std::string saved = layoutText(false);
+  EXPECT_NE(saved.find(http.url(u"/presets/assets/pkg/"_s).toString().toStdString()), std::string::npos) << saved;
+
   bool replaced_again = false;
   const auto [from_text, text_error] =
-      result(call("load_layout", {{"xml", anchored}}, clicker(u"Replace"_s, replaced_again)));
+      result(call("load_layout", {{"xml", kRelativeRobotRootLayout}}, clicker(u"Replace"_s, replaced_again)));
   EXPECT_TRUE(text_error) << from_text;
   EXPECT_NE(from_text.find("cannot be loaded"), std::string::npos) << from_text;
+}
+
+// A redirected url anchors the resources where the layout was found, not where it was asked for.
+TEST_F(McpLayoutTest, ARedirectedLayoutAnchorsItsSceneResourcesWhereItWasFound) {
+  ASSERT_NE(loadMock(), 0);
+  pj_app_test::RouteServer http;
+  http.route(u"/presets/robot.pj4.xml"_s, kRelativeRobotRootLayout);
+  http.redirect(u"/moved/robot.pj4.xml"_s, u"/presets/robot.pj4.xml"_s);
+  bool replaced_it = false;
+  const auto [text, error] = result(call(
+      "load_layout", {{"url", http.url(u"/moved/robot.pj4.xml"_s).toString().toStdString()}},
+      clicker(u"Replace"_s, replaced_it)));
+  ASSERT_FALSE(error) << text;
+  const std::string saved = layoutText(false);
+  EXPECT_NE(saved.find(http.url(u"/presets/assets/pkg/"_s).toString().toStdString()), std::string::npos) << saved;
+  EXPECT_EQ(saved.find("/moved/"), std::string::npos) << saved;
 }
 #endif
 
@@ -3687,8 +3808,11 @@ class McpHeldLayoutTest : public McpActiveLoadTest {
   }
 };
 
+/// What layoutRestoreSettled said: whether the load committed, and which load it was.
+using Settle = std::pair<bool, quint64>;
+
 // The user's own load supersedes an agent's restore that still waits for its data: the agent hears that its layout was
-// not loaded, first, and the user's load settles on its own.
+// not loaded, first, and the user's load settles on its own, each with its own id.
 TEST_F(McpHeldLayoutTest, TheUsersLoadSupersedesAnAgentsRestore) {
   const int mock = loadMock();
   ASSERT_NE(mock, 0);
@@ -3696,13 +3820,16 @@ TEST_F(McpHeldLayoutTest, TheUsersLoadSupersedesAnAgentsRestore) {
   const QString user_path = data_.filePath(u"user.pj4.xml"_s);
   ASSERT_FALSE(result(call("save_layout", {{"path", user_path.toStdString()}})).second);
   ASSERT_FALSE(result(call("unload_file", {{"dataset", mock}})).second);
-  const json job = startHeldLoad(heldLayout());
+  const std::string held = heldLayout();
+  const quint64 agent_load = window_->nextLayoutLoad();
+  const json job = startHeldLoad(held);
   ASSERT_TRUE(job.is_number_integer());
 
   QObject scope;
-  std::vector<bool> settles;
-  QObject::connect(
-      window_.get(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok) { settles.push_back(ok); });
+  std::vector<Settle> settles;
+  QObject::connect(window_.get(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok, quint64 load) {
+    settles.emplace_back(ok, load);
+  });
   // The user's questions (reload the layout's file, its missing curves) take their first button.
   pj_app_test::ModalAnswerer answerer;
   answerer.every(pj_app_test::isMessageBox, [](QWidget* box) {
@@ -3711,10 +3838,11 @@ TEST_F(McpHeldLayoutTest, TheUsersLoadSupersedesAnAgentsRestore) {
       QMetaObject::invokeMethod(buttons.front(), &QAbstractButton::click, Qt::QueuedConnection);
     }
   });
+  const quint64 user_load = window_->nextLayoutLoad();
   QTimer::singleShot(
       0, window_.get(), [this, user_path] { PJ::McpTestPeer::loadLayoutAsTheUser(*window_, user_path); });
   ASSERT_TRUE(pumpUntil([&] { return !settles.empty(); })) << "the superseded restore never settled";
-  EXPECT_FALSE(settles.front());
+  EXPECT_EQ(settles.front(), Settle(false, agent_load));
   const auto [waited, wait_error] = result(call("job_wait", {{"job_id", job}, {"timeout_s", 10}}));
   EXPECT_TRUE(wait_error) << waited;
   EXPECT_NE(waited.find("not loaded"), std::string::npos) << waited;
@@ -3722,8 +3850,86 @@ TEST_F(McpHeldLayoutTest, TheUsersLoadSupersedesAnAgentsRestore) {
 
   g_gate_released = true;
   ASSERT_TRUE(pumpUntil([&] { return settles.size() >= 2; })) << "the user's load never settled";
-  EXPECT_EQ(settles, (std::vector<bool>{false, true}));
+  EXPECT_EQ(settles, (std::vector<Settle>{{false, agent_load}, {true, user_load}}));
   EXPECT_FALSE(window_->layoutLoadInFlight());
+}
+
+// A load started from inside another load's question (its nested event loop) takes the next id, and the open load
+// keeps its own: each settles exactly once, with its own outcome.
+TEST_F(McpHeldLayoutTest, ALoadStartedUnderAnotherLoadsQuestionKeepsTheIdsApart) {
+  const std::string held = heldLayout();
+  const QString path = data_.filePath(u"held.pj4.xml"_s);
+  {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(QByteArray::fromStdString(held));
+  }
+  QObject scope;
+  std::vector<Settle> settles;
+  QObject::connect(window_.get(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok, quint64 load) {
+    settles.emplace_back(ok, load);
+  });
+  const quint64 first = window_->nextLayoutLoad();
+  const QStringList reload = {u"Reload source file"_s};
+  pj_app_test::ModalAnswerer answerer;
+  answerer.next(pj_app_test::messageBoxWithButton(reload), [this, &reload](QWidget* box) {
+    PJ::McpTestPeer::loadLayoutUnattended(*window_, data_.filePath(u"missing.pj4.xml"_s));
+    pj_app_test::clickMessageBoxButton(box, reload);
+  });
+  QTimer::singleShot(0, window_.get(), [this, path] { PJ::McpTestPeer::loadLayoutAsTheUser(*window_, path); });
+  ASSERT_TRUE(pumpUntil([&] { return window_->layoutLoadInFlight(); })) << "the held load never waited for its data";
+  ASSERT_EQ(settles, (std::vector<Settle>{{false, first + 1}}));
+
+  g_gate_released = true;
+  ASSERT_TRUE(pumpUntil([&] { return settles.size() >= 2; })) << "the held load never settled";
+  static_cast<void>(pumpUntil([] { return false; }, 200));  // a late duplicate
+  EXPECT_EQ(settles, (std::vector<Settle>{{false, first + 1}, {true, first}}));
+}
+
+// A stop that reaches the job while the user's Replace is on its way wins: the answer finds the job stopping and loads
+// nothing, the job ends killed, and the stop is answered at once.
+TEST_F(McpHeldLayoutTest, AStopQueuedBeforeTheUsersReplaceWins) {
+  const std::string held = heldLayout();
+  PJ::McpTestPeer::addUndoStep(*window_);  // work the user is asked about
+  std::optional<json> kill_reply;
+  bool raced = false;
+  bool busy = false;       // jobs_list's own wait runs this again
+  QTcpSocket kill_client;  // stands for job_kill's connection
+  const auto race = [&] {
+    if (raced || busy) {
+      return;
+    }
+    for (PJ::MessageBox* box : visible<PJ::MessageBox>()) {
+      QAbstractButton* replace = pj_app_test::messageBoxButton(box, u"Replace"_s);
+      if (replace == nullptr) {
+        continue;
+      }
+      busy = true;
+      const json jobs = json::parse(result(call("jobs_list", json::object())).first, nullptr, false);
+      busy = false;
+      if (jobs.size() != 1) {
+        return;
+      }
+      raced = true;
+      // The click is queued first: the user's answer is handled before the closer job_kill queues.
+      QMetaObject::invokeMethod(replace, &QAbstractButton::click, Qt::QueuedConnection);
+      PJ::McpTestPeer::callTool(
+          *server(), QByteArray::fromStdString(token_), &kill_client, "job_kill", {{"job_id", jobs[0]["job_id"]}},
+          [&kill_reply](json reply) { kill_reply = std::move(reply); });
+      return;
+    }
+  };
+  const auto asked_at = std::chrono::steady_clock::now();
+  const auto [text, error] = result(call("load_layout", {{"xml", held}}, race));
+  ASSERT_TRUE(raced) << "the user was never asked";
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("not loaded"), std::string::npos) << text;
+  ASSERT_TRUE(pumpUntil([&] { return kill_reply.has_value(); }, 5'000)) << "the stop was neither applied nor declined";
+  EXPECT_LT(std::chrono::steady_clock::now() - asked_at, std::chrono::seconds(10));
+  EXPECT_EQ(textOf(*kill_reply).value("state", ""), "killed") << kill_reply->dump();
+  EXPECT_FALSE(window_->layoutLoadInFlight()) << "the stopped load went ahead";
+  EXPECT_FALSE(PJ::McpTestPeer::layoutLoadBusy(*server()));
+  EXPECT_TRUE(visible<PJ::MessageBox>().empty());
 }
 
 // A stop asked once the layout applies is declined at once, saying the load completes; the job then ends with the

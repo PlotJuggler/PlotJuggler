@@ -970,9 +970,10 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] QStringList startLayoutStreams(
       const QList<layout_xml::StreamingSourceRef>& streams, LayoutStreamBinding& binding);
   // `policy` comes from the load's interactivity and is captured for the drain, never inferred from whether a
-  // batch exists. Called only from within the load it continues, whose id (layout_loads_) it settles with.
+  // batch exists. `load` is the id of the load it continues, which it settles with: never the latest one, which a
+  // load started from a nested event loop (a question of this load's) may have taken since.
   void beginProgressiveLayoutRestore(
-      QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy,
+      QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy, quint64 load,
       const LayoutTimelinePlan& stream_tracks = {});
   void cancelProgressiveLayoutRestore();
   [[nodiscard]] bool rollbackProgressiveWorkspace();
