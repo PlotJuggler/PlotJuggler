@@ -424,7 +424,9 @@ the shaders add the origin offset, so pan, follow and playback upload nothing, a
 cannot z-fight the fill; an odd division count's half-cell phase travels in the offset's w. Every grid SRB declares
 binding 3 for both stages because QRhi requires the connection lines' SRB layout to match. The TF connection lines
 are arbitrary doubles, so they stay camera-relative in a Dynamic buffer keyed on the TF revision, fixed frame, time
-and render origin.
+and render origin. Each line vertex carries its segment's other end, and `grid.vert` moves an end behind the eye
+along the segment to `kMinClipW`, so SwiftShader still draws the line (TECHNICAL_NOTES "SwiftShader drops lines that
+cross behind the eye"). Filled cells carry no partner.
 
 **Poses and TF triads (`PoseRhiPass`).** One unit-arrow mesh, one instanced draw per layer. Pose instances are
 frame-local in a Static buffer, re-uploaded on `geometryRevision()`; the fixed-from-source TF is a uniform, so camera
@@ -953,3 +955,8 @@ each has a panel row, and clicking it binds the Settings host to the layer's con
 - A `UrlFetcher` request aborts only with its fetcher, so unwanted fetches retire the fetcher and its connections.
 - `drawsFor` is a linear search per slot (O(L²) in the layer count).
 - Pipeline-cache persistence is not reachable through `QRhiWidget`, and packs are not precompiled.
+- Under SwiftShader, a line with one end behind the eye is not drawn by any line pipeline but the grid's and the TF
+  connections'. The marker stream lines (`stream(Lines)` in `marker_rhi_pass.cpp`) and the mesh-map wireframe
+  (`meshmap_rhi_pass.cpp`) are non-indexed and could take the same partner attribute; the model wireframe (indexed)
+  and the instanced marker line and edge pipelines cannot, a vertex there having no single partner (TECHNICAL_NOTES
+  "SwiftShader drops lines that cross behind the eye").

@@ -329,6 +329,32 @@ MCP screenshot, which paints each view's `grabFramebuffer()` image over the wind
 alpha check reads `grabFramebuffer()` (`DirectPassTriadsLeaveTheOutputOpaque`). Re-test the grab formats on a Qt
 upgrade.
 
+## SwiftShader drops lines that cross behind the eye
+
+Chrome for Testing 151.0.7922.34 (headless shell, WebGL2 renderer `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device
+(Subzero) (0x0000C0DE)), SwiftShader driver)`, 2026-11): a `GL_LINES` segment with one vertex behind the eye (clip
+w < 0) draws nothing. A segment with both w > 0 that crosses the near plane is clipped correctly. In the app, a camera
+inside a line-style grid drew only the lines across the view; the lines toward the camera pass under and behind it.
+
+A standalone WebGL2 page (a 21 + 21 line grid of ±2 m, eye 1 m from the centre, near 0.001) counted 0 pixels for the
+21 lines running under the camera, against 2108 through ANGLE's OpenGL backend on the Iris Xe (Mesa); the same lines
+cut to start in front of the camera drew 2090. Turning off ANGLE's line emulation
+(`--disable-angle-features=basicGLLineRasterization,bresenhamLineRasterization`) changed the in-front pixels but not
+the loss, so the drop is in SwiftShader itself (unverified reasoning: it builds a line's quad from the endpoints'
+projected positions, which a negative w mirrors).
+
+What the code does: `grid.vert` receives each vertex's segment partner and moves a vertex whose w is below
+`kMinClipW` along the segment to w = `kMinClipW`. That is behind every perspective near plane (`adaptiveNearFar`'s
+floor), so the rasterizer's own near clip yields the same visible segment. In the probe page the move drew 2096 pixels
+under SwiftShader and changed none on the GPU. The w is set after the interpolation: at |w| near 4700 a float32 step
+is about 5e-4, above `kMinClipW`, and the mix left w at exactly 0 on a 10 km grid of 200 divisions seen from an orbit
+radius of 60 (endpoints near w = -4600 and +4800), which draws nothing. It covers the grid lines and the TF connection
+lines; the other line pipelines still lose such segments (ARCHITECTURE "Known gaps"). Regression test:
+`scene3d_foundation.spec.js`.
+
+Re-test on a Chromium (SwiftShader) update by running that spec's line grid test with the move taken out of
+`grid.vert`; if the lines draw, the partner attribute can go.
+
 ## CI lanes
 
 The workflows are the source of truth; these are the facts that are not obvious from them.
