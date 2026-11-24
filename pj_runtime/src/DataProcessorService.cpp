@@ -577,6 +577,8 @@ Status DataProcessorService::updateFilter(NodeId node_id, std::shared_ptr<proc::
   if (Status replaced =
           derived_->replaceSisoTransform(node_id, std::make_unique<proc::ProcessorSisoAdapter>(processor));
       !replaced.has_value()) {
+    // The engine reverted and replayed, rewriting the outputs (old chunks freed).
+    announceRewrittenOutputs(outputsWithDependents(node_id));
     std::vector<std::string> input_names;
     const auto recipe = std::find_if(
         recipes_.begin(), recipes_.end(), [node_id](const auto& entry) { return entry.second.node_id == node_id; });
@@ -602,7 +604,7 @@ Status DataProcessorService::updateFilter(NodeId node_id, std::shared_ptr<proc::
       break;
     }
   }
-  announceChangedOutputs(outputsWithDependents(node_id));
+  announceRewrittenOutputs(outputsWithDependents(node_id));
   return PJ::okStatus();
 }
 
@@ -1185,12 +1187,14 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
                                     old.node_id, std::make_unique<proc::ProcessorSisoAdapter>(std::move(siso_op)))
                               : derived_->replaceMimoTransform(old.node_id, std::move(mimo_op));
     if (!replaced.has_value()) {
+      // The engine reverted and replayed, rewriting the outputs (old chunks freed).
+      announceRewrittenOutputs(outputsWithDependents(old.node_id));
       return PJ::unexpected(nodeFailure(*derived_, old.node_id, replaced.error(), bindingNames(recipe.input_bindings)));
     }
     recipe.node_id = old.node_id;
     recipe.output_topic_ids = old.output_topic_ids;
     existing->second = recipe;
-    announceChangedOutputs(outputsWithDependents(recipe.node_id));
+    announceRewrittenOutputs(outputsWithDependents(recipe.node_id));
     return recipe;
   }
   // 7. Install the eager node and run it over the committed input(s).
@@ -1363,6 +1367,13 @@ void DataProcessorService::announceGrownOutputs() {
   if (session_ != nullptr && !grown.isEmpty()) {
     session_->notifyIngest(std::move(grown), /*live=*/false);
   }
+}
+
+void DataProcessorService::announceRewrittenOutputs(const std::vector<TopicId>& outputs) const {
+  if (session_ != nullptr && !outputs.empty()) {
+    session_->notifyIngest(QVector<TopicId>(outputs.begin(), outputs.end()), /*live=*/false);
+  }
+  announceChangedOutputs(outputs);
 }
 
 void DataProcessorService::announceChangedOutputs(const std::vector<TopicId>& outputs) const {

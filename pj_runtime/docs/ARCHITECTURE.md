@@ -489,8 +489,11 @@ does not link it.
 - **Outputs-changed sink.** Fires with the topic names and dataset of changed outputs after
   an upsert, in-place edit or restore that leaves the output complete, after `applyFilter`
   / `updateFilter`, when a time-sliced replay ends, and before a removal, chained
-  processors included. A reload's rebind does not fire it: `RefillGuard::recomputeProcessors`
-  runs it and then re-runs the dataset's marker rules once. `materializedTopicNames(recipe)`
+  processors included. An in-place edit, failed or not, rewrites rows under the same TopicIds,
+  so it also announces those outputs, chained ones included, through
+  `SessionManager::notifyIngest` (non-live) and plots drop their cached samples. A reload's
+  rebind fires neither and returns its outputs for the caller to announce:
+  `RefillGuard::recomputeProcessors` runs it and then re-runs the dataset's marker rules once. `materializedTopicNames(recipe)`
   is the vocabulary series keys are rooted at (a grouped `"t:a,b"` is one topic `"t"`).
 - **Time-sliced create.** A new persistent transform replays only the first
   `kMaterializationSliceBudget` slice inside the call (so an early script failure is still

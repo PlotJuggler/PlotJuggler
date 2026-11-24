@@ -93,6 +93,13 @@ constexpr const char* kScale = R"LUAU(return { {
   end
 } })LUAU";
 
+constexpr const char* kScaleBoom = R"LUAU(return { {
+  id = "scale_boom", name = "Scale Boom", output = "same",
+  create = function(params)
+    return { calculate = function(time, value) error("boom") end }
+  end
+} })LUAU";
+
 // Classifies each sample into a state label: a text output (`output = "string"`), one input or several.
 constexpr const char* kState = R"LUAU(-- pj-script: luau
 return { id="state", name="State", output="string",
@@ -304,6 +311,15 @@ TEST(DataProcessorTransformTest, RemoveFilterRejectsTransformNodeId) {
   EXPECT_TRUE(fx.listed(recipe->output_topic_ids.front()));
 }
 
+// An in-place edit rewrites rows under the same TopicIds, so no new topic reaches the catalog: plots drop their
+// cached samples only on a non-live samplesIngested.
+void recordIngested(SessionManager& session, std::unordered_set<TopicId>& announced) {
+  QObject::connect(&session, &SessionManager::samplesIngested, [&announced](const QVector<TopicId>& ids, bool live) {
+    EXPECT_FALSE(live);
+    announced.insert(ids.begin(), ids.end());
+  });
+}
+
 TEST(DataProcessorTransformTest, UpsertReplacesExistingNode) {
   Fixture fx;
   fx.seed("speed", {1.0, 2.0});
@@ -313,12 +329,61 @@ TEST(DataProcessorTransformTest, UpsertReplacesExistingNode) {
   EXPECT_EQ(readValues(fx.engine, first->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
 
   // Same key, new script -> replace in place; one recipe, new behaviour.
+  std::unordered_set<TopicId> ingested;
+  recordIngested(fx.session, ingested);
   const auto second = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"speed/out"}, kTimes10, "{}");
   ASSERT_TRUE(second.has_value()) << second.error();
+  EXPECT_TRUE(ingested.contains(first->output_topic_ids.front()));
   EXPECT_EQ(fx.service.transformRecipes().size(), 1u);
   EXPECT_EQ(second->node_id, first->node_id);
   EXPECT_EQ(second->output_topic_ids, first->output_topic_ids);
   EXPECT_EQ(readValues(fx.engine, second->output_topic_ids.front()), (std::vector<double>{10.0, 20.0}));
+}
+
+TEST(DataProcessorTransformTest, InPlaceEditAnnouncesChainedOutputs) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto child = fx.service.upsertTransform("pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(child.has_value()) << child.error();
+
+  std::unordered_set<TopicId> ingested;
+  recordIngested(fx.session, ingested);
+  const auto replaced = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kTimes10, "{}");
+  ASSERT_TRUE(replaced.has_value()) << replaced.error();
+
+  EXPECT_TRUE(ingested.contains(parent->output_topic_ids.front()));
+  EXPECT_TRUE(ingested.contains(child->output_topic_ids.front()));
+}
+
+TEST(DataProcessorTransformTest, FilterUpdateAnnouncesRewrittenOutputs) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(catalogue);
+  const auto filtered = fx.service.applyFilter(fx.input, fx.ds, "scale", "filtered");
+  ASSERT_TRUE(filtered.has_value()) << filtered.error();
+  const auto child = fx.service.upsertTransform("pluginB", "negate", {"filtered"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(child.has_value()) << child.error();
+  auto processor = catalogue->makeProcessor("scale", "{}");
+  ASSERT_TRUE(processor.has_value()) << processor.error();
+
+  std::unordered_set<TopicId> ingested;
+  recordIngested(fx.session, ingested);
+  ASSERT_TRUE(fx.service.updateFilter(filtered->node_id, std::move(processor).value()).has_value());
+  EXPECT_TRUE(ingested.contains(filtered->output_topic_id));
+  EXPECT_TRUE(ingested.contains(child->output_topic_ids.front()));
+
+  // A failed update reverts and replays, so it rewrites the outputs too.
+  ASSERT_TRUE(catalogue->addBundledSource(kScaleBoom, "test").has_value());
+  auto failing = catalogue->makeProcessor("scale_boom", "{}");
+  ASSERT_TRUE(failing.has_value()) << failing.error();
+  ingested.clear();
+  EXPECT_FALSE(fx.service.updateFilter(filtered->node_id, std::move(failing).value()).has_value());
+  EXPECT_TRUE(ingested.contains(filtered->output_topic_id));
+  EXPECT_TRUE(ingested.contains(child->output_topic_ids.front()));
 }
 
 TEST(DataProcessorTransformTest, ExistingKeyCannotChangePersistentLifetime) {
@@ -371,8 +436,13 @@ TEST(DataProcessorTransformTest, FailedCompatibleReplacementRollsBackRootAndDepe
   const auto child = fx.service.upsertTransform("pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}");
   ASSERT_TRUE(child.has_value()) << child.error();
 
+  // The failed run and the revert's replay both rewrite the outputs: plots must drop their cached samples.
+  std::unordered_set<TopicId> ingested;
+  recordIngested(fx.session, ingested);
   const auto failed = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegateBoom, "{}");
   ASSERT_FALSE(failed.has_value());
+  EXPECT_TRUE(ingested.contains(parent->output_topic_ids.front()));
+  EXPECT_TRUE(ingested.contains(child->output_topic_ids.front()));
   EXPECT_EQ(fx.service.transformRecipes().size(), 2u);
   EXPECT_TRUE(fx.service.incrementalEngine().hasNode(parent->node_id));
   EXPECT_TRUE(fx.service.incrementalEngine().hasNode(child->node_id));
