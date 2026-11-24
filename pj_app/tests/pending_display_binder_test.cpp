@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <gtest/gtest.h>
+#include <qwt_plot.h>
 #include <qwt_plot_curve.h>
 
 #include <QApplication>
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "LayoutXml.h"
@@ -380,6 +382,74 @@ TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArri
 
   EXPECT_EQ(binder.flush(QSet<QString>{late.topic}), 0);
   EXPECT_EQ(plot.curveList().size(), 2U);
+}
+
+// Two datasets, both loading after the layout (`-l`): the second curve's dataset loads first, yet the plot keeps the
+// saved order, and with it the saved window, which converts through the first curve's display offset.
+TEST(PendingDisplayBinderTest, CurvesBindingOutOfOrderKeepTheSavedOrderAndWindow) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::AppSession app_session(extensions_dir.path());
+  constexpr PJ::Timestamp kSecond = 1'000'000'000;
+  const PJ::DatasetId dataset_a = createDataset(app_session, "a.mcap", /*own_time_domain=*/true);
+  const PJ::DatasetId dataset_b = createDataset(app_session, "b.csv", /*own_time_domain=*/true);
+  ASSERT_NE(dataset_a, 0U);
+  ASSERT_NE(dataset_b, 0U);
+  // A starts at 100 s and its display frame starts there ("Align starts"); B is already relative.
+  app_session.sessionManager().setDisplayOffset(dataset_a, PJ::DisplayOffset{PJ::Duration{100 * kSecond}});
+
+  const SeriesPath first{u"/first"_s, u"value"_s, dataset_a, u"a.mcap"_s};
+  const SeriesPath second{u"/second"_s, u"value"_s, dataset_b, u"b.csv"_s};
+  // Exposes the Qwt plot: its attach order is the draw and legend order.
+  struct InspectablePlot : PJ::PlotWidget {
+    using PJ::PlotWidget::PlotWidget;
+    using PJ::PlotWidgetBase::qwtPlot;
+  };
+  QDomDocument doc;
+  InspectablePlot plot(&app_session.sessionManager(), &app_session.catalogModel());
+  QDomElement plot_element = addPlot(doc, plot.stateId(), u"TimeSeries"_s);
+  QDomElement range = doc.createElement(u"range"_s);
+  range.setAttribute(u"bottom"_s, u"0"_s);
+  range.setAttribute(u"top"_s, u"3"_s);
+  range.setAttribute(u"left"_s, u"110"_s);
+  range.setAttribute(u"right"_s, u"190"_s);
+  range.setAttribute(u"left_ns"_s, QString::number(110 * kSecond));
+  range.setAttribute(u"right_ns"_s, QString::number(190 * kSecond));
+  range.setAttribute(u"x_basis"_s, u"absolute"_s);
+  plot_element.appendChild(range);
+  addTimeSeriesCurve(doc, plot_element, first);
+  addTimeSeriesCurve(doc, plot_element, second);
+  rebindAgainstCatalog(doc, app_session.catalogModel());
+
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  ASSERT_TRUE(plot.curveList().empty());
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.collect(doc, indexByStateId(plot));
+  ASSERT_EQ(binder.size(), 2);
+
+  ASSERT_NE(addScalarTopic(app_session, dataset_b, "/second", 0, 10 * kSecond), 0U);
+  ASSERT_EQ(binder.flush(QSet<QString>{second.topic}), 1);
+  ASSERT_NE(addScalarTopic(app_session, dataset_a, "/first", 100 * kSecond, 300 * kSecond), 0U);
+  ASSERT_EQ(binder.flush(QSet<QString>{first.topic}), 1);
+
+  const auto first_key = app_session.catalogModel().resolveCurveKey(first);
+  const auto second_key = app_session.catalogModel().resolveCurveKey(second);
+  ASSERT_TRUE(first_key.has_value());
+  ASSERT_TRUE(second_key.has_value());
+  std::vector<std::string> order;
+  for (const PJ::PlotWidget::CurveInfo& info : plot.curveList()) {
+    order.push_back(info.source_name.toStdString());
+  }
+  EXPECT_EQ(order, (std::vector<std::string>{first_key->toStdString(), second_key->toStdString()}));
+  const QwtPlotItemList attached = plot.qwtPlot()->itemList(QwtPlotItem::Rtti_PlotCurve);
+  ASSERT_EQ(attached.size(), 2);
+  EXPECT_EQ(attached.front(), plot.curveList().front().curve);
+  EXPECT_EQ(attached.back(), plot.curveList().back().curve);
+
+  // The drain pass: the saved window, in /first's display frame.
+  plot.applySavedViewportOrZoom(/*clear_after=*/true);
+  EXPECT_NEAR(plot.currentBoundingRect().left(), 10.0, 1e-6);
+  EXPECT_NEAR(plot.currentBoundingRect().right(), 90.0, 1e-6);
 }
 
 // Progressive restore: a hidden marker scope saved under a dataset id that is reminted on reload follows the dataset

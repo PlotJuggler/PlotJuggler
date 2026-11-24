@@ -96,6 +96,10 @@ class PlotWidget : public PlotWidgetBase {
   /// while a late curve materializes (pending completion).
   CurveInfo* addCurveFromPending(const QString& name, bool preserve_viewport);
 
+  /// PlotWidgetBase::reorderCurves for a layout restore whose curves bound late (adding appends): no undo step, no
+  /// colour, zoom or bounds change. The first curve picks representativeDisplayOffset(), so the saved window too.
+  bool restoreCurveOrder(const QStringList& source_names);
+
   // Replaces the curve plotting `source_key` with one plotting `output_key`, which inherits its color and place: the
   // Filter Editor's "filtered series replaces the input". If `source_key` is absent, `output_key` is simply added.
   // No-op if data services are unset or `output_key` is not in the catalog.

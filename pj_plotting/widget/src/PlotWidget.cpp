@@ -397,6 +397,12 @@ PlotWidget::CurveInfo* PlotWidget::addCurveFromPending(const QString& name, bool
   return addCurve(name);
 }
 
+bool PlotWidget::restoreCurveOrder(const QStringList& source_names) {
+  const QScopedValueRollback loading(loading_state_, true);
+  const QScopedValueRollback restoring(restoring_curves_, true);
+  return reorderCurves(source_names);
+}
+
 void PlotWidget::autoZoomPlotVertically() {
   // Skip during layout restore (the saved range wins), with nothing to fit, and for XY plots (their X axis is data, not
   // the shared time axis).

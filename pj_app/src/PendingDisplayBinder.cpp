@@ -89,9 +89,14 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
       continue;
     }
 
+    // A bound curve's slot holds its PlotWidget source name: the catalog key, an XY curve's saved title.
+    auto saved_order = std::make_shared<QStringList>();
     for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
          curve = curve.nextSiblingElement(u"curve"_s)) {
       PendingDisplayEntry entry;
+      entry.saved_order = saved_order;
+      entry.saved_slot = saved_order->size();
+      saved_order->push_back(QString());
       entry.plot = plot;
       entry.target = plot;
       entry.persistent_intent = plot_xml::isPendingIntent(curve);
@@ -105,11 +110,13 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
           entry.path = *y_path;
         }
         if (catalog_.resolveCurveKey(entry.x_path).has_value() && catalog_.resolveCurveKey(entry.path).has_value()) {
+          saved_order->back() = curve.attribute(u"name"_s);
           continue;
         }
       } else if (const auto ts_path = layout_xml::readTimeSeriesPath(curve)) {
         entry.path = *ts_path;
-        if (catalog_.resolveCurveKey(entry.path).has_value()) {
+        if (const auto key = catalog_.resolveCurveKey(entry.path)) {
+          saved_order->back() = *key;
           continue;
         }
       } else {
@@ -387,6 +394,7 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
   QSet<PlotWidget*> touched;
   QSet<PlotWidget*> zoom_on_completion;
   QSet<PlotWidget*> preserve_viewport_on_completion;
+  QHash<PlotWidget*, std::shared_ptr<QStringList>> saved_orders;
   int completed_intents = 0;
 
   auto it = entries_.begin();
@@ -466,11 +474,17 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
 
     PlotWidget* plot = entry.plot.data();
     const bool was_empty_without_saved_viewport = plot->curveList().empty() && !plot->hasSavedViewport();
-    if (plot->applyCurveElement(entry.curve_element, entry.preserve_viewport_on_completion) == nullptr) {
+    const PlotWidget::CurveInfo* bound =
+        plot->applyCurveElement(entry.curve_element, entry.preserve_viewport_on_completion);
+    if (bound == nullptr) {
       ++it;
       continue;
     }
 
+    if (entry.saved_order != nullptr) {
+      (*entry.saved_order)[entry.saved_slot] = bound->source_name;
+      saved_orders.insert(plot, entry.saved_order);
+    }
     touched.insert(plot);
     if (entry.preserve_viewport_on_completion) {
       preserve_viewport_on_completion.insert(plot);
@@ -484,6 +498,10 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
   }
 
   for (PlotWidget* plot : touched) {
+    // Before the viewport: the saved window converts through the first curve's display offset.
+    if (const std::shared_ptr<QStringList> order = saved_orders.value(plot)) {
+      plot->restoreCurveOrder(*order);
+    }
     // A marker scope saved against a dataset absent at restore follows the (possibly reminted) dataset its curves
     // just bound to.
     plot->resolvePendingMarkerScopes();

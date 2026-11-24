@@ -247,10 +247,11 @@ written, then the marker recompute and the ingest announcement run. A stateful p
 before retention evicts it, or its output skips rows. See the derived-objects architecture, "Streaming".
 
 `TopicDemandController` is thin glue from displayed widgets to `TopicDemandTracker`; `PendingDisplayBinder` stages a
-curve or scene layer until its topic materializes. On the first real demand for a previewed topic,
-`TopicDemandController` invalidates the matching XY and time-series caches of registered plots before evicting the
-preview history, with no paint or event-loop turn in between: bounds calculation inside `curveListChanged` may have
-filled them already.
+curve or scene layer until its topic materializes. A layout curve that binds late takes its saved place in its plot,
+not the end, whatever order its datasets load in: the plot frames its saved window by its first curve's dataset. On
+the first real demand for a previewed topic, `TopicDemandController` invalidates the matching XY and time-series caches
+of registered plots before evicting the preview history, with no paint or event-loop turn in between: bounds
+calculation inside `curveListChanged` may have filled them already.
 
 The topic streaming context menu needs a single selected row of a source that can pause per topic; a field row
 resolves to its topic. Several selected rows suppress it, because Linux can request the menu on right-button press,

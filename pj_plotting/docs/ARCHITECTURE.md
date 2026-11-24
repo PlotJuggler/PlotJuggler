@@ -134,9 +134,11 @@ and at drain (`applySavedViewportOrZoom`) so the plot is framed to its saved win
 partial data. A window saved zoomed below 1 ns rounds to equal ns edges, and falling through to auto-fit would wedge
 undo after a deep zoom, so the collapsed edges are nudged by 0.5 ns, then widened to the ULP-aware minimum when the
 display value sits at epoch scale. The plot's representative display offset is that of its first datastore-backed
-curve's dataset, the same rule at save and load. A global frame change (the "Use time offset" toggle) translates the
-viewport by the frame delta, and a per-source change (a Timeline drag) only drops the adapters' offset caches and
-replots at the current zoom.
+curve's dataset, the same rule at save and load. Adding a curve appends it, so a curve that binds after the restore
+(its dataset loaded later than another's) is moved back to its saved place (`PlotWidget::restoreCurveOrder`, called by
+the shell's pending binder); otherwise the legend order and the dataset framing the saved window would follow load
+order. A global frame change (the "Use time offset" toggle) translates the viewport by the frame delta, and a
+per-source change (a Timeline drag) only drops the adapters' offset caches and replots at the current zoom.
 
 A curve is saved by its stable topic + field path plus dataset id, source and path qualifiers, and re-resolved against
 the current datasets on load (`PJ::LayoutXml::rebindCurveKeys`); clipboard XML carries the same qualifiers and resolves
