@@ -529,8 +529,7 @@ The browser runs the same view, dock and layers. What differs:
   sample or layer fails closed with a row warning; view budgets retry once they free up.
 - **Depth replay always:** WebGL2 has no multisample textures, and Qt's GLES backend does not resolve a second
   multisample colour attachment reliably, which is why the EDL mask is its own pass.
-- **Loading:** mesh imports run one at a time (`maxConcurrentMeshImports()`) while downloads overlap up to
-  `maxConcurrentMeshLoads()` ("Robot models": mesh loading). Compressed clouds are
+- **Loading:** one mesh import at a time; downloads overlap ("Robot models (`RobotModelLayer`)"). Compressed clouds are
   accepted only with `PJ_WASM_WITH_COMPRESSED_POINTCLOUDS`; classification, acceptance, factory registration,
   deferred restore and XML validation share one feature-gated predicate, because an unsupported topic would reach a
   modal warning that cannot `exec()` in the browser.
@@ -785,13 +784,11 @@ An `sdk::MeshMap` (navigation, cost and semantic meshes with named face and vert
 - **Sources:** a `kRobotDescription` topic (decoded through its parser: the payload is CDR-framed, never a string),
   a file or a URL; file and URL layers are dock-local with synthetic ids. A layout stores a file source relative to
   its folder when the URDF lies beneath it (`layout_resources.h`), so a URDF and its meshes move with the layout.
-- **Mesh loading** is async and bounded: each layer's `MeshLoadQueue` keeps up to `maxConcurrentMeshLoads()` jobs in
-  flight, of which up to `maxConcurrentMeshImports()` run assimp imports, each completion repainting; the GUI thread
-  never blocks. Downloads overlap their latency while a fetched mesh waits for an import slot holding its bytes, so
-  the load bound also bounds the bytes held before import. The layer keeps the policy (what to
+- **Mesh loading** is async and bounded: each layer's `MeshLoadQueue` overlaps downloads and bounds assimp imports
+  (`mesh_load_queue.h`), each completion repainting; the GUI thread never blocks. The layer keeps the policy (what to
   load, the remote-fetch gate and size caps, the `kSceneLimits` retained-byte budgets checked on landing). A source
   switch, a replaced model or a dataset replacement cancels its jobs and a cancelled job never reaches the layer; a
-  cancelled import keeps its slot until its worker finishes, so rapid replacement never exceeds the bounds. Unwanted
+  cancelled import keeps its slot until its worker finishes, so rapid replacement never exceeds the bound. Unwanted
   fetches are aborted by retiring the queue's `UrlFetcher`, which stays a child of the layer until deleted later, so
   completions never outlive the layer. assimp covers STL, DAE, OBJ and glTF; `MeshData` carries UV0, tangents and a
   glTF metallic-roughness `Material` per submesh; embedded glTF images are kept as encoded bytes keyed by content

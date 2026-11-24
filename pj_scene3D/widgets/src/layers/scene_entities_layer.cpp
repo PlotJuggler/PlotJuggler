@@ -786,8 +786,9 @@ void SceneEntitiesLayer::startModelLoad(
       return;
     }
   }
-  // Resolved when the job gets a slot, so waiting jobs hold no copy of the bytes.
+  // Resolved when the job gets a slot (embedded bytes: an import slot), so queued jobs hold no copy of the bytes.
   load.job = model_queue_->enqueue(
+      primitive.data.empty() ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kBytes,
       [this, entity_id, model_index,
        location = QString::fromStdString(location)]() -> std::optional<MeshLoadQueue::Source> {
         const auto entity = model_state_.entities().find(entity_id);

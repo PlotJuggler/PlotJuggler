@@ -30,12 +30,14 @@ namespace pj::scene3d {
 #endif
 }
 
-// How many mesh jobs one layer keeps in flight, whatever their phase: downloads
-// overlap their latency up to this, and it bounds the fetched bytes held while
-// they wait for an import slot. Each result is admitted against the byte budgets
-// when it lands, on the GUI thread, so parallelism never lets a layer exceed them.
+// How many mesh jobs one layer keeps in flight, on desktop as in the browser:
+// downloads of remote meshes overlap while imports keep their own bound (the
+// bounds and what they hold: MeshLoadQueue). Six is a browser's per-host HTTP/1.1
+// connection limit (HTTP/2 multiplexes); it stays at least
+// maxConcurrentMeshImports(), at most 4, which MeshLoadQueue asserts.
 [[nodiscard]] inline std::size_t maxConcurrentMeshLoads() {
-  return std::max<std::size_t>(maxConcurrentMeshImports(), 6);
+  constexpr std::size_t kHttp1ConnectionsPerHost = 6;
+  return kHttp1ConnectionsPerHost;
 }
 
 [[nodiscard]] inline std::uint64_t encodedTextureBytes(const MeshData& mesh) {

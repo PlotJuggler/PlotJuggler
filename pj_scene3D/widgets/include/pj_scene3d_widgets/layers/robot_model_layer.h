@@ -60,10 +60,10 @@ class UrdfPackageResolver;
 // Coordinate contract: the CPU model is TF-free, one ModelDrawCall per link geometry holding the prefixed link frame
 // plus the link-local <origin> x scale; the view applies TF(fixed <- link), exactly once. URDF fixed joints the data
 // never publishes are bridged into the TF buffer (ensureStaticBridges).
-// Meshes load through a MeshLoadQueue, a few at a time (downloads overlap; one import at a time in the browser): URL
-// meshes are fetched, then imported off the GUI thread, and each result is admitted against kSceneLimits' retained-byte
-// budgets as it lands. A source switch cancels every queued and running load, so no stale completion lands; a
-// superseded import keeps its concurrency slot until its worker finishes.
+// Meshes load through a MeshLoadQueue (bounds in mesh_load_queue.h): URL meshes are fetched, then imported off
+// the GUI thread, and each result is admitted against kSceneLimits' retained-byte budgets as it lands. A source switch
+// cancels every queued and running load, so no stale completion lands; a superseded import keeps its concurrency slot
+// until its worker finishes.
 // Parser lifetime (kTopic): parsers are NOT cached; every decode resolves a fresh ParserBinding through ctx_.session (a
 // cached pointer dangles after a dataset reload).
 // Bounds-less on purpose: it adds nothing to the camera's scene fit (a robot moved by joints would pull the camera
