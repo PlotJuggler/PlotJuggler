@@ -433,6 +433,7 @@ static void applyTableRows(
   if (same_shape) {
     for (std::size_t r = 0; r < rows.size(); ++r) {
       const auto& row = rows[r];
+      bool content_changed = false;
       // Iterates the table's columns, not just the delivered row's: a ragged row must still blank or upgrade the cells
       // it omits, or a .ui-declared plain item survives next to typed neighbours, and a column mixing plain and typed
       // items orders some pairs by text and others by value (not a strict weak ordering). A coordinate with no item and
@@ -448,6 +449,7 @@ static void applyTableRows(
         auto* typed =
             (item != nullptr && item->type() == TypedTableItem::kType) ? static_cast<TypedTableItem*>(item) : nullptr;
         if (item == nullptr) {
+          content_changed = true;
           sort_guard.beforeWrite();
           typed = new TypedTableItem(text);
           typed->setSortValue(std::move(value));
@@ -456,6 +458,7 @@ static void applyTableRows(
           // A cell the .ui declared: upgraded unconditionally, even with no key to stamp, because
           // TypedTableItem::operator< is sound only on a column of typed cells; a key-less typed cell orders by text as
           // the plain one did.
+          content_changed = content_changed || item->text() != text;
           sort_guard.beforeWrite();
           typed = new TypedTableItem(text);
           *static_cast<QTableWidgetItem*>(typed) = *item;  // keep the roles/flags it already carried
@@ -464,11 +467,22 @@ static void applyTableRows(
           tw->setItem(static_cast<int>(r), static_cast<int>(c), typed);  // deletes the plain item
         } else if (typed->text() != text || typed->sortValue() != value) {
           // A key that moved with unchanged text still re-orders the column: same suspend and restore as a text edit.
+          content_changed = content_changed || typed->text() != text;
           sort_guard.beforeWrite();
           typed->setText(text);
           typed->setSortValue(std::move(value));
         }
         typed->setData(kPluginRowRole, static_cast<int>(r));
+      }
+      // A lock belongs to the row's content: a row rewritten in place (a filter moved another topic here) loses it
+      // until the plugin's disabled_rows and selection lock it again. New items start without one.
+      if (content_changed) {
+        for (int c = 0; c < tw->columnCount(); ++c) {
+          QTableWidgetItem* item = tw->item(static_cast<int>(r), c);
+          if (item != nullptr && item->data(kLockedRowRole).isValid()) {
+            item->setData(kLockedRowRole, QVariant());
+          }
+        }
       }
     }
   } else {
@@ -680,7 +694,7 @@ class ListRowDeleteDelegate : public LockedRowDelegate {
     QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
     const qreal dpr = painter->device() != nullptr ? painter->device()->devicePixelRatioF() : 1.0;
-    painter->drawPixmap(iconRect(opt.rect), rowTrashPixmap(option.palette.color(QPalette::Text), kIconExtent, dpr));
+    painter->drawPixmap(iconRect(opt.rect), rowTrashPixmap(opt.palette.color(QPalette::Text), kIconExtent, dpr));
   }
 
   QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
@@ -880,37 +894,49 @@ static std::set<int> toViewRows(const std::vector<int>& plugin_rows, const std::
   return rows;
 }
 
-// Set on a table once a delivery disabled one of its rows; tables without it skip the per-row lock pass.
+// Set on a table once a delivery disabled one of its rows; selection-only deliveries to a table without it skip the
+// per-row lock pass.
 constexpr const char* kHasDisabledRowsProperty = "_pj_has_disabled_rows";
 
 // Greys out the rows the plugin disables and tags with kLockedRowRole those it also selects (`want`, view rows). An
 // aspect the delivery leaves out keeps the table's current state: without disabled_rows the disabled rows are the ones
-// already disabled, without a selection a lock stays as tagged. Returns the locked view rows.
+// already disabled; without a selection a lock stays as tagged, and a lock released by disabled_rows alone leaves its
+// row selected. A row ending disabled and unlocked drops any selection stored for it, which would otherwise come back
+// when the row is enabled. Returns the locked view rows.
 static std::set<int> applyRowLocks(
     QTableWidget* tw, const std::optional<std::vector<int>>& disabled_rows, const std::optional<std::set<int>>& want,
-    const std::vector<int>& plugin_to_view) {
+    const std::vector<int>& view_to_plugin) {
   if (disabled_rows && !disabled_rows->empty()) {
     tw->setProperty(kHasDisabledRowsProperty, true);
   }
-  if (!tw->property(kHasDisabledRowsProperty).toBool() || (!disabled_rows && !want)) {
+  if (!disabled_rows && (!want || !tw->property(kHasDisabledRowsProperty).toBool())) {
     return {};
   }
-  const std::set<int> disabled = disabled_rows ? toViewRows(*disabled_rows, plugin_to_view) : std::set<int>{};
+  const std::set<int> disabled =
+      disabled_rows ? std::set<int>(disabled_rows->begin(), disabled_rows->end()) : std::set<int>{};
   std::set<int> locked;
+  QItemSelection to_select;
+  QItemSelection to_deselect;
+  const int last_col = tw->columnCount() - 1;
   for (int r = 0; r < tw->rowCount(); ++r) {
-    bool row_disabled = disabled.count(r) > 0;
-    bool row_locked = false;
+    bool row_disabled = disabled_rows && disabled.count(view_to_plugin[static_cast<std::size_t>(r)]) > 0;
+    bool was_locked = false;
     for (int c = 0; c < tw->columnCount(); ++c) {
       if (const QTableWidgetItem* item = tw->item(r, c)) {
         if (!disabled_rows) {
           row_disabled = !item->flags().testFlag(Qt::ItemIsEnabled);
         }
-        row_locked = row_disabled && (want ? want->count(r) > 0 : item->data(kLockedRowRole).toBool());
+        was_locked = item->data(kLockedRowRole).toBool();
         break;
       }
     }
+    const bool row_locked = row_disabled && (want ? want->count(r) > 0 : was_locked);
     if (row_locked) {
       locked.insert(r);
+    } else if (row_disabled) {
+      to_deselect.select(tw->model()->index(r, 0), tw->model()->index(r, last_col));
+    } else if (was_locked && !want) {
+      to_select.select(tw->model()->index(r, 0), tw->model()->index(r, last_col));
     }
     for (int c = 0; c < tw->columnCount(); ++c) {
       if (auto* item = tw->item(r, c)) {
@@ -921,6 +947,12 @@ static std::set<int> applyRowLocks(
         }
       }
     }
+  }
+  if (!to_deselect.isEmpty()) {
+    tw->selectionModel()->select(to_deselect, QItemSelectionModel::Deselect | QItemSelectionModel::Rows);
+  }
+  if (!to_select.isEmpty()) {
+    tw->selectionModel()->select(to_select, QItemSelectionModel::Select | QItemSelectionModel::Rows);
   }
   return locked;
 }
@@ -2026,7 +2058,7 @@ static void applyToWidget(
     } else if (selected_rows) {
       want = toViewRows(*selected_rows, plugin_to_view);
     }
-    const std::set<int> locked = applyRowLocks(tw, disabled_rows, want, plugin_to_view);
+    const std::set<int> locked = applyRowLocks(tw, disabled_rows, want, view_to_plugin);
     if (want) {
       // Re-applying the selection with selectRow() scrolls the view to the last selected row, so the table would jump
       // on every re-render that follows a user selection change (the common case, where the selection is already what

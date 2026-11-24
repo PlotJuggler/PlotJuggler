@@ -11,7 +11,7 @@ namespace PJ {
 
 // Base of every host delegate on a plugin table: paints an item tagged kLockedRowRole as selected and enabled (while
 // the view is enabled), so the QSS `::item:selected` accent applies to it. The item itself stays disabled, which keeps
-// every user gesture off it.
+// clicks, keyboard and selection off it.
 class LockedRowDelegate : public QStyledItemDelegate {
  public:
   using QStyledItemDelegate::QStyledItemDelegate;
@@ -25,6 +25,10 @@ class LockedRowDelegate : public QStyledItemDelegate {
     option->state |= QStyle::State_Selected;
     if (option->widget == nullptr || option->widget->isEnabled()) {
       option->state |= QStyle::State_Enabled;
+      // The text, a native style and a deletable table's trash icon then draw in the normal colours, whichever group
+      // the view picked for the disabled item.
+      option->palette.setCurrentColorGroup(
+          option->widget != nullptr && !option->widget->isActiveWindow() ? QPalette::Inactive : QPalette::Active);
     }
   }
 };

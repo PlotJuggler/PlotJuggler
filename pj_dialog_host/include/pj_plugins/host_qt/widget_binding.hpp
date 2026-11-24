@@ -24,10 +24,11 @@ inline constexpr const char* kHoistedWidgetsProperty = "pjHoistedWidgets";
 inline constexpr const char* kMarkdownProperty = "pjMarkdown";
 
 /// Item-data role (bool) on every item of a locked table row: a row the plugin both disables (`disabled_rows`) and
-/// selects. The item stays disabled, so no user gesture reaches it and `selectionChanged` never carries it, and the
-/// host delegates paint it as selected. A reader reporting selection state (the MCP ui_tree) counts a tagged row as
-/// selected. Travels with the item when the user sorts.
-inline constexpr int kLockedRowRole = Qt::UserRole + 2;
+/// selects. The item stays disabled, so clicks, keyboard and selection never reach it and `selectionChanged` never
+/// carries it, and the host delegates paint it as selected. A reader reporting selection state (the MCP ui_tree)
+/// counts a disabled row whose first item holds bool true here as selected. Travels with the item when the user
+/// sorts. The value sits far above Qt::UserRole, clear of the small offsets other models use.
+inline constexpr int kLockedRowRole = Qt::UserRole + 0x504A;
 
 /// Receives the widget's objectName and the event JSON.
 using WidgetEventCallback = std::function<void(const std::string& widget_name, const std::string& event_json)>;

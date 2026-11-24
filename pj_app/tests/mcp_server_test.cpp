@@ -874,23 +874,34 @@ TEST_F(McpServerTest, UiToolsFindAWidgetInAnOpenPopupByName) {
 }
 
 // A plugin dialog's locked row (both disabled and selected by the plugin) is disabled, so Qt never selects it; ui_tree
-// still reports it selected, as it is painted.
+// still reports it selected, as it is painted. Only a disabled row with a real bool true at the role counts: another
+// view's data at that role (a string, an enabled row) does not.
 TEST_F(McpServerTest, UiTreeReportsALockedRowAsSelected) {
   PJ::mcp::setUiToolsEnabled(true);
-  QTableWidget table(2, 1);
-  table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("freeRow")));
-  auto* locked = new QTableWidgetItem(QStringLiteral("lockedRow"));
-  locked->setFlags(locked->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
-  locked->setData(PJ::kLockedRowRole, true);
-  table.setItem(1, 0, locked);
-  table.resize(300, 200);
+  QTableWidget table(4, 2);
+  const auto add_row = [&table](int row, const QString& text, const QVariant& role, bool enabled) {
+    // Column 0 is itemless, as a radio column is: the role is read from the first cell holding an item.
+    auto* item = new QTableWidgetItem(text);
+    if (!enabled) {
+      item->setFlags(item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+    }
+    item->setData(PJ::kLockedRowRole, role);
+    table.setItem(row, 1, item);
+  };
+  add_row(0, QStringLiteral("lockedRow"), true, false);
+  add_row(1, QStringLiteral("stringRow"), QStringLiteral("topic"), false);
+  add_row(2, QStringLiteral("enabledRow"), true, true);
+  add_row(3, QStringLiteral("releasedRow"), false, false);
+  table.resize(400, 300);
   table.show();
   ASSERT_TRUE(pumpUntil([&] { return table.isVisible(); }));
 
   const auto [tree, tree_error] = result(call("ui_tree", json::object()));
   ASSERT_FALSE(tree_error) << tree;
   EXPECT_NE(tree.find("row \"lockedRow\" (selected)"), std::string::npos) << tree;
-  EXPECT_NE(tree.find("row \"freeRow\"\n"), std::string::npos) << tree;
+  for (const char* row : {"row \"stringRow\"\n", "row \"enabledRow\"\n", "row \"releasedRow\"\n"}) {
+    EXPECT_NE(tree.find(row), std::string::npos) << row << tree;
+  }
   PJ::mcp::setUiToolsEnabled(false);
 }
 

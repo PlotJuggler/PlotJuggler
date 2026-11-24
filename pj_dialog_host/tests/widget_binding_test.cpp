@@ -3417,6 +3417,19 @@ QColor cellBackground(QTableWidget* tw, int row) {
   return shot.pixelColor(tw->viewport()->mapTo(tw, QPoint(cell.right() - 3, cell.center().y())));
 }
 
+// The lightness of the darkest pixel in a row's first cell: its text ink on a light backdrop.
+int darkestInk(QTableWidget* tw, int row) {
+  const QImage shot = tw->grab().toImage();
+  const QRect cell = tw->visualItemRect(tw->item(row, 0)).translated(tw->viewport()->mapTo(tw, QPoint(0, 0)));
+  int darkest = 255;
+  for (int y = cell.top() + 2; y < cell.bottom() - 1; ++y) {
+    for (int x = cell.left() + 2; x < cell.right() - 1; ++x) {
+      darkest = std::min(darkest, shot.pixelColor(x, y).lightness());
+    }
+  }
+  return darkest;
+}
+
 // The app stylesheet for `theme` ("light" or "dark") with its palette tokens expanded, as PJ::Theme applies it, and
 // the palette itself.
 std::pair<QString, std::map<QString, QString>> themeStyleSheet(const QString& theme) {
@@ -3461,6 +3474,7 @@ TEST(WidgetBindingLockedRows, LockedRowPaintsSelectedAndClicksChangeNothing) {
 
   EXPECT_EQ(cellBackground(tw, 1), cellBackground(tw, 0)) << "default style";
   EXPECT_NE(cellBackground(tw, 2), cellBackground(tw, 0)) << "default style";
+  EXPECT_GT(darkestInk(tw, 2), darkestInk(tw, 3) + 40) << "default style: a disabled-only row's text is grey";
   for (const QString& theme : {u"light"_s, u"dark"_s}) {
     const auto [qss, palette] = themeStyleSheet(theme);
     ASSERT_FALSE(qss.isEmpty()) << theme.toStdString();
@@ -3502,8 +3516,8 @@ TEST(WidgetBindingLockedRows, LockedRowIsTaggedAndStaysDisabled) {
   EXPECT_TRUE(rowLocked(tw, 0));
 }
 
-// What the plugin receives matches main: selectionChanged carries only rows the user can change, never a locked or
-// disabled one, through select-all, clear and a Toggle range across the lock (the path of a drag).
+// selectionChanged carries only rows the user can change, never a locked or disabled one, through select-all, clear and
+// a Toggle range across the lock (the path of a drag).
 TEST(WidgetBindingLockedRows, ReportedSelectionsCarryOnlyFreeRows) {
   qapp();
   recorder()->clear();
@@ -3579,7 +3593,6 @@ TEST(WidgetBindingLockedRows, EmptyDisabledRowsReEnablesEveryRow) {
   ASSERT_EQ(tw->item(1, 0), kept) << "the in-place rewrite path";
   EXPECT_TRUE(rowEnabled(tw, 1));
   EXPECT_FALSE(tw->item(1, 0)->data(PJ::kLockedRowRole).toBool());
-  EXPECT_FALSE(tw->item(1, 0)->isSelected()) << "a released lock leaves no selection behind";
   EXPECT_EQ(selectedViewRows(tw), (std::set<int>{0}));
 
   // Out-of-range indices disable nothing either.
@@ -3648,6 +3661,84 @@ TEST(WidgetBindingLockedRows, SortedTableKeepsTheLockOnItsRow) {
   tw->selectAll();
   ASSERT_FALSE(reportedSelections().empty());
   EXPECT_EQ(reportedSelections().back(), (std::set<std::string>{"a", "b"}));
+}
+
+// A lock the plugin releases in a delivery without a selection keeps the plugin's selection: the row is enabled and
+// selected. A row the plugin disables without locking drops any stored selection, so it does not come back selected
+// when it is enabled again.
+TEST(WidgetBindingLockedRows, ReleasedLockWithoutSelectionKeepsTheRowSelected) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = lockedTable(root);
+
+  nlohmann::json d;
+  d["tbl"]["disabled_rows"] = {2};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  EXPECT_TRUE(rowEnabled(tw, 1));
+  EXPECT_FALSE(tw->item(1, 0)->data(PJ::kLockedRowRole).toBool());
+  EXPECT_EQ(selectedViewRows(tw), (std::set<int>{0, 1}));
+  EXPECT_TRUE(reportedSelections().empty());
+}
+
+TEST(WidgetBindingLockedRows, DisablingAnUnlockedRowDropsItsStoredSelection) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = lockedTable(root);
+  tw->selectRow(3);
+  ASSERT_EQ(selectedViewRows(tw), (std::set<int>{0, 3}));
+
+  nlohmann::json d;
+  d["tbl"]["disabled_rows"] = {1, 2, 3};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  d["tbl"]["disabled_rows"] = {1, 2};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  EXPECT_TRUE(rowEnabled(tw, 3));
+  EXPECT_FALSE(tw->item(3, 0)->isSelected());
+}
+
+// A rows rewrite clears the tag of every row whose content changed: a lock belongs to the topic, not the position.
+TEST(WidgetBindingLockedRows, RewrittenRowsDropTheirLock) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = lockedTable(root);
+
+  PJ::WidgetData moved;
+  moved.setTableRows("tbl", std::vector<std::vector<std::string>>{{"tf", "x"}, {"a", "x"}, {"empty", "x"}, {"b", "x"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(moved.toJson()));
+  ASSERT_EQ(tw->item(1, 0)->text(), u"a"_s);
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    EXPECT_FALSE(tw->item(r, 0)->data(PJ::kLockedRowRole).toBool()) << r;
+  }
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(lockedTableJson({"a", "tf"})));
+  ASSERT_TRUE(rowLocked(tw, 1));
+  PJ::WidgetData fewer;
+  fewer.setTableRows("tbl", std::vector<std::vector<std::string>>{{"a", "x"}, {"tf", "x"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(fewer.toJson()));
+  ASSERT_EQ(tw->rowCount(), 2);
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    EXPECT_FALSE(tw->item(r, 0)->data(PJ::kLockedRowRole).toBool()) << r;
+  }
+}
+
+// An explicit disabled_rows, even empty, enables every row it does not name, a .ui-declared disabled item included.
+TEST(WidgetBindingLockedRows, EmptyDisabledRowsEnablesAUiDisabledItem) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(2, 1, &root);
+  tw->setObjectName("tbl");
+  tw->setItem(0, 0, new QTableWidgetItem(u"a"_s));
+  auto* declared = new QTableWidgetItem(u"b"_s);
+  declared->setFlags(declared->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+  tw->setItem(1, 0, declared);
+
+  nlohmann::json d;
+  d["tbl"]["disabled_rows"] = nlohmann::json::array();
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  EXPECT_TRUE(rowEnabled(tw, 1));
 }
 
 #include "widget_binding_test.moc"

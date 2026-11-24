@@ -29,6 +29,7 @@
 #include <QScrollBar>
 #include <QStyleHints>
 #include <QTabBar>
+#include <QTableWidget>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextDocumentFragment>
@@ -276,6 +277,22 @@ void keyPress(QWindow* window, int key, Qt::KeyboardModifiers mods, const QStrin
       window, QEvent::KeyRelease, key, mods, text);
 }
 
+/// A plugin dialog's locked table row (PJ::kLockedRowRole, widget_binding.hpp): disabled, so Qt never selects it, but
+/// painted and meant as selected. Read from the row's first item (column 0 can be itemless, a radio column).
+bool lockedRow(const QAbstractItemView* view, int row) {
+  const auto* table = qobject_cast<const QTableWidget*>(view);
+  if (table == nullptr) {
+    return false;
+  }
+  for (int c = 0; c < table->columnCount(); ++c) {
+    if (const QTableWidgetItem* item = table->item(row, c)) {
+      const QVariant locked = item->data(PJ::kLockedRowRole);
+      return locked.typeId() == QMetaType::Bool && locked.toBool() && !item->flags().testFlag(Qt::ItemIsEnabled);
+    }
+  }
+  return false;
+}
+
 /// The visible top-levels, the open popup first and then the user's modal dialog.
 std::vector<QWidget*> visibleTopLevels() {
   std::vector<QWidget*> tops;
@@ -481,9 +498,7 @@ void UiDriver::dumpItems(QWidget* w, int depth, std::string& out, int& lines) {
       ++level;
     }
     std::vector<std::string> flags;
-    // A plugin dialog's locked row (PJ::kLockedRowRole) is disabled, so Qt never selects it, but it is selected.
-    if ((view->selectionModel() != nullptr && view->selectionModel()->isSelected(row)) ||
-        row.data(PJ::kLockedRowRole).toBool()) {
+    if ((view->selectionModel() != nullptr && view->selectionModel()->isSelected(row)) || lockedRow(view, row.row())) {
       flags.emplace_back("selected");
     }
     if (const QVariant check = row.data(Qt::CheckStateRole); check.isValid()) {
