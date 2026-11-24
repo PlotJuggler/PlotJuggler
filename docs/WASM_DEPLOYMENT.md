@@ -60,7 +60,8 @@ A public deployment also publishes the source offer
 `node scripts/wasm_source_offer.mjs --links --output build-wasm/deploy/sources`.
 
 `--presets` is optional: it deploys a preset tree (the repository's samples
-here) under `presets/`; see [Presets](#presets).
+here) under `presets/`; see [Presets](#presets). The `app.plotjuggler.io`
+package is built without it ([`packaging/web/README.md`](../packaging/web/README.md)).
 
 ### Built-in plugins
 
@@ -492,7 +493,9 @@ with a formula that labels what it is doing as text). The welcome dialog lists t
 first three; the office robot, the racing drone and the biped are unlisted and open
 from their links, `?preset=lilocbench`, `?preset=uzhfpv` and `?preset=microduck`,
 which the website's examples page uses. Their layouts, thumbnails, recordings and models load from
-`https://assets.plotjuggler.io`. Preset files are served `no-cache`. How to author a preset,
+`https://assets.plotjuggler.io`. Preset files are served `no-cache`. `app.plotjuggler.io`
+does not package the index but serves an uploaded copy
+([`packaging/web/README.md`](../packaging/web/README.md#sample-index)). How to author a preset,
 what the packager refuses, and the hosting limits are in
 [`WASM_PRESETS.md`](./WASM_PRESETS.md).
 
@@ -520,8 +523,10 @@ npx playwright install chromium
 PJ_WASM_PACKAGE_DIR="$PWD/../../build-wasm/deploy" npm run test:deployment
 ```
 
-The deployment test expects a package built with `--presets`: it also checks
-every deployed preset file and that the page fetches `presets/index.json`.
+The deployment test checks that the page requests `presets/index.json`; on a
+package built with `--presets` it also checks every deployed preset file, and
+with `PJ_WASM_DEPLOYMENT_URL` (a published `app.plotjuggler.io` Worker) the
+Worker's index route.
 Its response checks (`tests/wasm/support/deployment_contract.js`) also run
 against Caddy with `docs/wasm/Caddyfile`, in `robot_deployment.spec.js`.
 

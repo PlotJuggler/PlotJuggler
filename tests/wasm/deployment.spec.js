@@ -97,7 +97,8 @@ test('deployment server negotiates exact compressed bytes, MIME, isolation, and 
 test('deployed presets are revalidated and negotiated like the bundle, with every indexed file present', async () => {
   const presets = manifest.files.filter(file => file.path.startsWith('presets/'));
   const declared = new Set(presets.map(file => file.path));
-  expect(declared.has('presets/index.json')).toBe(true);
+  // The hosted app's package carries none: its Worker serves the index (the next case).
+  test.skip(!declared.has('presets/index.json'), 'a package built without --presets');
   const index = JSON.parse(await readFile(path.join(packageRoot, 'presets', 'index.json'), 'utf8'));
   expect(index.presets.length).toBeGreaterThan(0);
   for (const entry of index.presets) {
@@ -118,6 +119,21 @@ test('deployed presets are revalidated and negotiated like the bundle, with ever
     await expectServedAsDeclared(baseUrl, file);
   }
   expect(presets.some(file => file.representations.br), 'some preset file is precompressed').toBe(true);
+});
+
+test("the hosted app serves the samples' index from its Worker, revalidated by ETag", async () => {
+  test.skip(!process.env.PJ_WASM_DEPLOYMENT_URL, 'the Worker route of a published deployment (packaging/web)');
+  const index = await rawRequest(`${baseUrl}/presets/index.json`, { collectBody: true });
+  expect(index.status, 'upload the index first: packaging/web/upload_preset_index.mjs').toBe(200);
+  expectIsolationHeaders(index.headers);
+  expect(index.headers['content-type']).toBe('application/json; charset=utf-8');
+  expect(index.headers['cache-control']).toBe('no-cache');
+  expect(JSON.parse(index.body).presets.length).toBeGreaterThan(0);
+  const cached = await rawRequest(`${baseUrl}/presets/index.json`, {
+    headers: { 'If-None-Match': index.headers.etag },
+  });
+  expect(cached.status).toBe(304);
+  expect(cached.bytes).toBe(0);
 });
 
 test('cold Chromium boot runs the threaded app from the content-addressed package', async ({ page }) => {
@@ -157,8 +173,8 @@ test('cold Chromium boot runs the threaded app from the content-addressed packag
   expect(wasmHeaders['cache-control']).toBe('public, max-age=31536000, immutable');
   expect(responses.has(`${assetBase}/plotjuggler4.js`)).toBe(true);
   expect(responses.has(`${assetBase}/qtloader.js`)).toBe(true);
-  // The production build discovers the samples deployed beside the page.
-  await expect.poll(() => responses.get(`${baseUrl}/presets/index.json`)?.['cache-control']).toBe('no-cache');
+  // The production build looks for its samples beside the page (on the hosted app, the Worker answers).
+  await expect.poll(() => responses.has(`${baseUrl}/presets/index.json`)).toBe(true);
   expect(pageErrors).toEqual([]);
 });
 

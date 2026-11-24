@@ -10,6 +10,9 @@ export const CACHE_CONTROL = {
   immutable: 'public, max-age=31536000, immutable',
 };
 export const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
+// The samples' index, as the app requests it beside the page and as a hosted deployment keeps it in its
+// asset bucket (packaging/web/README.md, "Sample index").
+export const PRESET_INDEX_PATH = 'presets/index.json';
 export const ISOLATION_HEADERS = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
