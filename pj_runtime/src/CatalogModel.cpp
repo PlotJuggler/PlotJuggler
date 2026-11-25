@@ -8,9 +8,11 @@
 #include <tsl/robin_set.h>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QHash>
 #include <QLoggingCategory>
+#include <QTimer>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -296,13 +298,48 @@ struct CatalogModel::Impl {
   // the samplesIngested gate (rebuildIfChanged) to skip redundant full rebuilds.
   // Unset until the first rebuild, so the first ingest always rebuilds.
   std::optional<std::uint64_t> last_fingerprint;
+
+  // Rebuilds a commit triggers during an open file ingest wait until `next_ingest_rebuild_ms` (on `clock`); the timer
+  // runs the one left waiting.
+  QElapsedTimer clock;
+  qint64 next_ingest_rebuild_ms = 0;
+  std::chrono::milliseconds min_ingest_rebuild_gap{0};
+  QTimer ingest_rebuild_timer;
+
+  // Four rebuilds long, so rebuilds take at most a fifth of the GUI thread while a load runs, and a catalog that
+  // rebuilds in under a millisecond keeps the commit rate. Capped so a new topic shows within a second.
+  void recordRebuildCost(qint64 started_ms) {
+    constexpr qint64 kMaxGapMs = 1000;
+    const qint64 ended_ms = clock.elapsed();
+    const qint64 gap_ms =
+        std::min(std::max(4 * (ended_ms - started_ms), qint64{min_ingest_rebuild_gap.count()}), kMaxGapMs);
+    next_ingest_rebuild_ms = ended_ms + gap_ms;
+  }
   std::atomic<std::size_t> whole_catalog_walks{0};  ///< `items()` and `forEachItem()` calls, for `wholeCatalogWalks()`
 };
 
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>(session)) {
+  impl_->clock.start();
+  impl_->ingest_rebuild_timer.setSingleShot(true);
+  connect(&impl_->ingest_rebuild_timer, &QTimer::timeout, this, &CatalogModel::rebuildIfChanged);
   if (impl_->session != nullptr) {
-    connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildIfChanged);
+    // A file ingest commits up to every flush (tens of times a second) and a rebuild walks the whole engine, which held
+    // the GUI thread for most of a ~100k-series load. While one is open, a rebuild inside the gap after the last one
+    // waits for the timer, so the last commit is never left out; load completion rebuilds synchronously anyway.
+    // Streams and every caller outside an open ingest rebuild at once.
+    connect(impl_->session, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& /*ids*/, bool live) {
+      if (!live && impl_->session->hasActiveIngests()) {
+        const qint64 wait_ms = impl_->next_ingest_rebuild_ms - impl_->clock.elapsed();
+        if (wait_ms > 0) {
+          if (!impl_->ingest_rebuild_timer.isActive()) {
+            impl_->ingest_rebuild_timer.start(std::chrono::milliseconds(wait_ms));
+          }
+          return;
+        }
+      }
+      rebuildIfChanged();
+    });
     // An on-demand install registers its output topics, a removal retires them; neither is an ingest.
     connect(impl_->session, &SessionManager::objectTopicsChanged, this, &CatalogModel::rebuildIfChanged);
     connect(impl_->session, &SessionManager::onDemandRecipeInstalled, this, &CatalogModel::rebuildIfChanged);
@@ -792,7 +829,9 @@ void CatalogModel::rebuildFromDatastore() {
   // BEFORE the rebuild: a worker commit landing while the rebuild reads the datastore then differs from the saved
   // value, so the next ingest rebuilds again instead of skipping past a change the rebuild missed.
   const std::uint64_t fingerprint = catalogFingerprint();
+  const qint64 started_ms = impl_->clock.elapsed();
   rebuildNow();
+  impl_->recordRebuildCost(started_ms);
   impl_->last_fingerprint = fingerprint;
 }
 
@@ -804,8 +843,14 @@ void CatalogModel::rebuildIfChanged() {
   if (impl_->last_fingerprint == fp) {
     return;
   }
+  const qint64 started_ms = impl_->clock.elapsed();
   rebuildNow();
+  impl_->recordRebuildCost(started_ms);
   impl_->last_fingerprint = fp;  // taken before the rebuild — see rebuildFromDatastore
+}
+
+void CatalogModel::setMinIngestRebuildGap(std::chrono::milliseconds gap) {
+  impl_->min_ingest_rebuild_gap = gap;
 }
 
 std::uint64_t CatalogModel::catalogFingerprint() const {

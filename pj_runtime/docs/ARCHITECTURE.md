@@ -194,6 +194,12 @@ does not link it.
 
 ### Catalog and demand
 
+- **`CatalogModel` rebuild timing**: a rebuild walks the whole engine, and runs only when the content fingerprint
+  moved. `rebuildIfChanged` and `rebuildFromDatastore` are synchronous. A commit (`samplesIngested`) rebuilds at once,
+  except while a file ingest is open (`SessionManager::hasActiveIngests`, not live): then a commit inside the gap
+  after the last rebuild (four times its cost, at most a second, `setMinIngestRebuildGap` sets a floor) arms a
+  single-shot timer for the one rebuild left waiting. Load completion rebuilds synchronously, so the final catalog
+  never depends on the timer.
 - **`CatalogModel` demand surface**: advertised-but-unsubscribed placeholders
   (`setAdvertisedTopics`, data-less rows real data supersedes) and the per-dataset
   `setPerTopicPauseCapable` / `isPerTopicPauseCapable` flag, set by `pj_app`'s
