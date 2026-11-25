@@ -271,42 +271,44 @@ void AppSession::forEachVisibleRawRange(
   std::unordered_set<TopicId> seen_topics;
   std::unordered_set<uint32_t> seen_object_topics;
   std::unordered_map<DatasetId, bool> static_references;
-  for (const CatalogItem& item : catalog_model_->items()) {
+  // Unordered walk: every caller folds the visits into a min/max or a set, and this runs on every ingest notification,
+  // where items()' copy and collated sort of the whole catalog takes about a second at ~100k series.
+  catalog_model_->forEachItem([&](const CatalogItem& item) {
     auto [reference, inserted] = static_references.try_emplace(item.dataset_id, false);
     if (inserted) {
       reference->second = session_manager_->isStaticReferenceDataset(item.dataset_id);
     }
     if (reference->second) {
-      continue;
+      return;
     }
     Timestamp raw_min = 0;
     Timestamp raw_max = 0;
     if (const ScalarFieldPayload* scalar = asScalarField(item)) {
       if (!seen_topics.insert(scalar->topic_id).second) {
-        continue;
+        return;
       }
       const auto metadata = reader.getMetadata(scalar->topic_id);
       if (!metadata.has_value() || metadata->total_row_count == 0) {
-        continue;
+        return;
       }
       raw_min = metadata->time_range_min;
       raw_max = metadata->time_range_max;
     } else if (const ObjectTopicPayload* object = asObjectTopic(item)) {
       if (!seen_object_topics.insert(object->object_topic_id.id).second) {
-        continue;
+        return;
       }
       // A marker set or an on-demand result is host-published off the data clock (a finding sits at
       // kFindingTimestamp): it never stretches a range.
       if (object_store.entryCount(object->object_topic_id) == 0 ||
           isOffClockTopic(object_store.descriptor(object->object_topic_id))) {
-        continue;
+        return;
       }
       std::tie(raw_min, raw_max) = object_store.timeRange(object->object_topic_id);
     } else {
-      continue;
+      return;
     }
     visit(item.dataset_id, raw_min, raw_max);
-  }
+  });
 }
 
 std::optional<PJ::Range<PJ::Timestamp>> AppSession::datasetRawTimeRange(DatasetId dataset_id) const {
