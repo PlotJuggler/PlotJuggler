@@ -707,8 +707,7 @@ through `BrowserFetch.h` ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)). `Wel
 `MainWindow::loadLayoutFromUrl` runs the upload replay's byte-level path (`loadLayoutFromBytes`: imports, remapping,
 rollback). Each `<fileInfo>` downloads from `layout_xml::resolveFileSourceUrl` into a `BrowserFileStore::reserve()`d
 file and is checked against `content_sha256` and the preset's cumulative cap; Scene3D's `resolveLayoutResourceUrls`
-anchors robot resources at the layout URL. In WASM a redirect leaves the final URL the requested one, so a preset that
-relies on a redirect to another directory resolves its files against the wrong base. Every call ends in exactly one
+anchors robot resources at the URL the layout was served from, after any redirect. Every call ends in exactly one
 `layoutUrlLoadFinished(url, ok, reason)`; each source download reports throttled `layoutUrlLoadProgress(url,
 received, total)` ending at received == total. A success replaces only what the previous successful preset load
 brought (`BrowserLayoutRuntime::preset_data`), after its layout applies. Unless a stream is followed, the playhead

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "mesh_loader.h"
 
+#include <assimp/DefaultIOSystem.h>
 #include <assimp/GltfMaterial.h>
 #include <assimp/material.h>
 #include <assimp/postprocess.h>
@@ -11,6 +12,8 @@
 #include <QFileInfo>
 #include <QtConcurrent/QtConcurrentRun>
 #include <array>
+#include <assimp/IOStream.hpp>
+#include <assimp/IOSystem.hpp>
 #include <assimp/Importer.hpp>
 #include <cstdint>
 #include <cstdio>
@@ -22,12 +25,58 @@
 #include <utility>
 #include <vector>
 
+#include "local_path.h"
 #include "pj_scene3d_core/model_budget.h"
 #include "pj_widgets/Fnv1a.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 namespace {
+
+// assimp opens the files a model names (a glTF buffer uri, an OBJ mtllib) through the importer's IOSystem. An
+// in-memory model has no folder of its own, so it opens none: assimp's MemoryIOSystem (6.0.5, MemoryIOWrapper.h) serves
+// the model's own buffer before it asks this one, which refuses every other path, local or a network share.
+class NoFilesIOSystem final : public Assimp::IOSystem {
+ public:
+  bool Exists(const char* /*file*/) const override {
+    return false;
+  }
+  char getOsSeparator() const override {
+    return '/';
+  }
+  Assimp::IOStream* Open(const char* /*file*/, const char* /*mode*/) override {
+    return nullptr;
+  }
+  void Close(Assimp::IOStream* stream) override {
+    delete stream;
+  }
+};
+
+// The file system of a file import: the default one, minus the files importMayOpen() refuses (local_path.h).
+// (DefaultIOSystem is final in assimp 6.0.5, so this one wraps it.)
+class ShareRefusingIOSystem final : public Assimp::IOSystem {
+ public:
+  explicit ShareRefusingIOSystem(QString model_path) : model_path_(std::move(model_path)) {}
+  bool Exists(const char* file) const override {
+    return importMayOpen(model_path_, QString::fromUtf8(file)) && files_.Exists(file);
+  }
+  char getOsSeparator() const override {
+    return files_.getOsSeparator();
+  }
+  Assimp::IOStream* Open(const char* file, const char* mode) override {
+    return importMayOpen(model_path_, QString::fromUtf8(file)) ? files_.Open(file, mode) : nullptr;
+  }
+  void Close(Assimp::IOStream* stream) override {
+    files_.Close(stream);
+  }
+  bool ComparePaths(const char* one, const char* second) const override {
+    return files_.ComparePaths(one, second);
+  }
+
+ private:
+  QString model_path_;
+  mutable Assimp::DefaultIOSystem files_;
+};
 
 // Post-process flags shared by both entry points. GenSmoothNormals only adds normals to meshes that arrive WITHOUT any
 // (assimp leaves existing ones, e.g. STL/OBJ, untouched); ImproveCacheLocality reorders indices for the post-T&L
@@ -106,7 +155,11 @@ TextureSource resolveTexture(
     return source;
   }
   const auto resolve = [&base_dir](const QString& path) -> QString {
-    const QFileInfo info(QDir::cleanPath(QDir(base_dir).absoluteFilePath(path)));
+    const QString candidate = joinContentPath(base_dir, path);
+    if (candidate.isEmpty()) {
+      return {};
+    }
+    const QFileInfo info(candidate);
     return info.isFile() ? info.absoluteFilePath() : QString{};
   };
 
@@ -420,6 +473,7 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
       return out;
     }
     Assimp::Importer importer;
+    importer.SetIOHandler(new ShareRefusingIOSystem(path));  // owned by the importer
     const aiScene* scene = importer.ReadFile(path.toStdString(), kPostProcessFlags);
     if (scene == nullptr) {
       MeshData out;
@@ -451,6 +505,7 @@ MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& fo
       return out;
     }
     Assimp::Importer importer;
+    importer.SetIOHandler(new NoFilesIOSystem());  // owned by the importer
     const std::string hint = format_hint.toStdString();
     const aiScene* scene = importer.ReadFileFromMemory(
         bytes.constData(), static_cast<std::size_t>(bytes.size()), kPostProcessFlags,

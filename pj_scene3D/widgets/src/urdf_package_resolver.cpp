@@ -14,6 +14,7 @@
 #include <QVariantMap>
 #include <utility>
 
+#include "local_path.h"
 #include "pj_runtime/HttpUrl.h"
 
 using namespace Qt::StringLiterals;
@@ -47,6 +48,16 @@ QString joinPath(const QString& root, const std::string& rel) {
   return r + '/' + tail;
 }
 
+// joinPath() for a local `root` (local_path.h joinContentPath: cleaned, empty when `rel` climbs onto a share). The
+// "./" keeps a `rel` that reads as absolute ("C:/x") under `root`, as joinPath() does.
+QString joinLocalPath(const QString& root, const std::string& rel) {
+  QString tail = QString::fromStdString(rel);
+  while (tail.startsWith('/')) {
+    tail.remove(0, 1);
+  }
+  return joinContentPath(root, u"./"_s + tail);
+}
+
 // Whether references may reach host files: never in the browser, which grants no
 // host-file access, nor for a web-hosted layout's robot on the desktop.
 bool allowsLocalFiles(bool remote_only) {
@@ -58,9 +69,10 @@ bool allowsLocalFiles(bool remote_only) {
 #endif
 }
 
-// Whether a package's network root may be fetched. The desktop honors one only where the model
-// already reaches the network, a URL URDF or a web-hosted layout's robot, so a layout file cannot
-// send a topic or file URDF's meshes there; the browser reaches meshes no other way.
+// Whether a package's network root may be fetched. A root is the user's chosen source, so it is
+// honored whatever the remote-fetch setting. The desktop honors one only where the model already
+// reaches the network, a URL URDF or a web-hosted layout's robot, so a layout file cannot send a
+// topic or file URDF's meshes there; the browser reaches meshes no other way.
 bool allowsNetworkRoot(bool source_is_url, bool remote_only) {
 #ifdef PJ_TARGET_WASM
   (void)source_is_url;
@@ -71,9 +83,8 @@ bool allowsNetworkRoot(bool source_is_url, bool remote_only) {
 #endif
 }
 
-// `rel` under the directory `root` names: a URL, a local path for a file root,
-// or "" when the root is unusable (a file root without `local_files`) or `rel`
-// climbs out of it.
+// `rel` under the directory `root` names: a URL, a local path for a file root (on a network share too: the user chose
+// the root), or "" when the root is unusable (a file root without `local_files`) or `rel` climbs out of it.
 std::string resolveUnderRoot(const QUrl& root, const std::string& rel, bool local_files) {
   const bool local = root.isLocalFile();
   if (local ? !local_files : !PJ::isHttpUrl(root)) {
@@ -102,7 +113,7 @@ std::string resolveUnderRoot(const QUrl& root, const std::string& rel, bool loca
   if (!QDir::cleanPath(target.path(QUrl::FullyDecoded)).startsWith(directory.path(QUrl::FullyDecoded))) {
     return {};
   }
-  return (local ? target.toLocalFile() : target.toString(QUrl::FullyEncoded)).toStdString();
+  return (local ? filePathOf(target) : target.toString(QUrl::FullyEncoded)).toStdString();
 }
 }  // namespace
 
@@ -261,10 +272,20 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
       out.issue = MeshResolveIssue::kMissingFile;
       return out;
     }
-    // Absolute local path: skip the package chain. QUrl::toLocalFile percent-decodes (%20 -> space) and strips an
-    // optional localhost authority, which a raw mid(7) slice would mangle.
+    // Absolute local path: skip the package chain. localFileOf percent-decodes (%20 -> space), which a raw mid(7)
+    // slice would not.
+    const QUrl url(quri);
+    if (namesNetworkShare(url)) {
+      out.issue = MeshResolveIssue::kNetworkShare;
+      return out;
+    }
+    const QString path = localFileOf(url);
+    if (path.isEmpty()) {
+      out.issue = MeshResolveIssue::kMissingFile;
+      return out;
+    }
     out.resolved = true;
-    out.path = QUrl(quri).toLocalFile().toStdString();
+    out.path = path.toStdString();
     return out;
   }
 
@@ -306,7 +327,9 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
   // urdf_dir would mangle it (xacro $(find) expansion and MoveIt emit absolute mesh paths). Same existence-check policy
   // as the package steps, so a missing file surfaces in the status instead of resolving to a dead path.
   if (QDir::isAbsolutePath(quri)) {
-    if (local_files && QFileInfo::exists(quri)) {
+    if (local_files && isNetworkSharePath(quri)) {
+      out.issue = MeshResolveIssue::kNetworkShare;
+    } else if (local_files && QFileInfo::exists(quri)) {
       out.resolved = true;
       out.path = uri;
     } else {
@@ -326,8 +349,13 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
     out.issue = MeshResolveIssue::kMissingFile;
     return out;
   }
+  const QString path = url_base ? joinPath(base, uri) : joinLocalPath(base, uri);
+  if (path.isEmpty()) {
+    out.issue = MeshResolveIssue::kNetworkShare;
+    return out;
+  }
   out.resolved = true;
-  out.path = joinPath(base, uri).toStdString();
+  out.path = path.toStdString();
   out.is_url = url_base;
   return out;
 }
@@ -411,8 +439,8 @@ std::string UrdfPackageResolver::stepRememberedMap(const std::string& pkg, const
   if (root.isEmpty()) {
     return {};
   }
-  const QString candidate = joinPath(root, rel);
-  if (QFileInfo::exists(candidate)) {
+  const QString candidate = joinLocalPath(root, rel);
+  if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
     return candidate.toStdString();
   }
   return {};
@@ -453,8 +481,8 @@ std::string UrdfPackageResolver::stepAncestor(
   QDir dir(QString::fromStdString(urdf_dir));
   for (int depth = 0; depth <= kAncestorDepthCap; ++depth) {
     if (dir.dirName() == qpkg) {
-      const QString candidate = joinPath(dir.absolutePath(), rel);
-      if (QFileInfo::exists(candidate)) {
+      const QString candidate = joinLocalPath(dir.absolutePath(), rel);
+      if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
         return candidate.toStdString();
       }
     }
@@ -467,13 +495,13 @@ std::string UrdfPackageResolver::stepAncestor(
 
 std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const std::string& rel) {
   for (const QString& root : search_roots_) {
-    const QString pkg_dir = joinPath(root, pkg);
+    const QString pkg_dir = joinLocalPath(root, pkg);
     // Package identity = directory basename only (no package.xml check). Accept only when the mesh file itself exists
     // (mirrors stepAncestor): a package-dir stub missing the mesh must miss (""), not yield a path the loader silently
     // fails to open.
-    if (QFileInfo(pkg_dir).isDir()) {
-      const QString candidate = joinPath(pkg_dir, rel);
-      if (QFileInfo::exists(candidate)) {
+    if (!pkg_dir.isEmpty() && QFileInfo(pkg_dir).isDir()) {
+      const QString candidate = joinLocalPath(pkg_dir, rel);
+      if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
         return candidate.toStdString();
       }
     }
@@ -481,8 +509,8 @@ std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const s
   const QString qpkg = QString::fromStdString(pkg);
   for (const QString& root : userFolders()) {
     for (const QString& pkg_dir : packageIndex(QDir::cleanPath(root)).value(qpkg)) {
-      const QString candidate = joinPath(pkg_dir, rel);
-      if (QFileInfo::exists(candidate)) {
+      const QString candidate = joinLocalPath(pkg_dir, rel);
+      if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
         return candidate.toStdString();
       }
     }

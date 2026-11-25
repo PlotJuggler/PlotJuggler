@@ -4,6 +4,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QUrl>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -16,11 +17,17 @@
 #include <vector>
 
 #include "pj_scene3d_widgets/mesh_data.h"
+#include "url_fetcher.h"
 
 class QObject;
-class QUrl;
 
 namespace pj::scene3d {
+
+// The QSettings bool "pj_scene3d/allow_remote_model_fetch", default on (datasets routinely name their meshes by URL;
+// a fetch is bounded by UrlFetcher's redirect/size/timeout limits): whether model content may reach any http(s)
+// origin. Off, a model reaches only the origins its user chose. Layers read it once per newly seen model source and
+// pass it as Source::allow_remote_fetch.
+[[nodiscard]] bool remoteModelFetchAllowed();
 
 class MeshImport;
 class MeshLoader;
@@ -32,8 +39,8 @@ struct FetchResult;
 // use the load slots beyond the import ones: a kPath or kBytes job leaves the queue only for a free import slot. Jobs
 // leave the queue in enqueue order (one at its head waiting for an import slot holds back those behind it), and fetched
 // jobs import in enqueue order. What to load, whether to load at all (remote-fetch permission, source-size caps) and
-// whether a result fits the layer's byte budget stay with the layer; the queue runs the jobs it is handed and delivers
-// the results still wanted.
+// whether a result fits the layer's byte budget stay with the layer; the queue runs the jobs it is handed, gates
+// every http(s) request a job makes by its Source's remote-fetch policy, and delivers the results still wanted.
 //
 // Invariants:
 //  - Source bytes not yet imported are held only by fetched kUrl jobs waiting for an import slot, so by at most
@@ -68,6 +75,13 @@ class MeshLoadQueue {
     QByteArray bytes;  // kBytes: handed in; kUrl: the fetched body while waiting for an import slot
     QString format_hint;
     std::optional<bool> flip_override;
+    // The remote-fetch policy, applied to every http(s) request of the job (the mesh at an http(s) `location` and
+    // each texture it fetches): with `allow_remote_fetch` off, only a URL on one of `allowed_origins` (scheme, host
+    // and port; the source the user chose) is requested, and a redirect off that URL's origin fails it
+    // (RemoteFetch::kOwnOrigin). A refused mesh settles as a fetch failure; a refused texture leaves its slot empty, as
+    // a texture that fails to fetch does.
+    bool allow_remote_fetch = false;
+    std::vector<QUrl> allowed_origins;
   };
 
   struct Outcome {
@@ -89,9 +103,10 @@ class MeshLoadQueue {
   // the queue destroyed first.
   JobId enqueue(Source::Kind kind, std::function<std::optional<Source>()> resolve, std::function<void(Outcome)> done);
   // Fetches `url` through the jobs' fetcher, outside the bound and without an import: a model's description then shares
-  // the connections and cache its meshes use. `done` runs once through the event loop unless cancelAll(), the queue's
-  // destruction or a retirement intervenes first; while it is pending, cancel() never retires the fetcher.
-  void fetch(const QUrl& url, std::function<void(FetchResult)> done);
+  // the connections and cache its meshes use. An http(s) `url` is requested only with `allow_remote_fetch`. `done`
+  // runs once through the event loop unless cancelAll(), the queue's destruction or a retirement intervenes first;
+  // while it is pending, cancel() never retires the fetcher.
+  void fetch(const QUrl& url, bool allow_remote_fetch, std::function<void(FetchResult)> done);
   void cancel(JobId id);
   // Drops every queued job, every job waiting for an import slot and every pending
   // fetch() callback, and clears the `done` of running jobs (their workers/requests
@@ -159,5 +174,9 @@ class MeshLoadQueue {
   std::unordered_map<JobId, Running> running_;
   JobId next_id_ = 1;
 };
+
+// How `source`'s job may request `url`: anything with the remote-fetch setting on, else only its own origins, and
+// then without leaving the origin through a redirect.
+[[nodiscard]] RemoteFetch remoteFetchFor(const MeshLoadQueue::Source& source, const QUrl& url);
 
 }  // namespace pj::scene3d

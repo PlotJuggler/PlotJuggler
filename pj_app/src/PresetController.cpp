@@ -31,10 +31,12 @@ PresetController::~PresetController() {
 
 void PresetController::download(const QUrl& url, DownloadDone done, qint64 limit) {
   cancel();
-  cancel_fetch_ =
-      fetchBytesWithLimit(url, limit, kTransferTimeout, this, [done = std::move(done)](FetchedBytes fetched) {
+  cancel_fetch_ = fetchBytesWithLimit(
+      url, limit, kTransferTimeout, this,
+      [done = std::move(done)](FetchedBytes fetched) {
         done(std::move(fetched.bytes), std::move(fetched.final_url), std::move(fetched.error));
-      });
+      },
+      RedirectScope::kAnyOrigin);
 }
 
 void PresetController::downloadToFile(
@@ -66,7 +68,7 @@ void PresetController::downloadToFile(
         }
         done(std::move(file));
       },
-      nullptr, std::move(progress));
+      RedirectScope::kAnyOrigin, nullptr, std::move(progress));
 #endif
 }
 

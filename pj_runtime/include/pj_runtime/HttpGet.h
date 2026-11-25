@@ -68,11 +68,20 @@ QNetworkReply* httpGetWithLimit(
 /// How a fetchBytesWithLimit() transfer ended.
 struct FetchedBytes {
   QByteArray bytes;  ///< The body; empty on failure.
-  /// Where the body was served from after redirects. The browser follows redirects out of sight, so there it is
-  /// the requested URL.
+  /// Where the body was served from after redirects (in the browser, the URL the page's fetch reports; the requested
+  /// one when it reports none).
   QUrl final_url;
   QString error;                ///< Empty on success.
   bool limit_exceeded = false;  ///< The body was larger than `max_bytes`; `error` is downloadLimitMessage().
+};
+
+/// Which redirects a fetchBytesWithLimit() transfer follows.
+enum class RedirectScope : quint8 {
+  /// At most 4 hops, never from https to http; in the browser, the browser's own policy and limit.
+  kAnyOrigin,
+  /// Only to the requested URL's own scheme, host and port (the transfer fails otherwise, before the other origin
+  /// is contacted); in the browser, none at all: a redirect fails the transfer.
+  kSameOrigin,
 };
 
 /// A transfer's bytes received so far and its total: the declared Content-Length, or -1 when unknown.
@@ -84,8 +93,8 @@ using CancelFetch = std::function<void()>;
 
 /**
  * Size-capped GET of an untrusted body into memory, on desktop and in the browser. Only http(s) URLs are fetched
- * (anything else fails: native Qt would read file://). Redirects follow at most 4 hops and never from https to
- * http; in the browser the hop limit is the browser's. `timeout` is an inactivity timeout, not wall clock.
+ * (anything else fails: native Qt would read file://). `redirects` picks the redirects followed (RedirectScope).
+ * `timeout` is an inactivity timeout, not wall clock.
  *
  * `done` runs exactly once, later, on `context`'s thread, unless the returned CancelFetch runs or `context` is
  * destroyed first. Desktop: the GET goes through `network` (e.g. one with a disk cache), or, when null, through a
@@ -95,7 +104,8 @@ using CancelFetch = std::function<void()>;
  */
 CancelFetch fetchBytesWithLimit(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds timeout, QObject* context,
-    std::function<void(FetchedBytes)> done, QNetworkAccessManager* network = nullptr, FetchProgress progress = {});
+    std::function<void(FetchedBytes)> done, RedirectScope redirects, QNetworkAccessManager* network = nullptr,
+    FetchProgress progress = {});
 
 /// The error of a download over `max_bytes`, worded in MiB.
 QString downloadLimitMessage(qint64 max_bytes);

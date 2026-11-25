@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -15,6 +16,7 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QUrl>
 #include <array>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -215,7 +217,7 @@ TEST(MeshLoaderTest, ColladaFromMemoryKeepsTheUnresolvedTextureReference) {
 TEST(MeshLoaderTest, ColladaFromMemoryNeverResolvesAbsoluteTextureRefToLocalFile) {
   const QString absolute_texture = fixturePath("red_4x4.png");
   ASSERT_TRUE(QFileInfo(absolute_texture).isFile());
-  for (const QString& ref : {absolute_texture, u"file://"_s + absolute_texture}) {
+  for (const QString& ref : {absolute_texture, QUrl::fromLocalFile(absolute_texture).toString()}) {
     SCOPED_TRACE(ref.toStdString());
     QByteArray bytes = readFixtureBytes("textured_quad.dae");
     bytes.replace("red_4x4.png", ref.toUtf8());
@@ -228,6 +230,74 @@ TEST(MeshLoaderTest, ColladaFromMemoryNeverResolvesAbsoluteTextureRefToLocalFile
     EXPECT_TRUE(base.empty());
     EXPECT_EQ(base.unresolved_ref.toStdString(), absolute_texture.toStdString());
   }
+}
+
+// A texture ref naming a network share ("//host/share/..."; SMB on Windows) is never opened. POSIX reads "//tmp/x" as
+// "/tmp/x", so an existing file proves the ref is refused, not merely missing. Windows has no such spelling that
+// stays off the network; the predicate itself is tested on every platform (LocalPathTest).
+TEST(MeshLoaderTest, NetworkShareTextureRefIsNeverOpened) {
+#ifdef Q_OS_WIN
+  GTEST_SKIP() << "no share spelling of a local file that stays off the network";
+#endif
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  ASSERT_TRUE(QFile::copy(fixturePath("red_4x4.png"), dir.filePath(u"red_4x4.png"_s)));
+  const QString mesh_path = pj::scene3d::test::writeQuadReferencing(dir, u"/"_s + dir.filePath(u"red_4x4.png"_s));
+  MeshLoader loader;
+  const MeshData mesh = loader.load(mesh_path).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+  EXPECT_TRUE(mesh.submeshes.front().material->base_color.empty())
+      << mesh.submeshes.front().material->base_color.path.toStdString();
+}
+
+// A model that itself lies on a network share (the user chose it: a layout or package root there) still opens the
+// files beside it. POSIX reads "//tmp/x" as "/tmp/x", so a local folder stands in for the share.
+TEST(MeshLoaderTest, ModelOnANetworkShareReadsItsSiblingFiles) {
+#ifdef Q_OS_WIN
+  GTEST_SKIP() << "no share spelling of a local file that stays off the network";
+#endif
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const auto write = [&dir](const QString& name, const QByteArray& bytes) {
+    QFile file(dir.filePath(name));
+    EXPECT_TRUE(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
+  };
+  write(u"red.mtl"_s, "newmtl red\nKd 1 0 0\n");
+  write(u"triangle.obj"_s, "mtllib red.mtl\nusemtl red\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+  MeshLoader loader;
+  const MeshData mesh = loader.load(u"/"_s + dir.filePath(u"triangle.obj"_s)).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+  EXPECT_FLOAT_EQ(mesh.submeshes.front().material->base_color_factor.g, 0.0F) << "the sibling mtllib was not read";
+}
+
+// An in-memory model has no folder of its own: a glTF buffer uri naming a file on this host (an existing one here) is
+// never opened, so the import fails instead of reading it. The same model with an embedded buffer imports.
+TEST(MeshLoaderTest, InMemoryGltfNeverOpensAReferencedFile) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const std::array<float, 9> positions{0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+  const QByteArray buffer(reinterpret_cast<const char*>(positions.data()), sizeof(positions));
+  QFile bin(dir.filePath(u"triangle.bin"_s));
+  ASSERT_TRUE(bin.open(QIODevice::WriteOnly) && bin.write(buffer) == buffer.size());
+  bin.close();
+  const auto gltf = [](const QString& uri) {
+    return uR"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"buffers":[{"uri":"%1","byteLength":36}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]})"_s.arg(uri)
+        .toUtf8();
+  };
+  MeshLoader loader;
+  const MeshData embedded =
+      loader
+          .loadFromMemory(
+              gltf(u"data:application/octet-stream;base64,"_s + QString::fromLatin1(buffer.toBase64())), u"gltf"_s)
+          .result();
+  ASSERT_TRUE(embedded.ok) << embedded.error.toStdString();
+  const MeshData referenced = loader.loadFromMemory(gltf(bin.fileName()), u"gltf"_s).result();
+  EXPECT_FALSE(referenced.ok) << "an in-memory glTF read " << bin.fileName().toStdString();
 }
 
 // loadFromMemory feeds the format hint so assimp picks the importer for a headerless buffer: Collada bytes here,

@@ -589,7 +589,7 @@ dock with no state).
   and, for a file only, gives the folder relative paths and Scene3D resources resolve against and the recent-layout
   entry (the cleaned absolute path). Text and a URL have no folder: a relative data path in them is reported
   (`relative-path-unresolved`) and binds nothing. A URL anchors the layout's relative Scene3D resources (robot models
-  and their package roots) where the download ended, after any redirect on the desktop (the browser's fetch reports the URL asked for), while
+  and their package roots) where the download ended, after any redirect, while
   messages name the URL asked for; in text a relative one fails the load. In the browser `path` is refused (pass the file's text).
 - **One load at a time.** The diagnostics a reply quotes do not say which load reported them, so `load_layout` is
   refused as busy while an agent's load runs (from its checks to its reply) or `MainWindow::layoutLoadInFlight` (a

@@ -5,6 +5,7 @@
 #include <QBuffer>
 #include <QImageReader>
 #include <QObject>
+#include <QSettings>
 #include <QUrl>
 #include <algorithm>
 #include <cstdint>
@@ -96,6 +97,20 @@ void attachFetchedTextures(
 
 }  // namespace
 
+RemoteFetch remoteFetchFor(const MeshLoadQueue::Source& source, const QUrl& url) {
+  if (source.allow_remote_fetch) {
+    return RemoteFetch::kAnyOrigin;
+  }
+  const bool own_origin = std::any_of(
+      source.allowed_origins.cbegin(), source.allowed_origins.cend(),
+      [&url](const QUrl& origin) { return PJ::isSameOrigin(origin, url); });
+  return own_origin ? RemoteFetch::kOwnOrigin : RemoteFetch::kRefused;
+}
+
+bool remoteModelFetchAllowed() {
+  return QSettings().value(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true).toBool();
+}
+
 MeshLoadQueue::MeshLoadQueue(QObject* context)
     : MeshLoadQueue(context, maxConcurrentMeshLoads(), maxConcurrentMeshImports()) {}
 
@@ -113,17 +128,20 @@ MeshLoadQueue::JobId MeshLoadQueue::enqueue(
   return id;
 }
 
-void MeshLoadQueue::fetch(const QUrl& url, std::function<void(FetchResult)> done) {
+void MeshLoadQueue::fetch(const QUrl& url, bool allow_remote_fetch, std::function<void(FetchResult)> done) {
   UrlFetcher* current = &fetcher();
   ++pending_fetches_;
-  current->fetch(url, [this, current, done = std::move(done)](FetchResult result) {
-    if (fetcher_.get() != current) {
-      return;  // delivered by a retired fetcher before its deferred delete
-    }
-    --pending_fetches_;
-    abortObsoleteFetches();
-    done(std::move(result));
-  });
+  current->fetch(
+      url,
+      [this, current, done = std::move(done)](FetchResult result) {
+        if (fetcher_.get() != current) {
+          return;  // delivered by a retired fetcher before its deferred delete
+        }
+        --pending_fetches_;
+        abortObsoleteFetches();
+        done(std::move(result));
+      },
+      allow_remote_fetch ? RemoteFetch::kAnyOrigin : RemoteFetch::kRefused);
 }
 
 void MeshLoadQueue::cancel(JobId id) {
@@ -218,8 +236,10 @@ UrlFetcher& MeshLoadQueue::fetcher() {
 }
 
 void MeshLoadQueue::startFetch(JobId id) {
+  const Source& source = running_.at(id).source;
+  const QUrl url(source.location);
   fetcher().fetch(
-      QUrl(running_.at(id).source.location), [this, id](FetchResult result) { onFetched(id, std::move(result)); });
+      url, [this, id](FetchResult result) { onFetched(id, std::move(result)); }, remoteFetchFor(source, url));
 }
 
 void MeshLoadQueue::onFetched(JobId id, FetchResult result) {
@@ -314,9 +334,10 @@ bool MeshLoadQueue::startTextureFetches(JobId id, MeshData& mesh) {
   job.materials = std::move(materials);
   job.textures_pending = urls.size();
   for (const std::string& url : urls) {
-    fetcher().fetch(QUrl(QString::fromStdString(url)), [this, id, url](FetchResult result) {
-      onTextureFetched(id, url, std::move(result));
-    });
+    const QUrl request(QString::fromStdString(url));
+    fetcher().fetch(
+        request, [this, id, url](FetchResult result) { onTextureFetched(id, url, std::move(result)); },
+        remoteFetchFor(job.source, request));
   }
   return true;
 }

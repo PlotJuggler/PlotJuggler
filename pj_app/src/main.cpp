@@ -391,7 +391,8 @@ int main(int argc, char* argv[]) {
         QUrl(u"https://assets.plotjuggler.io/v1/gif/"_s + name), kMaxBytes, std::chrono::seconds(30), context,
         [done = std::move(done)](PJ::FetchedBytes fetched) {
           done(fetched.error.isEmpty() ? fetched.bytes : QByteArray());
-        });
+        },
+        PJ::RedirectScope::kAnyOrigin);
   });
 #endif
 

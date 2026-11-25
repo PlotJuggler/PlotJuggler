@@ -18,4 +18,14 @@ namespace PJ {
           scheme.compare(QLatin1StringView("https"), Qt::CaseInsensitive) == 0);
 }
 
+// Same scheme, host and port (an absent port is the scheme's default: 443 for https, else 80), all compared as an
+// http(s) origin.
+[[nodiscard]] inline bool isSameOrigin(const QUrl& a, const QUrl& b) {
+  const auto port = [](const QUrl& url) {
+    return url.port(url.scheme().compare(QLatin1StringView("https"), Qt::CaseInsensitive) == 0 ? 443 : 80);
+  };
+  return a.scheme().compare(b.scheme(), Qt::CaseInsensitive) == 0 &&
+         a.host().compare(b.host(), Qt::CaseInsensitive) == 0 && port(a) == port(b);
+}
+
 }  // namespace PJ

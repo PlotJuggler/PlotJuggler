@@ -140,17 +140,6 @@ void expectMatrixNear(const glm::mat4& actual, const glm::mat4& expected) {
   }
 }
 
-// Points the default-constructed QSettings (read by the layer's remote-fetch gate) at a throwaway INI file, so tests
-// neither read nor pollute the developer's settings.
-void isolateSettings() {
-  static QTemporaryDir settings_dir;
-  ASSERT_TRUE(settings_dir.isValid());
-  QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir.path());
-  QSettings::setDefaultFormat(QSettings::IniFormat);
-  QCoreApplication::setOrganizationName(u"pj_scene3d_tests"_s);
-  QCoreApplication::setApplicationName(u"scene_entities_layer_model_test"_s);
-}
-
 PJ::sdk::SceneEntity makeUrlEntity(std::string id, PJ::Timestamp timestamp, std::string url, std::string media_type) {
   PJ::sdk::SceneEntity entity;
   entity.id = std::move(id);
@@ -823,10 +812,7 @@ TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
 // The block is recorded once (no per-tick re-check), surfaced through remoteFetchNotice(), and produces zero network
 // egress, proven by a local listener that would see any connection attempt.
 TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
-  isolateSettings();
-  QSettings settings;
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
-  settings.sync();
+  setRemoteModelFetch(false);
 
   QTcpServer server;
   ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
@@ -865,10 +851,7 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
 // off, asynchronously: fetch and import resolve through the event loop and request their own repaint, never blocking
 // attach()/render().
 TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
-  isolateSettings();
-  QSettings settings;
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
-  settings.sync();
+  setRemoteModelFetch(false);
 
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -894,6 +877,57 @@ TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
   EXPECT_GT(repaints, 0) << "async local-URL mesh load never landed";
   EXPECT_TRUE(layer.remoteFetchNotice().isEmpty())
       << "local file URL tripped the remote gate: " << layer.remoteFetchNotice().toStdString();
+}
+
+// The remote-fetch setting covers every request a model makes, not only its URL: a LOCAL model whose mesh references
+// an absolute http(s) texture loads untextured with the setting off, with no connection to the texture's host and no
+// notice (an unfetched texture reports nothing), and fetches the texture with the setting on.
+namespace {
+// The loaded model's base-colour texture; nullopt when no model loaded.
+std::optional<pj::scene3d::TextureSource> loadLocalQuadModel(bool allow_remote_fetch, const QString& texture_url) {
+  setRemoteModelFetch(allow_remote_fetch);
+  QTemporaryDir dir;
+  EXPECT_TRUE(dir.isValid());
+  const QString path = writeQuadReferencing(dir, texture_url);
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities(
+          {makeUrlEntity("local", 10, QUrl::fromLocalFile(path).toString().toStdString(), "model/vnd.collada+xml")}));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  EXPECT_TRUE(layer.attach(makeContext(session)));
+  pumpUntil(
+      [&] { return !layer.modelMeshes().empty() || !layer.remoteFetchNotice().isEmpty(); }, std::chrono::seconds(5));
+  EXPECT_TRUE(layer.remoteFetchNotice().isEmpty()) << layer.remoteFetchNotice().toStdString();
+  if (layer.modelMeshes().size() != 1 || layer.modelMeshes().begin()->second->submeshes.empty()) {
+    ADD_FAILURE() << "the local model did not load";
+    return std::nullopt;
+  }
+  return layer.modelMeshes().begin()->second->submeshes.front().material->base_color;
+}
+}  // namespace
+
+TEST(SceneEntitiesLayerModelTest, LocalModelSkipsRemoteTextureWithoutOptIn) {
+  const FileHttpServer server({});
+  const std::optional<pj::scene3d::TextureSource> texture =
+      loadLocalQuadModel(/*allow_remote_fetch=*/false, server.url(u"/red_4x4.png"_s));
+  ASSERT_TRUE(texture.has_value());
+  EXPECT_TRUE(texture->empty());
+  pumpUntil([&] { return !server.paths().isEmpty(); }, std::chrono::milliseconds(300));
+  EXPECT_TRUE(server.paths().isEmpty()) << "a local model reached a remote host with remote fetch off";
+}
+
+TEST(SceneEntitiesLayerModelTest, LocalModelFetchesRemoteTextureWithOptIn) {
+  const FileHttpServer server({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  const std::optional<pj::scene3d::TextureSource> texture =
+      loadLocalQuadModel(/*allow_remote_fetch=*/true, server.url(u"/tex/red_4x4.png"_s));
+  ASSERT_TRUE(texture.has_value());
+  EXPECT_FALSE(texture->bytes.empty());
+  EXPECT_EQ(server.paths().count(u"/tex/red_4x4.png"_s), 1);
+  setRemoteModelFetch(false);  // quiet default for siblings
 }
 
 // A local-file fetch's completion is queued at fetch() time. Superseding its model aborts the fetcher, and destroying
@@ -941,10 +975,7 @@ TEST(SceneEntitiesLayerModelTest, AbortedFetchCompletionDiesWithTheLayer) {
 // on an invalid future (a crash). The remote URL points at a never-responding local server, so the record is still
 // pending when the embedded record drains.
 TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
-  isolateSettings();
-  QSettings settings;
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, true);
-  settings.sync();
+  setRemoteModelFetch(true);
 
   QTcpServer server;  // accepts and never responds: the fetch stays in flight
   ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
@@ -972,17 +1003,13 @@ TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
   EXPECT_GT(repaints, 0) << "embedded mesh record never drained";
 
   // Reset the opt-in so no other test inherits an enabled gate.
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
-  settings.sync();
+  setRemoteModelFetch(false);
 }
 
 // The default policy is ON: a data-supplied http(s) model URL is fetched without an opt-in. Proven by a local listener
 // that sees the connection attempt, and by the notice NOT reporting a policy block.
 TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
-  isolateSettings();
-  QSettings settings;
-  settings.remove(u"pj_scene3d/allow_remote_model_fetch"_s);  // exercise the built-in default
-  settings.sync();
+  setRemoteModelFetch(std::nullopt);  // exercise the built-in default
 
   QTcpServer server;  // accepts the connection (response irrelevant — we assert the attempt)
   ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
@@ -1072,10 +1099,7 @@ TEST(SceneEntitiesLayerModelTest, UnresolvedPackageUriNamesThePackage) {
 }
 
 TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) {
-  isolateSettings();
-  QSettings settings;
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, true);
-  settings.sync();
+  setRemoteModelFetch(true);
 
   // Bind then release a port: the connection is refused at once (no 15 s transfer-timeout wait).
   quint16 port = 0;
@@ -1111,8 +1135,7 @@ TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) 
       << "the offending URL must appear: " << notice.toStdString();
   EXPECT_EQ(notice_from_signal, notice) << "notice signal did not track the accessor";
 
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);  // quiet default for siblings
-  settings.sync();
+  setRemoteModelFetch(false);  // quiet default for siblings
 }
 
 // A model whose bytes load but fail to PARSE (assimp rejects them) must also surface in the notice, not leave a silent
@@ -1139,10 +1162,7 @@ TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
 // Deleting the entity that owns a failed model prunes its mesh-load record, so the stale "Failed to fetch" line (and
 // the row warning it drives) does not linger.
 TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
-  isolateSettings();
-  QSettings settings;
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, true);
-  settings.sync();
+  setRemoteModelFetch(true);
 
   quint16 port = 0;
   {
@@ -1177,8 +1197,7 @@ TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   EXPECT_TRUE(layer.remoteFetchNotice().isEmpty())
       << "deleting the entity must clear its model-load notice: " << layer.remoteFetchNotice().toStdString();
 
-  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
-  settings.sync();
+  setRemoteModelFetch(false);
 }
 
 // Contract pin (sibling of RobotModelLayerTest.ReloadSwapsParserWithoutTouchingStaleOne): SceneEntitiesLayer resolves

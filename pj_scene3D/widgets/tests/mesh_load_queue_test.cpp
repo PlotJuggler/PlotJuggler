@@ -14,7 +14,6 @@
 
 #include <QCoreApplication>
 #include <QEvent>
-#include <QFile>
 #include <QHash>
 #include <QHostAddress>
 #include <QObject>
@@ -58,6 +57,7 @@ MeshLoadQueue::Source urlSource(const QString& url) {
   source.kind = MeshLoadQueue::Source::Kind::kUrl;
   source.location = url;
   source.format_hint = u"glb"_s;
+  source.allow_remote_fetch = true;
   return source;
 }
 
@@ -76,11 +76,10 @@ MeshLoadQueue::JobId enqueue(MeshLoadQueue& queue, MeshLoadQueue::Source source,
       });
 }
 
-std::optional<MeshLoadQueue::Outcome> loadQuadFrom(const FileHttpServer& server) {
+// Runs one job on a fresh queue until it settles.
+std::optional<MeshLoadQueue::Outcome> settle(const MeshLoadQueue::Source& source) {
   QObject context;
   MeshLoadQueue queue(&context);
-  MeshLoadQueue::Source source = urlSource(server.url(u"/meshes/quad.dae"_s));
-  source.format_hint = u"dae"_s;
   std::optional<MeshLoadQueue::Outcome> outcome;
   queue.enqueue(
       source.kind, [source]() { return std::optional(source); },
@@ -88,6 +87,16 @@ std::optional<MeshLoadQueue::Outcome> loadQuadFrom(const FileHttpServer& server)
   queue.pump();
   EXPECT_TRUE(pumpUntil([&] { return outcome.has_value(); }, std::chrono::seconds(5)));
   return outcome;
+}
+
+MeshLoadQueue::Source quadSource(const QString& url) {
+  MeshLoadQueue::Source source = urlSource(url);
+  source.format_hint = u"dae"_s;
+  return source;
+}
+
+std::optional<MeshLoadQueue::Outcome> loadQuadFrom(const FileHttpServer& server) {
+  return settle(quadSource(server.url(u"/meshes/quad.dae"_s)));
 }
 
 // `count` binary STL meshes at /meshes/<index>.stl.
@@ -249,6 +258,138 @@ TEST(MeshLoadQueueTest, FailedFetchIsReportedAsAFetchFailure) {
   EXPECT_EQ(queue.runningCount(), 0U);
 }
 
+// A local mesh's absolute http(s) texture ref is a network request: a job that does not allow remote fetching
+// leaves it unresolved (no request reaches the host) and still delivers the mesh; one that allows it fetches it.
+namespace {
+std::optional<MeshLoadQueue::Outcome> loadLocalQuad(const QString& texture_url, bool allow_remote_fetch) {
+  QTemporaryDir dir;
+  EXPECT_TRUE(dir.isValid());
+  MeshLoadQueue::Source source = fileUrlSource(pj::scene3d::test::writeQuadReferencing(dir, texture_url), u"dae"_s);
+  source.allow_remote_fetch = allow_remote_fetch;
+  return settle(source);
+}
+
+const pj::scene3d::TextureSource& baseColor(const MeshLoadQueue::Outcome& outcome) {
+  EXPECT_FALSE(outcome.mesh.submeshes.empty());
+  return outcome.mesh.submeshes.front().material->base_color;
+}
+}  // namespace
+
+TEST(MeshLoadQueueTest, LocalMeshSkipsRemoteTextureWhenRemoteFetchIsOff) {
+  const FileHttpServer server({});
+  const std::optional<MeshLoadQueue::Outcome> outcome =
+      loadLocalQuad(server.url(u"/red_4x4.png"_s), /*allow_remote_fetch=*/false);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_TRUE(baseColor(*outcome).empty());
+  pumpUntil([&] { return !server.paths().isEmpty(); }, std::chrono::milliseconds(300));
+  EXPECT_TRUE(server.paths().isEmpty()) << "a local mesh reached a remote host with remote fetch off";
+}
+
+TEST(MeshLoadQueueTest, LocalMeshFetchesRemoteTextureWhenRemoteFetchIsOn) {
+  const FileHttpServer server({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  const std::optional<MeshLoadQueue::Outcome> outcome =
+      loadLocalQuad(server.url(u"/tex/red_4x4.png"_s), /*allow_remote_fetch=*/true);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_EQ(server.paths().count(u"/tex/red_4x4.png"_s), 1);
+  EXPECT_FALSE(baseColor(*outcome).bytes.empty());
+}
+
+// A job that does not allow remote fetching never requests an http(s) mesh: it settles as a fetch failure.
+TEST(MeshLoadQueueTest, RemoteMeshFailsWithoutRequestWhenRemoteFetchIsOff) {
+  const FileHttpServer server({{u"/meshes/quad.dae"_s, readFixtureBytes("textured_quad.dae")}});
+  MeshLoadQueue::Source source = quadSource(server.url(u"/meshes/quad.dae"_s));
+  source.allow_remote_fetch = false;
+  const std::optional<MeshLoadQueue::Outcome> outcome = settle(source);
+  ASSERT_TRUE(outcome.has_value());
+  EXPECT_TRUE(outcome->fetch_failed);
+  EXPECT_FALSE(outcome->mesh.ok);
+  pumpUntil([&] { return !server.paths().isEmpty(); }, std::chrono::milliseconds(300));
+  EXPECT_TRUE(server.paths().isEmpty());
+}
+
+// With remote fetch off, a job still reaches its own origins (a robot's chosen source): the mesh there and a texture on
+// the same origin load, a texture on another origin is never requested.
+TEST(MeshLoadQueueTest, OwnOriginsStayReachableWhenRemoteFetchIsOff) {
+  const FileHttpServer third_party({{u"/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  QByteArray foreign = readFixtureBytes("textured_quad.dae");
+  foreign.replace("red_4x4.png", third_party.url(u"/red_4x4.png"_s).toUtf8());
+  const FileHttpServer own({
+      {u"/meshes/quad.dae"_s, readFixtureBytes("textured_quad.dae")},
+      {u"/meshes/red_4x4.png"_s, readFixtureBytes("red_4x4.png")},
+      {u"/meshes/foreign.dae"_s, foreign},
+  });
+  const auto load = [&own](const QString& path) {
+    MeshLoadQueue::Source source = quadSource(own.url(path));
+    source.allow_remote_fetch = false;
+    source.allowed_origins = {QUrl(own.url(u"/"_s))};
+    return settle(source);
+  };
+  const std::optional<MeshLoadQueue::Outcome> same = load(u"/meshes/quad.dae"_s);
+  ASSERT_TRUE(same.has_value());
+  ASSERT_TRUE(same->mesh.ok) << same->mesh.error.toStdString();
+  EXPECT_FALSE(baseColor(*same).bytes.empty()) << "a same-origin texture was not fetched";
+  const std::optional<MeshLoadQueue::Outcome> other = load(u"/meshes/foreign.dae"_s);
+  ASSERT_TRUE(other.has_value());
+  ASSERT_TRUE(other->mesh.ok) << other->mesh.error.toStdString();
+  EXPECT_TRUE(baseColor(*other).empty());
+  pumpUntil([&] { return !third_party.paths().isEmpty(); }, std::chrono::milliseconds(300));
+  EXPECT_TRUE(third_party.paths().isEmpty()) << "a texture on another origin was requested";
+}
+
+// A request admitted only by its job's own origin never follows a redirect to another origin; with the remote-fetch
+// setting on, the same redirect is followed.
+TEST(MeshLoadQueueTest, OwnOriginRequestNeverFollowsARedirectElsewhere) {
+  const FileHttpServer elsewhere({{u"/quad.dae"_s, readFixtureBytes("textured_quad.dae")}});
+  const FileHttpServer own({}, {{u"/meshes/quad.dae"_s, elsewhere.url(u"/quad.dae"_s)}});
+  MeshLoadQueue::Source source = quadSource(own.url(u"/meshes/quad.dae"_s));
+  source.allow_remote_fetch = false;
+  source.allowed_origins = {QUrl(own.url(u"/"_s))};
+  const std::optional<MeshLoadQueue::Outcome> refused = settle(source);
+  ASSERT_TRUE(refused.has_value());
+  EXPECT_TRUE(refused->fetch_failed);
+  EXPECT_EQ(own.paths().size(), 1);
+  EXPECT_TRUE(elsewhere.paths().isEmpty()) << elsewhere.paths().join(u',').toStdString();
+  source.allow_remote_fetch = true;
+  const std::optional<MeshLoadQueue::Outcome> followed = settle(source);
+  ASSERT_TRUE(followed.has_value());
+  EXPECT_TRUE(followed->mesh.ok) << followed->mesh.error.toStdString();
+  EXPECT_EQ(elsewhere.paths().count(u"/quad.dae"_s), 1);
+}
+
+// A protocol-relative texture ref ("//host/t.png") of a fetched mesh is an http(s) request under the policy, not a
+// network share path.
+TEST(MeshLoadQueueTest, ProtocolRelativeTextureRefIsFetched) {
+  FileHttpServer server({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  QByteArray dae = readFixtureBytes("textured_quad.dae");
+  const QUrl texture(server.url(u"/tex/red_4x4.png"_s));
+  dae.replace("red_4x4.png", (u"//"_s + texture.authority() + texture.path()).toUtf8());
+  server.serve(u"/meshes/quad.dae"_s, dae);
+  const std::optional<MeshLoadQueue::Outcome> outcome = loadQuadFrom(server);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_EQ(server.paths().count(u"/tex/red_4x4.png"_s), 1);
+  EXPECT_FALSE(baseColor(*outcome).bytes.empty());
+}
+
+// With the setting off, a protocol-relative texture ref to another origin is requested like any other: never.
+TEST(MeshLoadQueueTest, ProtocolRelativeTextureRefToAnotherOriginIsNotFetchedWhenRemoteFetchIsOff) {
+  const FileHttpServer other({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  QByteArray dae = readFixtureBytes("textured_quad.dae");
+  const QUrl texture(other.url(u"/tex/red_4x4.png"_s));
+  dae.replace("red_4x4.png", (u"//"_s + texture.authority() + texture.path()).toUtf8());
+  const FileHttpServer own({{u"/meshes/quad.dae"_s, dae}});
+  MeshLoadQueue::Source source = quadSource(own.url(u"/meshes/quad.dae"_s));
+  source.allow_remote_fetch = false;
+  source.allowed_origins = {QUrl(own.url(u"/"_s))};
+  const std::optional<MeshLoadQueue::Outcome> outcome = settle(source);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_TRUE(other.paths().isEmpty()) << other.paths().join(u',').toStdString();
+  EXPECT_TRUE(baseColor(*outcome).empty());
+}
+
 // A cancelled fetch keeps its slot while another fetch on the shared fetcher is
 // still wanted; once none is, the fetcher is retired and every slot frees.
 TEST(MeshLoadQueueTest, UnwantedFetchesAreAbortedTogether) {
@@ -284,7 +425,9 @@ TEST(MeshLoadQueueTest, CancelAllAbortsAPlainFetch) {
   QObject context;
   MeshLoadQueue queue(&context);
   bool called = false;
-  queue.fetch(QUrl(silentServerUrl(server, u"robot.urdf"_s)), [&called](pj::scene3d::FetchResult) { called = true; });
+  queue.fetch(
+      QUrl(silentServerUrl(server, u"robot.urdf"_s)), /*allow_remote_fetch=*/true,
+      [&called](pj::scene3d::FetchResult) { called = true; });
   ASSERT_TRUE(pumpUntil([&] { return server.hasPendingConnections(); }, std::chrono::seconds(2)));
   queue.cancelAll();
   EXPECT_EQ(context.findChildren<pj::scene3d::UrlFetcher*>().size(), 1) << "the fetcher was not retired";
@@ -306,7 +449,8 @@ TEST(MeshLoadQueueTest, PendingPlainFetchKeepsTheFetcher) {
   queue.pump();
   std::optional<pj::scene3d::FetchResult> fetched;
   queue.fetch(
-      QUrl::fromLocalFile(paths.front()), [&fetched](pj::scene3d::FetchResult result) { fetched = std::move(result); });
+      QUrl::fromLocalFile(paths.front()), /*allow_remote_fetch=*/false,
+      [&fetched](pj::scene3d::FetchResult result) { fetched = std::move(result); });
   queue.cancel(job);
   EXPECT_EQ(queue.runningCount(), 1U) << "the fetcher was retired under a pending fetch()";
   ASSERT_TRUE(pumpUntil([&] { return fetched.has_value(); }, std::chrono::seconds(5)));
@@ -537,15 +681,11 @@ TEST(MeshLoadQueueTest, TextureFetchFreesTheImportSlot) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   QTcpServer silent;
-  QByteArray dae = readFixtureBytes("textured_quad.dae");
-  dae.replace("red_4x4.png", silentServerUrl(silent, u"t.png"_s).toUtf8());
-  QFile quad(dir.filePath(u"quad.dae"_s));
-  ASSERT_TRUE(quad.open(QIODevice::WriteOnly) && quad.write(dae) == dae.size());
-  quad.close();
+  const QString quad = pj::scene3d::test::writeQuadReferencing(dir, silentServerUrl(silent, u"t.png"_s));
   QObject context;
   MeshLoadQueue queue(&context, /*max_loads=*/3, /*max_imports=*/1);
   std::vector<std::string> log;
-  enqueue(queue, fileUrlSource(quad.fileName(), u"dae"_s), log);
+  enqueue(queue, fileUrlSource(quad, u"dae"_s), log);
   std::vector<std::string> wanted;
   for (const QString& path : cubeCopies(dir, 2)) {
     const MeshLoadQueue::Source cube = fileUrlSource(path, u"stl"_s);

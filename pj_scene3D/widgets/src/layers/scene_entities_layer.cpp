@@ -9,7 +9,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLoggingCategory>
-#include <QSettings>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -101,13 +100,6 @@ std::string sourceSignature(const PJ::sdk::ModelPrimitive& primitive) {
     return "url:" + primitive.url + ":" + primitive.media_type;
   }
   return {};
-}
-
-// Policy gate for DATA-SUPPLIED model URLs, read per newly seen model source. Remote fetch defaults ON (datasets
-// routinely reference their mesh by URL; a fetch is bounded by UrlFetcher's redirect/size/timeout limits and cached on
-// disk); a user who wants no dataset-driven network egress opts OUT via this QSettings key.
-bool remoteModelFetchAllowed() {
-  return QSettings().value(u"pj_scene3d/allow_remote_model_fetch"_s, true).toBool();
 }
 
 std::uint64_t estimateSnapshotBytes(const PJ::sdk::SceneEntities& snapshot) {
@@ -760,7 +752,8 @@ void SceneEntitiesLayer::startModelLoad(
     ResolvedMesh resolved;
     if (package_resolver_ != nullptr) {
       package_resolver_->autoSeedSearchRoots(QString());
-      resolved = package_resolver_->resolveUri(location, /*urdf_dir=*/{}, /*source_is_url=*/false);
+      resolved = package_resolver_->resolveUri(
+          location, /*urdf_dir=*/{}, /*source_is_url=*/false, /*package_url_roots=*/{}, /*remote_only=*/false);
     }
     if (!resolved.resolved) {
       load.error =
@@ -772,14 +765,14 @@ void SceneEntitiesLayer::startModelLoad(
     }
     location = std::move(resolved.path);
   }
+  // Decided once per (key, signature) through startModelLoad's identity early-return: a setting change takes effect on
+  // the next source change.
+  const bool allow_remote_fetch = remoteModelFetchAllowed();
   if (primitive.data.empty()) {
     const QUrl url(QString::fromStdString(location));
     // Local sources (bare paths / file:// URLs) stay ungated: reading the
     // user's disk is not network egress. Fetched bytes are capped by UrlFetcher.
-    const bool remote = PJ::isHttpUrl(url);
-    // Decided once per (key, signature) through startModelLoad's identity early-return: a setting change takes
-    // effect on the next source change.
-    if (remote && !remoteModelFetchAllowed()) {
+    if (PJ::isHttpUrl(url) && !allow_remote_fetch) {
       load.phase = ModelLoad::Phase::kBlocked;
       qCWarning(lcSceneEntitiesLayer) << "blocked remote model fetch for" << url.toString()
                                       << "- enable pj_scene3d/allow_remote_model_fetch to allow";
@@ -789,7 +782,7 @@ void SceneEntitiesLayer::startModelLoad(
   // Resolved when the job gets a slot (embedded bytes: an import slot), so queued jobs hold no copy of the bytes.
   load.job = model_queue_->enqueue(
       primitive.data.empty() ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kBytes,
-      [this, entity_id, model_index,
+      [this, entity_id, model_index, allow_remote_fetch,
        location = QString::fromStdString(location)]() -> std::optional<MeshLoadQueue::Source> {
         const auto entity = model_state_.entities().find(entity_id);
         if (entity == model_state_.entities().end() || model_index >= entity->second.models.size()) {
@@ -798,6 +791,7 @@ void SceneEntitiesLayer::startModelLoad(
         const PJ::sdk::ModelPrimitive& model = entity->second.models[model_index];
         MeshLoadQueue::Source source;
         source.format_hint = hintFromMediaType(model.media_type, model.url);
+        source.allow_remote_fetch = allow_remote_fetch;
         if (!model.data.empty()) {
           source.kind = MeshLoadQueue::Source::Kind::kBytes;
           source.bytes =

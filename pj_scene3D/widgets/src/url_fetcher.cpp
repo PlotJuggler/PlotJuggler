@@ -3,6 +3,7 @@
 #include "url_fetcher.h"
 
 #include <QFile>
+#include <QLoggingCategory>
 #ifndef PJ_TARGET_WASM
 #include <QNetworkAccessManager>
 #include <QNetworkDiskCache>
@@ -14,11 +15,14 @@
 #include <optional>
 #include <utility>
 
+#include "local_path.h"
 #include "pj_runtime/HttpGet.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 namespace {
+
+Q_LOGGING_CATEGORY(lcUrlFetcher, "pj.scene3d.url_fetcher")
 
 FetchResult readLocalFile(const QString& path) {
   FetchResult result;
@@ -47,21 +51,19 @@ FetchResult readLocalFile(const QString& path) {
   return result;
 }
 
-// The local filesystem path for `url` when it denotes a local file, else nullopt. Recognized: a file:// URL, a
-// scheme-less bare path, and a Windows drive-letter path that QUrl mis-parses as a single-letter "scheme"
-// (QUrl("C:/dir/x") -> scheme "c", path "/dir/x"). Network/other schemes (http/https/ftp/...) return nullopt.
-std::optional<QString> localFilePath(const QUrl& url) {
+// The filesystem path `url` names, else empty: a file:// URL, a scheme-less bare path, or a Windows drive-letter path
+// that QUrl mis-parses as a single-letter "scheme" (QUrl("C:/dir/x") -> scheme "c", path "/dir/x").
+QString anyFilePathOf(const QUrl& url) {
   if (url.isLocalFile()) {
-    return url.toLocalFile();
+    return filePathOf(url);
   }
-  const QString scheme = url.scheme();
-  if (scheme.isEmpty()) {
+  if (url.scheme().isEmpty()) {
     return url.toString();
   }
-  if (scheme.size() == 1 && scheme.at(0).isLetter()) {
-    return scheme + u":"_s + url.path();
+  if (url.scheme().size() == 1 && url.scheme().at(0).isLetter()) {
+    return url.scheme() + u":"_s + url.path();
   }
-  return std::nullopt;
+  return {};
 }
 
 }  // namespace
@@ -89,16 +91,28 @@ void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchRes
   QTimer::singleShot(0, this, [on_done = std::move(on_done), result = std::move(result)]() { on_done(result); });
 }
 
-void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done) {
-  // Local sources never touch the network (see localFilePath() for the drive-letter case): read straight from disk,
-  // still delivered asynchronously.
-  if (const std::optional<QString> local = localFilePath(url)) {
-    deliverLater(std::move(on_done), readLocalFile(*local));
+void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done, RemoteFetch remote) {
+  // Local sources never touch the network: read straight from disk, still delivered asynchronously.
+  if (const QString path = anyFilePathOf(url); !path.isEmpty()) {
+    if (namesNetworkShare(url) || isNetworkSharePath(path)) {
+      FetchResult result;
+      result.error = tr("network share refused: %1").arg(url.toDisplayString());
+      deliverLater(std::move(on_done), std::move(result));
+    } else {
+      deliverLater(std::move(on_done), readLocalFile(path));
+    }
     return;
   }
   if (!PJ::isHttpUrl(url)) {
     FetchResult result;
     result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
+    deliverLater(std::move(on_done), std::move(result));
+    return;
+  }
+  if (remote == RemoteFetch::kRefused) {
+    qCInfo(lcUrlFetcher) << "remote fetch disabled: not requesting" << url.toDisplayString();
+    FetchResult result;
+    result.error = tr("remote fetch is disabled");
     deliverLater(std::move(on_done), std::move(result));
     return;
   }
@@ -112,7 +126,7 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
         result.final_url = std::move(fetched.final_url);
         on_done(std::move(result));
       },
-      network_);
+      remote == RemoteFetch::kOwnOrigin ? PJ::RedirectScope::kSameOrigin : PJ::RedirectScope::kAnyOrigin, network_);
 }
 
 }  // namespace pj::scene3d

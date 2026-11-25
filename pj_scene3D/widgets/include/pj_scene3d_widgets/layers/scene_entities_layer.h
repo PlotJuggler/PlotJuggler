@@ -44,9 +44,9 @@ class UrdfPackageResolver;
 //   expiry); the bytes load asynchronously through a MeshLoadQueue (fetch, then import off the GUI thread; bounds
 //   in mesh_load_queue.h), each admitted against kSceneLimits' model budgets as it lands. Imported meshes are
 //   retained as MeshData and exposed as frame-local ModelDrawCalls through ModelRenderable (the view applies TF).
-//   DATA-SUPPLIED http(s) model URLs are gated by the QSettings bool "pj_scene3d/allow_remote_model_fetch" (default
-//   ON; false opts OUT); local file URLs / bare paths always load. Failures surface through remoteFetchNotice() and
-//   statusWarning().
+//   Every http(s) request a model makes is gated by the QSettings bool "pj_scene3d/allow_remote_model_fetch"
+//   (remoteModelFetchAllowed() in mesh_load_queue.h); local file URLs / bare paths always load. Failures surface
+//   through remoteFetchNotice() and statusWarning().
 //
 // Known gap: the marker path shows only the latest batch, so markers from earlier batches with different entity ids
 // disappear while their models persist.
