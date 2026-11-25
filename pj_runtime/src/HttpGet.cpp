@@ -153,7 +153,10 @@ CancelFetch fetchBytesWithLimit(
   const QPointer<QNetworkReply> reply = httpGetWithLimit(
       *network, request, max_bytes, timeout, context,
       [max_bytes, redirect_refused, deliver = std::move(deliver)](QNetworkReply& finished, bool limit_exceeded) {
+        // A private copy built on this thread: reply->url() may share data Qt's HTTP thread allocated, and
+        // ThreadSanitizer cannot see Qt's (uninstrumented) hand-off, so the eventual free would be reported as a race.
         FetchedBytes fetched{.final_url = finished.url(), .limit_exceeded = limit_exceeded};
+        fetched.final_url.detach();
         if (*redirect_refused) {
           fetched.error = u"the server redirected to another origin, which this download may not follow"_s;
         } else if (limit_exceeded) {

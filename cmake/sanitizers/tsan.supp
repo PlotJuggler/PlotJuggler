@@ -153,17 +153,6 @@ race:QObjectPrivate::ConnectionData::deleteOrphaned
 # queued call; neither capture is touched by the worker after the post.
 race:QtPrivate::QCallableObject<PJ::Scene2DLayer::makeQueuedRepaintCallback
 race:QtPrivate::QCallableObject<PJ::QtDiagnosticBridge::sink
-# The URL a redirected fetch was served from, freed by the GUI thread. Qt's HTTP
-# thread (started by QNetworkAccessManager, running no PJ4 code) builds the
-# redirect target QUrl and hands it to the reply on the GUI thread through a
-# queued signal inside libQt6Network; fetchBytesWithLimit
-# copies reply->url() into FetchedBytes::final_url, which UrlFetcher moves into
-# its FetchResult. The report pairs the free of that QUrl's private block with its
-# allocation on the HTTP thread, whose stack holds no PJ4 frame. Probed
-# 2026-11-16 by dropping each FetchResult member separately: only final_url races.
-# Thread-creation stacks are not matched by race: entries, so the GUI frame that
-# drops the last reference is the only one to name.
-race:~FetchResult
 
 # Test plugin libraries are dlclosed between tests and reloaded at the same
 # address. TSan keeps the unloaded library's access history, so the next load's
