@@ -130,6 +130,11 @@ chmod +x PlotJuggler-*-x86_64.AppImage
 
 It needs glibc 2.35 or newer (Ubuntu 22.04 and later, or equivalent).
 
+### Snap
+
+See [snap packaging](packaging/snap/README.md) for build, installation and testing
+instructions.
+
 ### Conda and pixi
 
 The `plotjuggler4` package on the
