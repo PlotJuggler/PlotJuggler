@@ -529,8 +529,9 @@ Expected<FieldId> DataWriter::ensureColumn(TopicId topic_id, std::string_view fi
   desc.logical_type = type;
   desc.field_path = std::string(field_path);
   // In sync, append one: a topic growing column by column otherwise copies its whole layout per column (quadratic).
-  // A layout this writer took from the schema or a sealed chunk is published whole, once.
-  if (storage->columnDescriptors().size() == cols.size()) {
+  // A layout this writer took from the schema or a sealed chunk, or one a reload replaced under it, is published whole.
+  const auto& stored = storage->columnDescriptors();
+  if (stored.size() == cols.size() && (cols.empty() || stored.back().field_path == cols.back().field_path)) {
     storage->addColumnDescriptor(desc);
     cols.push_back(std::move(desc));
   } else {

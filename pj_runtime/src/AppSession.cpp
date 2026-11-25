@@ -370,12 +370,12 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
   if (!new_min) {
     // Static references alone have no transport. Otherwise keep the range across a transient empty while a replacing
     // reload detaches its chunks, so playback does not pause or flicker mid-load.
-    const auto items = catalog_model_->items();
-    const bool only_references =
-        !items.empty() && std::all_of(items.begin(), items.end(), [&](const CatalogItem& item) {
-          return session_manager_->isStaticReferenceDataset(item.dataset_id);
-        });
-    if (catalog_model_->isEmpty() || only_references) {
+    // An empty catalog counts as references only.
+    bool only_references = true;
+    catalog_model_->forEachItem([&](const CatalogItem& item) {
+      only_references = only_references && session_manager_->isStaticReferenceDataset(item.dataset_id);
+    });
+    if (only_references) {
       resetPlaybackToEmpty();
     }
     return std::nullopt;
