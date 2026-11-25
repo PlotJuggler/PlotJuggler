@@ -3,7 +3,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/versions.env"
 
-QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"
+case "$(uname -m)" in
+  x86_64) QT_KIT=gcc_64 ;;
+  aarch64|arm64) QT_KIT=gcc_arm64 ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/${QT_KIT}"
 
 usage() {
   printf '%s\n' \
@@ -405,7 +410,7 @@ if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
   # Linux: ConanCenter's luau recipe has no fPIC option and its prebuilt Release
   # binary is not PIC, so it cannot link into PIE executables. -fPIC in luau's
   # package_id makes Conan build it here (once, then cached) instead. Keep in sync
-  # with linux-ci.yml, linux-appimage-release.yml and Dockerfile.build.
+  # with linux-ci.yml, linux-appimage-release.yml, Dockerfile.build and snap/local/build.sh.
   CONAN_LUAU_PIC_ARGS=()
   if [[ "$(uname -s)" == "Linux" ]]; then
     CONAN_LUAU_PIC_ARGS=(-c "luau/*:tools.build:cxxflags=['-fPIC']"
