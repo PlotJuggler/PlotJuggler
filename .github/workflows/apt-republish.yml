@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Publish a GitHub Release's .deb to the apt repository under a new Debian
+# revision (4.2.0-1 -> 4.2.0-2), without rebuilding it.
+#
+# publish_apt.sh refuses to re-publish a version whose bytes changed: pool files
+# are immutable at the edge, so replacing them fails `apt install` with Hash Sum
+# mismatch. When a release's .deb is rebuilt after it reached apt (a re-run that
+# bundles fixed plugins), this repacks the Release asset with the new revision,
+# swaps it on the Release, and publishes it; `apt upgrade` then picks it up.
+#
+#   - workflow_dispatch (tag, revision) -> repack, replace the Release asset, publish
+
+name: Republish a release .deb to apt
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose .deb is republished (e.g. 4.2.0)
+        required: true
+      revision:
+        description: New Debian revision, higher than the published one (e.g. 2)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  republish:
+    if: vars.PJ4_APT_PUBLIC_URL != ''
+    runs-on: ubuntu-latest
+    # Shares the release workflow's queue: two publishes at once would each drop
+    # the other's version from the rebuilt index.
+    concurrency:
+      group: apt-publish
+      cancel-in-progress: false
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+
+      - name: Repack the Release .deb under the new revision
+        id: repack
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REVISION: ${{ inputs.revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9]+$ ]] || { echo "::error::revision must be a number, got '$REVISION'"; exit 1; }
+          gh release download "$TAG" -p 'plotjuggler4_*.deb' -D in
+          mapfile -t debs < <(ls in/*.deb)
+          (( ${#debs[@]} == 1 )) || { echo "::error::expected one .deb on release $TAG, found ${#debs[@]}"; exit 1; }
+          src="${debs[0]}"
+          dpkg-deb -R "$src" root
+          old="$(sed -n 's/^Version: //p' root/DEBIAN/control)"
+          new="${old%-*}-${REVISION}"
+          dpkg --compare-versions "$new" gt "$old" || { echo "::error::$new is not newer than $old"; exit 1; }
+          sed -i "s/^Version: .*/Version: ${new}/" root/DEBIAN/control
+          changelog="usr/share/doc/plotjuggler4/changelog.Debian.gz"
+          zcat "root/$changelog" | sed "1s/(${old})/(${new})/" | gzip -9n > changelog.tmp
+          mv changelog.tmp "root/$changelog"
+          sum="$(cd root && md5sum "$changelog")"
+          sed -i "s|^[0-9a-f]*  ${changelog}\$|${sum}|" root/DEBIAN/md5sums
+          (cd root && md5sum -c --quiet DEBIAN/md5sums)
+          mkdir -p pkg
+          out="pkg/$(basename "${src/_${old}_/_${new}_}")"
+          dpkg-deb --root-owner-group -Zxz --build root "$out" >/dev/null
+          dpkg-deb -f "$out" Package Version Architecture
+          echo "deb=$out" >> "$GITHUB_OUTPUT"
+          echo "old=$(basename "$src")" >> "$GITHUB_OUTPUT"
+
+      - name: Replace the asset on the Release
+        # Upload first: the Release always holds a .deb.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release upload "$TAG" "${{ steps.repack.outputs.deb }}"
+          gh release delete-asset "$TAG" "${{ steps.repack.outputs.old }}" --yes
+
+      - name: Install apt-ftparchive
+        run: command -v apt-ftparchive || { sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils; }
+
+      - name: Publish to the apt repository
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+          PJ_APT_PUBLIC_URL: ${{ vars.PJ4_APT_PUBLIC_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash packaging/deb/publish_apt.sh "${{ steps.repack.outputs.deb }}"

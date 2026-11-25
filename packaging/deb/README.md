@@ -256,6 +256,14 @@ Pool objects go up `immutable` with a one-year max-age — they never change.
 Metadata goes up with `max-age=0`: the edge caches `InRelease` and
 `Packages.gz` independently, and a mismatched pair fails `apt update`.
 
+So a version is published once: `publish_apt.sh` refuses one whose bytes
+changed. When a release's `.deb` is rebuilt after it reached apt (a re-run that
+bundles fixed plugins), dispatch
+[`apt-republish.yml`](../../.github/workflows/apt-republish.yml) with the tag and
+the next Debian revision. It repacks the Release asset as `<ver>-<revision>`
+(control `Version`, changelog header and its md5sum), replaces it on the
+Release, and publishes it; `apt upgrade` then installs it.
+
 ### No `Valid-Until`
 
 The `Release` file deliberately carries no expiry. It would turn any pause in
