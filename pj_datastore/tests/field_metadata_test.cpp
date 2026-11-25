@@ -40,7 +40,7 @@ struct FieldMetadataTest : ::testing::Test {
 
   std::string metadata(sdk::FieldHandle f) {
     const auto lock = engine.lockEngine();
-    return std::string(engine.getTopicStorage(topic.id)->fieldMetadata(f.id));
+    return std::string(engine.getTopicStorage(f.topic.id)->fieldMetadata(f.id));
   }
 
   std::string topicMetadata(sdk::TopicHandle t) {
