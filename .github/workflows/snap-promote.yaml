@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Snap promotion
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    uses: canonical/robotics-actions-workflows/.github/workflows/promote.yaml@main
+    with:
+      snap: plotjuggler
+      # Future: publish builds to candidate, then promote candidate to stable.
+      from-channel: latest/beta
+      to-channel: latest/candidate
+    secrets:
+      snapstore-login: ${{ secrets.STORE_LOGIN }}
