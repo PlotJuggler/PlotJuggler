@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+[Desktop Entry]
+Type=Application
+Name=PlotJuggler 4
+GenericName=Timeseries Visualization
+Exec=plotjuggler %F
+Icon=${SNAP}/usr/share/plotjuggler/plotjuggler4.png
+Comment=Visualize timeseries like a pro
+Terminal=false
+Categories=Development;Science;Utility;
+Keywords=plot;timeseries;ros;mcap;telemetry;
+StartupWMClass=plotjuggler4

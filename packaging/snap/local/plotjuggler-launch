@@ -1,0 +1,33 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+set -e
+# Restrict Qt plugin loading to this kit; older host IBus plugins can crash Qt.
+unset QT_IM_MODULE
+export QT_PLUGIN_PATH="${SNAP}/usr/plugins"
+export PYTHONHOME="${SNAP}/usr"
+export XDG_DATA_DIRS="${SNAP}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+# core26 Glycin from the snap cannot rely on the host.
+# SNAP_USER_DATA is per user and revision: never launch a refreshed revision's
+# helpers from an older process.
+# Glycin treats Exec as an absolute binary path.
+export GLYCIN_DATA_DIR="${SNAP_USER_DATA}/glycin"
+for config in "${SNAP}"/usr/share/glycin-loaders/*/conf.d/*.conf; do
+  relative="${config#"${SNAP}/usr/share/"}"
+  target="${GLYCIN_DATA_DIR}/${relative}"
+  mkdir -p "$(dirname "${target}")"
+  sed "s|^Exec=/usr/libexec/glycin-loaders/|Exec=${SNAP}/usr/libexec/glycin-loaders/|" \
+    "${config}" > "${target}"
+done
+
+# Necessary for Mosaico.
+export GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="${GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:-/etc/ssl/certs/ca-certificates.crt}"
+
+# Classic ELF patching disables default library directories.
+# Preserve sourced ROS paths and append host graphics paths without introducing an empty entry.
+case "${SNAP_ARCH}" in
+  amd64) arch_triplet=x86_64-linux-gnu ;;
+  arm64) arch_triplet=aarch64-linux-gnu ;;
+  *) echo "Unsupported architecture: ${SNAP_ARCH}" >&2; exit 1 ;;
+esac
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}/usr/lib/${arch_triplet}:/lib/${arch_triplet}"
+exec "${SNAP}/usr/bin/plotjuggler4" "${@}"
