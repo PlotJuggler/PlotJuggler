@@ -957,6 +957,46 @@ TEST(CatalogModelPathResolve, DatasetsEnumeratesLoadedDatasetsInLoadOrder) {
   EXPECT_EQ(ds[1].second, u"b.mcap"_s);
 }
 
+TEST(CatalogModelPathResolve, DatasetsFollowEveryChangeOfTheItems) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto ids = [&catalog] { return catalog.datasetIds(); };
+  auto a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(a.has_value());
+  ASSERT_NE(addScalarTopic(session, *a, "/imu/accel/sample"), 0U);
+  ASSERT_EQ(ids(), std::vector<PJ::DatasetId>{*a});
+
+  // A dataset added after the list was read.
+  auto b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(b.has_value());
+  ASSERT_NE(addScalarTopic(session, *b, "/gps/fix"), 0U);
+  EXPECT_EQ(ids(), (std::vector<PJ::DatasetId>{*a, *b}));
+
+  // A relabel keeps the ids and changes the label.
+  catalog.setDatasetDisplayName(*b, u"Pretty"_s);
+  ASSERT_EQ(catalog.datasets().size(), 2U);
+  EXPECT_EQ(catalog.datasets()[1].second, u"Pretty"_s);
+
+  // Removing every item of a dataset removes the dataset.
+  std::vector<QString> keys_of_a;
+  catalog.forEachItem([&](const PJ::CatalogItem& item) {
+    if (item.dataset_id == *a) {
+      keys_of_a.push_back(item.key);
+    }
+  });
+  catalog.removeItems(keys_of_a);
+  EXPECT_EQ(ids(), std::vector<PJ::DatasetId>{*b});
+
+  catalog.removeDataset(*b);
+  EXPECT_TRUE(ids().empty());
+  catalog.restoreDataset(*b);
+  EXPECT_EQ(ids(), std::vector<PJ::DatasetId>{*b});
+
+  catalog.clearAll();
+  EXPECT_TRUE(ids().empty());
+  EXPECT_TRUE(catalog.datasets().empty());
+}
+
 TEST(CatalogModelPathResolve, SameTopicFieldResolvesPerDatasetToDistinctKeys) {
   // The core generic-reuse guarantee: two similar recordings share an
   // identical topic+field path but live under different per-load keys.

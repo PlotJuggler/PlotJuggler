@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <set>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -264,9 +263,16 @@ struct CatalogModel::Impl {
 
   SessionManager* session = nullptr;
   ItemMap items;
-  // findScalarForMarkerKey's answers found so far, by dataset, then `strings_too`, then key; cleared with every change
-  // of `items`, before any notification of it, so no slot reads a stale one.
+  // Caches derived from `items`, dropped by itemsChanged() with every change of `items`, before any notification of
+  // it, so no slot reads a stale one. findScalarForMarkerKey's answers by dataset, then `strings_too`, then key:
   tsl::robin_map<DatasetId, std::array<tsl::robin_map<std::string, ScalarFieldPayload>, 2>> scalar_lookups;
+  // datasets(), computed on first read: listing them walks every item, and the ingest path asks per progress tick.
+  std::optional<std::vector<std::pair<DatasetId, QString>>> datasets;
+
+  void itemsChanged() {
+    scalar_lookups.clear();
+    datasets.reset();
+  }
   // Datasets hidden by clearAll: rebuildFromDatastore skips them entirely.
   // A reload of the same file creates a fresh DatasetId not in this set, so
   // the curves come back.
@@ -626,25 +632,30 @@ std::optional<CurveDescriptor> CatalogModel::curveDescriptor(const QString& key,
 }
 
 std::vector<std::pair<DatasetId, QString>> CatalogModel::datasets() const {
-  std::vector<std::pair<DatasetId, QString>> result;
-  tsl::robin_set<DatasetId> seen;
-  for (const auto& [key, item] : impl_->items) {
-    (void)key;
-    if (seen.insert(item.dataset_id).second) {
-      result.emplace_back(item.dataset_id, item.dataset_name);
+  if (!impl_->datasets) {
+    std::vector<std::pair<DatasetId, QString>> result;
+    tsl::robin_set<DatasetId> seen;
+    for (const auto& [key, item] : impl_->items) {
+      (void)key;
+      if (seen.insert(item.dataset_id).second) {
+        result.emplace_back(item.dataset_id, item.dataset_name);
+      }
     }
+    std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    impl_->datasets = std::move(result);
   }
-  std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
-  return result;
+  return *impl_->datasets;
 }
 
 std::vector<DatasetId> CatalogModel::datasetIds() const {
-  std::set<DatasetId> ids;
-  for (const auto& [key, item] : impl_->items) {
-    (void)key;
-    ids.insert(item.dataset_id);
+  const auto listed = datasets();
+  std::vector<DatasetId> ids;
+  ids.reserve(listed.size());
+  for (const auto& [dataset_id, label] : listed) {
+    (void)label;
+    ids.push_back(dataset_id);
   }
-  return {ids.begin(), ids.end()};
+  return ids;
 }
 
 std::optional<QString> CatalogModel::datasetLabel(DatasetId dataset_id) const {
@@ -882,7 +893,7 @@ void CatalogModel::rebuildNow() {
   if (impl_->session == nullptr) {
     if (!impl_->items.empty()) {
       impl_->items.clear();
-      impl_->scalar_lookups.clear();
+      impl_->itemsChanged();
       emit cleared();
     }
     return;
@@ -1053,7 +1064,7 @@ void CatalogModel::rebuildNow() {
 
   const Impl::ItemMap previous_items = std::move(impl_->items);
   impl_->items = std::move(next_items);
-  impl_->scalar_lookups.clear();
+  impl_->itemsChanged();
 
   if (!previous_items.empty() && impl_->items.empty()) {
     emit cleared();
@@ -1104,7 +1115,7 @@ void CatalogModel::clearAll(bool tombstone) {
     }
   }
   impl_->items.clear();
-  impl_->scalar_lookups.clear();
+  impl_->itemsChanged();
   impl_->removed_names_per_dataset.clear();
   impl_->advertised.clear();
   impl_->per_topic_pause_capable_datasets.clear();
@@ -1208,7 +1219,7 @@ void CatalogModel::removeItems(const std::vector<QString>& keys) {
     impl_->items.erase(it);
     removed.push_back(key);
   }
-  impl_->scalar_lookups.clear();
+  impl_->itemsChanged();
   if (removed.isEmpty()) {
     return;
   }
@@ -1251,7 +1262,7 @@ bool CatalogModel::removeDataset(DatasetId dataset_id, bool tombstone) {
   for (const QString& key : keys) {
     impl_->items.erase(key);
   }
-  impl_->scalar_lookups.clear();
+  impl_->itemsChanged();
   // Empty catalog: one cleared() (views reset in O(1)); otherwise one batched
   // itemsRemoved so consumers react once, not per key.
   if (impl_->items.empty()) {
