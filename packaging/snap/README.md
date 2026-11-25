@@ -46,12 +46,13 @@ and do not build concurrently in the same context.
 ### Limitations
 
 Graphics libraries removed by GPU cleanup must be supplied by the host.
-Bundled Qt Oracle, Mimer and MySQL plugins require compatible
-host client libraries to make those backends usable.
+Bundled Qt Oracle, Mimer and MySQL plugins require compatible host client libraries
+to make those backends usable.
 
-**Release blocker:** the downloaded Qt kit has no `licenses/` directory.
-Qt's applicable license texts and third-party notices still need
-to be sourced and included.
+The snap bundles all Qt shared libraries and plugins downloaded by aqt rather
+than maintaining a selected runtime list.
+Qt license and notice files are collected from the matching sources and
+shipped alongside the upstream third-party notices.
 
 ## Install and use
 

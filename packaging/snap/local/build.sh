@@ -48,6 +48,8 @@ conan install "${CRAFT_PART_BUILD}" \
 # Deploy the pj4 app.
 install -Dm755 "${build}/pj_app/plotjuggler4" "${dest}/usr/bin/plotjuggler4"
 install -Dm755 "${build}/pj_app/pj-plugin-check" "${dest}/usr/bin/pj-plugin-check"
+install -Dm644 "${build}/pj_app/THIRD_PARTY_NOTICES.txt" \
+  "${dest}/usr/share/doc/plotjuggler/THIRD_PARTY_NOTICES.txt"
 install -Dm644 "${src}/resources/svg/plotjuggler4.png" "${dest}/usr/share/plotjuggler/plotjuggler4.png"
 install -Dm644 "${src}/LICENSE" "${dest}/usr/share/doc/plotjuggler/copyright"
 
@@ -64,11 +66,26 @@ pyhome=$(head -n1 "${build}/pj_python_home.txt")
 mkdir -p "${dest}/usr/lib" "${dest}/usr/plugins"
 cp -a "${pyhome}"/lib/python[0-9]*/ "${dest}/usr/lib/"
 
-# Qt is installed separately from Conan.
-# We copy its shared runtime and plugins.
-# WARNING: aqt doesn't ship licenses files.
+# Ship the complete Qt shared runtime and plugin trees.
 cp -a "${qt}"/lib/*.so* "${dest}/usr/lib/"
 cp -a "${qt}/plugins/." "${dest}/usr/plugins/"
+
+# Matching Qt sources supply the license texts for the complete binary kit.
+qt_modules=(qtbase qtsvg qtdeclarative qttools qtwayland)
+aqt install-src linux "${PJ_QT_VERSION}" --archives "${qt_modules[@]}" \
+  --outputdir "${work}/qt-src"
+qt_docs="${dest}/usr/share/doc/plotjuggler/qt"
+mkdir -p "${qt_docs}/sbom"
+cp -a "${qt}"/sbom/*.spdx.json "${qt_docs}/sbom/"
+(
+  cd "${work}/qt-src/${PJ_QT_VERSION}/Src"
+  # Preserve module-relative paths for third-party notices and attributions.
+  find "${qt_modules[@]}" -type f \( \
+    -path '*/LICENSES/*' -o -iname 'license*' -o -iname 'copying*' \
+    -o -iname 'notice*' -o -iname 'copyright*' -o -name qt_attribution.json \
+    -o -name REUSE.toml -o -path '*/.reuse/*' \
+    \) -exec cp --parents --target-directory="${qt_docs}" -- {} +
+)
 
 # APT archives contain MIME XML; their post-install cache generation is not run
 # when Snapcraft extracts stage-packages.
