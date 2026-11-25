@@ -98,6 +98,8 @@ class TopicStorage {
   /// The layout of a schema-less topic, stored at writer registration so the incremental engine and new writers
   /// resolve it before any chunk is committed.
   void setColumnDescriptors(std::vector<ColumnDescriptor> descs) noexcept;
+  /// Appends one column without copying the layout, which is quadratic for a topic that grows column by column.
+  void addColumnDescriptor(ColumnDescriptor desc);
 
   [[nodiscard]] const std::vector<ColumnDescriptor>& columnDescriptors() const noexcept;
 

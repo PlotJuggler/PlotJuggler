@@ -871,6 +871,41 @@ TEST(ArrayExpansionTest, Schemaless_EnsureColumn_SecondWriter_PicksUpLayout) {
   EXPECT_EQ(*writer_b.resolveField(topic_id, "v"), 0u);
 }
 
+// The stored layout ends up as the writer's, whether it was already in step (grown one column at a time) or the
+// writer's columns came from the schema and never reached the storage.
+TEST(ArrayExpansionTest, EnsureColumn_StoredLayoutMatchesWriter) {
+  DataEngine engine;
+  DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
+  DataWriter writer = engine.createWriter();
+
+  TopicDescriptor schemaless;
+  schemaless.name = "grows";
+  const auto grows = *writer.registerTopic(ds, schemaless);
+  for (int i = 0; i < 50; ++i) {
+    ASSERT_EQ(*writer.ensureColumn(grows, "c" + std::to_string(i), PJ::PrimitiveType::kFloat64), FieldId(i));
+  }
+
+  auto root = PJ::makeStruct("msg", {PJ::makeArray("accel", PJ::makePrimitive("", PJ::PrimitiveType::kFloat32), 3u)});
+  TopicDescriptor typed;
+  typed.name = "typed";
+  typed.schema_id = *writer.registerSchema("msg_typed_extra", root);
+  const auto typed_id = *writer.registerTopic(ds, typed);
+  ASSERT_EQ(*writer.ensureColumn(typed_id, "extra", PJ::PrimitiveType::kFloat64), 3u);
+
+  const auto lock = engine.lockEngine();
+  const auto& grown = engine.getTopicStorage(grows)->columnDescriptors();
+  ASSERT_EQ(grown.size(), 50u);
+  for (std::size_t i = 0; i < grown.size(); ++i) {
+    EXPECT_EQ(grown[i].field_id, FieldId(i));
+    EXPECT_EQ(grown[i].field_path, "c" + std::to_string(i));
+  }
+  const auto& typed_cols = engine.getTopicStorage(typed_id)->columnDescriptors();
+  ASSERT_EQ(typed_cols.size(), 4u);
+  EXPECT_EQ(typed_cols[0].field_path, "accel[0]");
+  EXPECT_EQ(typed_cols[3].field_path, "extra");
+  EXPECT_EQ(typed_cols[3].field_id, 3u);
+}
+
 TEST(ArrayExpansionTest, Schemaless_EnsureColumn_WhileRowInProgress_ReturnsError) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});

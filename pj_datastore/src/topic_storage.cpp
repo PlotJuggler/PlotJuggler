@@ -250,6 +250,10 @@ void TopicStorage::setColumnDescriptors(std::vector<ColumnDescriptor> descs) noe
   column_descriptors_ = std::move(descs);
 }
 
+void TopicStorage::addColumnDescriptor(ColumnDescriptor desc) {
+  column_descriptors_.push_back(std::move(desc));
+}
+
 const std::vector<ColumnDescriptor>& TopicStorage::columnDescriptors() const noexcept {
   return column_descriptors_;
 }
