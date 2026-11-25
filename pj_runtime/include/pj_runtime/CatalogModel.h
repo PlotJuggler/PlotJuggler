@@ -358,8 +358,9 @@ class CatalogModel : public QObject {
   // updated catalog on return.
   void rebuildIfChanged();
 
-  /// The least time between two rebuilds that a commit triggers while a file ingest is open (see the samplesIngested
-  /// connection in the constructor); the gap is also at least four times the last rebuild's cost.
+  /// The least time between two rebuilds that a commit triggers while a progressive ingest is open (see the
+  /// samplesIngested connection in the constructor); the gap is also at least four times the last rebuild's cost, and
+  /// at most a second whatever the floor.
   void setMinIngestRebuildGap(std::chrono::milliseconds gap);
 
  public slots:

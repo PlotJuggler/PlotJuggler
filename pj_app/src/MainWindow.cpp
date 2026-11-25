@@ -1570,6 +1570,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // new file's start in a multi-file load. The cursor is set on completion by seedPlaybackFromSession.
         session_->recomputeRange();
       });
+  // The range is bounded by the items the catalog lists, and during an open ingest the catalog may add a commit's
+  // topics later, from its timer, with no samplesIngested of its own.
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, [this](const std::vector<CatalogItem>&) {
+    if (active_streaming_dataset_id_ == 0) {
+      session_->recomputeRange();
+    }
+  });
 
   refreshStreamingCombo();
   connect(

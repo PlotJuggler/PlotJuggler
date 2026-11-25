@@ -999,7 +999,7 @@ IngestToken SessionManager::beginIngest(
   }
 
   // No data publication: the catalog would rebuild before the loader's commit seam; a dataset without a row yet is
-  // shown by the controller's ghost row until its first flush.
+  // shown by the controller's ghost row until the catalog first lists it.
   emit ingestBegan(token, label, total, cancellable, discardable);
   return token;
 }

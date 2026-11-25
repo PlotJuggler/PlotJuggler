@@ -9,8 +9,9 @@ observed, under which conditions, what the code does about it and when to measur
   13k columns), flushing every 50 ms sealed a chunk per topic per flush: 20.3 s, 29.8 CPU-s, 5.5 GB RSS. At 250 ms:
   18.7 s, 26.3 CPU-s, 3.6 GB (Linux x86_64, i7-13700H, two runs each). The memory is the per-column cost of the many
   small chunks; data shows during a load four times a second instead of twenty.
-- **What the code does:** `FileLoader::flush_throttle_ms_` is 250 ms for file loads and fan-out entries; streams do not
-  use it. The flush runs on the load's worker thread on desktop and in the browser.
+- **What the code does:** `PJ::kFileLoadFlushInterval` (`FileLoadFlushInterval.h`) sets the interval for file loads and
+  fan-out entries; streams and toolbox imports do not use it. The flush runs on the load's worker thread on desktop and
+  in the browser. Tests that need a mid-load flush wait longer than this constant.
 - **Re-test:** if a chunk's fixed cost per column drops (descriptors shared across chunks, say), or if data appearing
   during a load feels late.
 

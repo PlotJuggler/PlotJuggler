@@ -299,21 +299,21 @@ struct CatalogModel::Impl {
   // Unset until the first rebuild, so the first ingest always rebuilds.
   std::optional<std::uint64_t> last_fingerprint;
 
-  // Rebuilds a commit triggers during an open file ingest wait until `next_ingest_rebuild_ms` (on `clock`); the timer
-  // runs the one left waiting.
+  // Rebuilds a commit triggers during an open progressive ingest wait until `next_ingest_rebuild_ns` (on `clock`); the
+  // timer runs the one left waiting.
   QElapsedTimer clock;
-  qint64 next_ingest_rebuild_ms = 0;
+  qint64 next_ingest_rebuild_ns = 0;
   std::chrono::milliseconds min_ingest_rebuild_gap{0};
   QTimer ingest_rebuild_timer;
 
-  // Four rebuilds long, so rebuilds take at most a fifth of the GUI thread while a load runs, and a catalog that
-  // rebuilds in under a millisecond keeps the commit rate. Capped so a new topic shows within a second.
-  void recordRebuildCost(qint64 started_ms) {
-    constexpr qint64 kMaxGapMs = 1000;
-    const qint64 ended_ms = clock.elapsed();
-    const qint64 gap_ms =
-        std::min(std::max(4 * (ended_ms - started_ms), qint64{min_ingest_rebuild_gap.count()}), kMaxGapMs);
-    next_ingest_rebuild_ms = ended_ms + gap_ms;
+  // Four rebuilds long, so rebuilds take at most a fifth of the GUI thread while a load runs; nanoseconds, so a catalog
+  // that rebuilds in microseconds keeps the commit rate. Capped, the floor included, so a new topic shows within a
+  // second.
+  void recordRebuildCost(qint64 started_ns) {
+    constexpr qint64 kMaxGapNs = 1'000'000'000;
+    const qint64 ended_ns = clock.nsecsElapsed();
+    const qint64 floor_ns = std::chrono::nanoseconds(min_ingest_rebuild_gap).count();
+    next_ingest_rebuild_ns = ended_ns + std::min(std::max(4 * (ended_ns - started_ns), floor_ns), kMaxGapNs);
   }
   std::atomic<std::size_t> whole_catalog_walks{0};  ///< `items()` and `forEachItem()` calls, for `wholeCatalogWalks()`
 };
@@ -324,16 +324,17 @@ CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
   impl_->ingest_rebuild_timer.setSingleShot(true);
   connect(&impl_->ingest_rebuild_timer, &QTimer::timeout, this, &CatalogModel::rebuildIfChanged);
   if (impl_->session != nullptr) {
-    // A file ingest commits up to every flush (tens of times a second) and a rebuild walks the whole engine, which held
-    // the GUI thread for most of a ~100k-series load. While one is open, a rebuild inside the gap after the last one
-    // waits for the timer, so the last commit is never left out; load completion rebuilds synchronously anyway.
-    // Streams and every caller outside an open ingest rebuild at once.
+    // A progressive ingest (file load, toolbox import) commits on every flush and a rebuild walks the whole engine,
+    // which held the GUI thread for most of a ~100k-series load. While any ingest is open, a non-live commit inside the
+    // gap after the last rebuild, from any producer, waits for the timer, so the last commit is never left out; load
+    // completion rebuilds synchronously anyway. Streams and every commit outside an open ingest rebuild at once.
     connect(impl_->session, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& /*ids*/, bool live) {
       if (!live && impl_->session->hasActiveIngests()) {
-        const qint64 wait_ms = impl_->next_ingest_rebuild_ms - impl_->clock.elapsed();
-        if (wait_ms > 0) {
+        const qint64 wait_ns = impl_->next_ingest_rebuild_ns - impl_->clock.nsecsElapsed();
+        if (wait_ns > 0) {
           if (!impl_->ingest_rebuild_timer.isActive()) {
-            impl_->ingest_rebuild_timer.start(std::chrono::milliseconds(wait_ms));
+            impl_->ingest_rebuild_timer.start(
+                std::chrono::ceil<std::chrono::milliseconds>(std::chrono::nanoseconds(wait_ns)));
           }
           return;
         }
@@ -829,23 +830,24 @@ void CatalogModel::rebuildFromDatastore() {
   // BEFORE the rebuild: a worker commit landing while the rebuild reads the datastore then differs from the saved
   // value, so the next ingest rebuilds again instead of skipping past a change the rebuild missed.
   const std::uint64_t fingerprint = catalogFingerprint();
-  const qint64 started_ms = impl_->clock.elapsed();
+  const qint64 started_ns = impl_->clock.nsecsElapsed();
   rebuildNow();
-  impl_->recordRebuildCost(started_ms);
+  impl_->recordRebuildCost(started_ns);
   impl_->last_fingerprint = fingerprint;
 }
 
 void CatalogModel::rebuildIfChanged() {
   // Gate for the high-frequency samplesIngested path: a full rebuild re-scans and re-allocates every curve key/label,
   // but most ingest batches only append rows, so skip when nothing affecting catalog contents changed since the last
-  // rebuild. Synchronous (no timer), so callers reading the catalog right after a structural commit see it updated.
+  // rebuild. Synchronous, so a caller reads the updated catalog on return; only the samplesIngested connection defers
+  // it during an open ingest.
   const std::uint64_t fp = catalogFingerprint();
   if (impl_->last_fingerprint == fp) {
     return;
   }
-  const qint64 started_ms = impl_->clock.elapsed();
+  const qint64 started_ns = impl_->clock.nsecsElapsed();
   rebuildNow();
-  impl_->recordRebuildCost(started_ms);
+  impl_->recordRebuildCost(started_ns);
   impl_->last_fingerprint = fp;  // taken before the rebuild — see rebuildFromDatastore
 }
 

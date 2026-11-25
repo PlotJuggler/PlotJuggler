@@ -38,6 +38,17 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   1.1 ms per push at 200k entries (machine not recorded). A stream that is mostly unsorted degrades toward O(n²).
   Re-test when a source delivers mostly unsorted stamps, or a GUI-thread consumer has to wait on that lock.
 
+## Sparse rows
+
+- **Observed:** a topic whose rows set few of its columns (variable-length arrays flattened into up to 13k columns, most
+  rows shorter) spent most of its write time padding every unset column with a null at each row. Loading a 30-minute
+  ROS 1 MCAP with 117k series: 26.4 → 21.6 s and 44.4 → 37.5 CPU-s once a column was padded only when next set, or
+  before bulk appends, `stats()` and `seal()` (Linux x86_64, i7-13700H, two runs each). CSV exports of eight sparse
+  topics were byte-identical before and after.
+- **What the code does:** `TopicChunkBuilder` pads a column lazily (`padColumn`, `padAllColumns`), writing its owed
+  nulls in one step (`TypedColumnBuffer::appendNulls`, `BitVector::setNullRange`).
+- **Re-test:** if rows become dense (most columns set per row), where the lazy path saves nothing.
+
 ## ObjectStore costs
 
 - **Retention jumps.** Evicting the expired prefix in one pass instead of one entry at a time: 100k expired entries
