@@ -98,6 +98,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/PlaybackRate.h
     include/pj_runtime/ParserRoutingService.h
     include/pj_runtime/PlotTabsRuntimeHost.h
+    include/pj_runtime/PluginSettingsKeys.h
     include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/RecipeGraph.h
     include/pj_runtime/RecordTap.h
@@ -319,6 +320,7 @@ if(PJ_BUILD_TESTS)
         tests/data_source_runtime_host_advertise_test.cpp
         # report_message → DiagnosticSink forwarding (levels, label, reporting thread).
         tests/data_source_runtime_host_message_test.cpp
+        tests/data_source_runtime_host_settings_test.cpp
         # Route-aware parser selection: claim admission, lazy exact-claim
         # discovery, per-route winners, divergent-winner bindings, and the legacy
         # fallback for encodings outside the SDK claim registry.

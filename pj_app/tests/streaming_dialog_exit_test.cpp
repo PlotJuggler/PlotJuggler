@@ -10,16 +10,11 @@
 
 #include <QApplication>
 #include <QDialog>
-#include <QFile>
-#include <QFileInfo>
 #include <QObject>
-#include <QSettings>
 #include <QString>
 #include <QStringList>
-#include <QTemporaryDir>
 #include <QTimer>
 #include <QWidget>
-#include <memory>
 
 #include "StreamingSourceManager.h"
 #include "pj_datastore/engine.hpp"
@@ -29,6 +24,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "support/loader_test_support.h"
+#include "support/stream_manager_fixture.h"
 
 #ifndef PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH
 #error "PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH must be defined"
@@ -43,21 +39,13 @@ constexpr auto kPluginName = "Mock Layout Stream";
 constexpr auto kDialogConfigEnv = "PJ_LAYOUT_STREAM_DIALOG_CONFIG";
 constexpr auto kNullDialogEnv = "PJ_LAYOUT_STREAM_NULL_DIALOG";
 
-class StreamingDialogExitTest : public ::testing::Test {
+class StreamingDialogExitTest : public pj_app_test::StreamManagerFixture {
  protected:
   void SetUp() override {
-    ASSERT_TRUE(extensions_dir_.isValid());
-    ASSERT_TRUE(settings_dir_.isValid());
-    // Settings in a directory of this case's own.
-    QSettings::setDefaultFormat(QSettings::IniFormat);
-    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir_.path());
-    const QString plugin = QString::fromUtf8(PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH);
-    ASSERT_TRUE(QFile::copy(plugin, extensions_dir_.filePath(QFileInfo(plugin).fileName())));
-
-    app_session_ = std::make_unique<AppSession>(extensions_dir_.path());
-    manager_ = std::make_unique<StreamingSourceManager>(
-        app_session_->sessionManager(), app_session_->extensionCatalog(), app_session_->catalogModel(),
-        app_session_->topicDemandTracker(), /*dialog_parent=*/nullptr);
+    StreamManagerFixture::SetUp();
+    if (HasFatalFailure()) {
+      return;
+    }
     QObject::connect(manager_.get(), &StreamingSourceManager::streamStarted, [this](DatasetId) { ++started_; });
     QObject::connect(manager_.get(), &StreamingSourceManager::setupError, [this](const QString& message) {
       setup_errors_.push_back(message);
@@ -68,9 +56,7 @@ class StreamingDialogExitTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    manager_->stopAllAndWait(QString{});
-    manager_.reset();
-    app_session_.reset();
+    StreamManagerFixture::TearDown();
     qunsetenv(kDialogConfigEnv);
     qunsetenv(kNullDialogEnv);
   }
@@ -124,10 +110,6 @@ class StreamingDialogExitTest : public ::testing::Test {
         u"[stream] %1"_s.arg(QString::fromLatin1(kPluginName)).toStdString());
   }
 
-  QTemporaryDir extensions_dir_;
-  QTemporaryDir settings_dir_;
-  std::unique_ptr<AppSession> app_session_;
-  std::unique_ptr<StreamingSourceManager> manager_;
   int started_ = 0;
   QStringList setup_errors_;
   QStringList stream_errors_;

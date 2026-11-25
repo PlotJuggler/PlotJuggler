@@ -197,7 +197,6 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PlotTabsRuntimeHost.h"
 #include "pj_runtime/PresetCatalog.h"
-#include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/RecordingService.h"
 #include "pj_runtime/SessionManager.h"
 #ifndef __EMSCRIPTEN__
@@ -10319,7 +10318,7 @@ void MainWindow::openEmbeddedConsole() {
 // One interactive toolbox's host services and plugin handle. A struct, not lambda captures, because capture
 // destruction order is unspecified and the destructor below fixes the order.
 struct ToolboxPanelSession {
-  std::unique_ptr<QSettingsBackend> settings;
+  std::unique_ptr<sdk::SettingsBackend> settings;
   std::unique_ptr<ServiceRegistryBuilder> builder;
   std::unique_ptr<ToolboxRuntimeHost> host;
   std::unique_ptr<DerivedRuntimeHosts> derived_hosts;
@@ -10368,7 +10367,7 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
   // HeadlessDescriptorProviderSession::create builds the toolbox host, DerivedRuntimeHosts and source promotion the
   // same way for the layout import (shared snippets in ToolboxHostWiring.h): keep their semantics in step.
   auto session = std::make_shared<ToolboxPanelSession>();
-  session->settings = std::make_unique<QSettingsBackend>();
+  session->settings = makeToolboxSettings(toolbox.id);
   session->builder = std::make_unique<ServiceRegistryBuilder>();
 
   ToolboxRuntimeHost::Callbacks callbacks;

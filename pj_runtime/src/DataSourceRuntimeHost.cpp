@@ -276,12 +276,19 @@ Status DataSourceRuntimeHost::registerServices(ServiceRegistryBuilder& registry)
   if (auto status = registerRequiredService<sdk::DataSourceRuntimeHostService>(registry, hostHandle()); !status) {
     return status;
   }
+  if (settings_host_.has_value()) {
+    registerOptionalService<sdk::SettingsStoreService>(registry, settings_host_->view());
+  }
   return {};
 }
 
-Status DataSourceRuntimeHost::bind(DataSourceHandle& handle) {
+Status DataSourceRuntimeHost::bind(DataSourceHandle& handle, std::unique_ptr<sdk::SettingsBackend> settings) {
   if (registry_ != nullptr) {
     return unexpected(std::string("bind failed: this host already bound a plugin"));
+  }
+  if (settings != nullptr) {
+    settings_ = std::move(settings);
+    settings_host_.emplace(*settings_);
   }
   registry_ = std::make_unique<ServiceRegistryBuilder>();
   if (auto status = registerServices(*registry_); !status) {

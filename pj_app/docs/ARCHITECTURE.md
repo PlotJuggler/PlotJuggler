@@ -684,10 +684,15 @@ the pick) and the `content_sha256` checks of `persistence_layout.spec.js` (the J
 ### Persistence
 
 Native builds keep plain `QSettings`. WASM redirects ordinary `QSettings` callers to page-lifetime MEMFS and lets
-`BrowserPersistence` alone write `WebLocalStorageFormat`: its typed preference allowlist and a few bounded, source-free
-generic layout recipes. File paths, upload identities, plugin configuration, credentials, source-bound layouts and
-stream records never enter durable storage. An unreadable stored envelope is left intact (a newer build may read it) and
-none of its values are imported. Allowlisted values written to the page-lifetime settings reach durable storage on
+`BrowserPersistence` alone write `WebLocalStorageFormat`: three versioned JSON envelopes (one encode/decode pair,
+each size-capped) holding the typed preference allowlist, a few bounded, source-free
+generic layout recipes, and the plugin settings a plugin marked durable (`pj_runtime` ARCHITECTURE "Plugin
+settings"), each re-checked on restore. File paths, upload identities, the host's `PluginConfig/` JSON of each
+plugin, source-bound layouts, stream records and every plugin setting outside `durable/` never enter durable storage.
+In a `durable/` setting the backstop refuses a URL password and a secret-like key name (`isSecretKey`); keeping other
+secrets out of its `durable/` keys is the plugin's job.
+A rejected stored envelope (malformed, oversized or another version) is left intact with a warning and none of its
+values are imported. Allowlisted values written to the page-lifetime settings reach durable storage on
 `BrowserPersistence`'s periodic flush ([why a poll](./TECHNICAL_NOTES.md#browser-preferences-flush-on-a-timer)).
 `main()` constructs `BrowserPersistence` after the application identity and before the splash, `Theme`, `WidgetTuner`,
 `MainWindow` or any plugin host, so every settings consumer sees the redirect; native builds never construct it.

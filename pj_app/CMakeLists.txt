@@ -22,6 +22,7 @@ add_library(pj_app_shell OBJECT
     src/BrowserFileStore.h
     src/BrowserPersistence.cpp
     src/BrowserPersistence.h
+    src/SecretKeys.h
     src/FileSelectionService.cpp
     src/FileSelectionService.h
     src/LoadInput.h
@@ -406,6 +407,7 @@ if(PJ_BUILD_TESTS)
             src/LoadInput.h
             src/BrowserPersistence.cpp
             src/BrowserPersistence.h
+            src/SecretKeys.h
             src/FileSelectionService.cpp
             src/FileSelectionService.h
             src/FanoutConfig.cpp
@@ -548,6 +550,12 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/streaming_plugin_lifetime_test.cpp)
     set_source_files_properties(tests/streaming_plugin_lifetime_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH="$<TARGET_FILE:mock_layout_stream_plugin>")
+
+    # A stream's pj.settings.v1 store.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/streaming_plugin_settings_test.cpp)
+    set_source_files_properties(tests/streaming_plugin_settings_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH="$<TARGET_FILE:mock_layout_stream_plugin>")
 
     # Browser presets: the welcome dialog's selection, upload, cancel/retry and

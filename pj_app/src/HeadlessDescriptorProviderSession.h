@@ -23,12 +23,14 @@ class CatalogModel;
 class DerivedRuntimeHosts;
 class ExtensionCatalogService;
 class FileLoader;
-class QSettingsBackend;
 class ServiceRegistryBuilder;
 class SourceCaptureService;
 class SourcePromotionHost;
 class ToolboxHandle;
 class ToolboxRuntimeHost;
+namespace sdk {
+class SettingsBackend;
+}  // namespace sdk
 
 // One bound descriptor-import provider toolbox instance with no UI: MainWindow::launchToolbox minus the panel, owned
 // by LayoutImportBatch (one per provider). create() binds the same host services as the interactive path (through
@@ -125,7 +127,7 @@ class HeadlessDescriptorProviderSession : public QObject {
   DiagnosticSink diagnostics_;
 
   // The destructor resets these explicitly in the order of the class comment, so a member reorder cannot break it.
-  std::unique_ptr<QSettingsBackend> settings_;
+  std::unique_ptr<sdk::SettingsBackend> settings_;
   std::unique_ptr<ServiceRegistryBuilder> builder_;
   std::unique_ptr<ToolboxRuntimeHost> host_;
   std::unique_ptr<DerivedRuntimeHosts> derived_hosts_;

@@ -33,6 +33,7 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/TsanAnnotations.h"
@@ -419,7 +420,7 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
         });
       };
 
-  if (auto status = session->runtime_host->bind(session->handle); !status) {
+  if (auto status = session->runtime_host->bind(session->handle, QSettingsBackend::forPlugin(source.id)); !status) {
     error = tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error()));
     session.reset();
     discardDataset(dataset_id);

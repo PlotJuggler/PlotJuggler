@@ -167,11 +167,7 @@ class StreamingPresetTest : public ::testing::Test {
 
   // Every line the test stream recorded, in order.
   [[nodiscard]] QStringList probeLines() const {
-    QFile file(probeFile());
-    if (!file.open(QIODevice::ReadOnly)) {
-      return {};
-    }
-    return QString::fromUtf8(file.readAll()).split(u'\n', Qt::SkipEmptyParts);
+    return pj_app_test::probeLines(probeFile());
   }
 
   // Serves `layout` at /<name>/layout.pj4.xml and each file beside it, opens

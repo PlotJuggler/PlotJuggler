@@ -431,12 +431,11 @@ the picker is read from disk on demand rather than copied, so its size is not
 bounded by the tab's memory; it must stay unchanged on disk while it is open
 (a changed file reports that its data may be incomplete, see
 [`pj_app/docs/ARCHITECTURE.md`](../pj_app/docs/ARCHITECTURE.md#browser-webassembly-boundary)). Ordinary
-`QSettings` callers are likewise redirected to page-lifetime storage. The only
-durable browser state is the typed preference allowlist and a bounded list of
-source-free generic layout recipes owned by `BrowserPersistence`. Source-bound
-layouts are downloaded with logical references and require explicit file
-reselection when replayed. Paths, upload identities, plugin configuration, and
-credentials are intentionally excluded from browser-local persistence.
+`QSettings` callers are likewise redirected to page-lifetime storage; what
+`BrowserPersistence` keeps durable, and what never enters durable storage:
+[`pj_app/docs/ARCHITECTURE.md`](../pj_app/docs/ARCHITECTURE.md#persistence).
+Source-bound layouts are downloaded with logical references and require
+explicit file reselection when replayed.
 
 A source's plugin may also read files picked in its own dialog (a CAN
 dictionary, say). "Save Layout with Sources" saves each such *side file* like

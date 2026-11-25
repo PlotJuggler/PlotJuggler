@@ -25,9 +25,11 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 - Load progress is wired only through `wireIngestProgress()`; a hand-made copy drifts from what the tests exercise.
   The row's X/bin goes straight to `SessionManager::requestCancel(token, keep_partial)`; the producer honours the
   flag, the shell never prompts.
-- Every DataSource plugin (file load, fan-out entry, stream) is bound through `DataSourceRuntimeHost::bind`, and its
-  owner declares that host before the handle: the plugin reaches the host's registry and services up to its
-  destructor, so a host destroyed first is a use-after-free.
+- Every DataSource plugin (file load, fan-out entry, stream) is bound with
+  `bind(handle, QSettingsBackend::forPlugin(manifest id))`, and its owner declares that host before the handle:
+  the plugin reaches the host's registry and services, its settings store included, up to its destructor, so a host
+  destroyed first is a use-after-free. Both toolbox owners take their store from `makeToolboxSettings`
+  (`ToolboxHostWiring.h`). Who gets which store: `pj_runtime` ARCHITECTURE "Plugin settings".
 - Recording is a runtime capability: Record affordances follow `RecordingService::isSupported()`, never a build flag.
   A stream ending mid-capture finalizes only its own file (`RecordingService::onSourceEnded`); stopping the capture
   there would cut every other source's file short.
@@ -40,10 +42,12 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 - Layout import (`LayoutImportBatch`, `HeadlessDescriptorProviderSession`, `SourcePromotionHost`, the
   rewrite-then-classify load path, the growing-import binder) implements host-side invariants defined in
   `docs/layout-import-architecture.md` of the `pj-mcap-server` repository; read it before changing them.
-- Only `BrowserPersistence` writes durable browser storage, and only its preference allowlist and bounded source-free
-  layout recipes. File paths, upload identities, plugin configuration, credentials, source-bound layouts and stream
-  records never enter it: it outlives the page in clear text, where paths and upload identities mean nothing on the
-  next load and credentials would be exposed. An unreadable stored envelope is left intact and not imported.
+- Only `BrowserPersistence` writes durable browser storage, and only its preference allowlist, bounded source-free
+  layout recipes and the bounded string plugin settings a plugin put under its own `durable/` keys. File paths,
+  upload identities, the host's `PluginConfig/` JSON, URL passwords, secret-like plugin keys, source-bound layouts,
+  stream records and every other plugin setting never enter it: it outlives the page in clear text, where paths and upload identities mean
+  nothing on the next load and credentials would be exposed. Each envelope's size cap holds on write and on read, or
+  a write could produce an envelope the next load rejects; a rejected stored envelope is left intact and not imported.
 - A Preferences nav row's position is its stack page index: adding or hiding a row without its page shows the wrong
   page.
 - A user-visible feature added, removed or moved updates `resources/feature_catalog.json` in the same change.

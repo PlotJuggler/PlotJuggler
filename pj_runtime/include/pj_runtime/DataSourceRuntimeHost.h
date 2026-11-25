@@ -20,6 +20,7 @@
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/expected.hpp"
 #include "pj_base/sdk/ingest_completion.hpp"
+#include "pj_base/sdk/settings_store_host.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_plugins/sdk/object_ingest_policy.hpp"
@@ -142,14 +143,15 @@ class DataSourceRuntimeHost {
   void setStopRequestedHook(std::function<void()> hook);
 
   // Registers SourceWriteHostService and DataSourceRuntimeHostService (required: a rejection fails the Status; do not
-  // bind the plugin then) and the optional object-write service (a rejection only warns).
+  // bind the plugin then) and the optional object-write and, once bind() was given a store, settings services (a
+  // rejection only warns).
   [[nodiscard]] Status registerServices(ServiceRegistryBuilder& registry);
 
-  // Registers these services in a registry this host owns and binds `handle` to it; once per host. The SDK's
-  // DataSourcePluginBase keeps that registry (services()) and views into these services after bind(), up to its
-  // destructor, so this host must outlive `handle`: an owner declares the host before the handle. Errors read
-  // "service registration failed: ..." or "bind failed: ...".
-  [[nodiscard]] Status bind(DataSourceHandle& handle);
+  // Registers these services, with `settings` as pj.settings.v1 when given, in a registry this host owns and binds
+  // `handle` to it; once per host. The SDK's DataSourcePluginBase keeps that registry (services()) and views into its
+  // services after bind(), up to its destructor, so this host must outlive `handle`: an owner declares the host
+  // before the handle. Errors read "service registration failed: ..." or "bind failed: ...".
+  [[nodiscard]] Status bind(DataSourceHandle& handle, std::unique_ptr<sdk::SettingsBackend> settings = nullptr);
 
   // This host across the C ABI outside registerServices() (ToolboxRuntimeHost's parser-ingest slots). Valid while
   // this object lives.
@@ -341,6 +343,9 @@ class DataSourceRuntimeHost {
   DatasetId dataset_id_;
   DatastoreSourceWriteHost source_write_host_;
   DatastoreSourceObjectWriteHost source_object_write_host_;
+  // bind()'s store, before registry_ (destroyed after it); settings_host_ refers to settings_.
+  std::unique_ptr<sdk::SettingsBackend> settings_;
+  std::optional<sdk::SettingsStoreHost> settings_host_;
   std::unique_ptr<ServiceRegistryBuilder> registry_;  // bind()'s; heap, as the plugin holds its address
   // Shared by the lazy closures: some sources wrap readers whose deferred fetch is not safe concurrently.
   std::shared_ptr<std::mutex> lazy_fetch_mutex_;

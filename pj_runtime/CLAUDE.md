@@ -84,15 +84,19 @@ Session, catalog and time:
 - `PresetCatalog.h`: a deployment's browser `presets/index.json` and the download caps of its files.
 - `SourceConfigVariables.h`: `${deployment.ws_origin}` (the page's WebSocket origin) in a saved streaming-source
   configuration; any other `${deployment.*}` name is an error.
-- `QSettingsBackend.h`, `XmlCdata.h`: `sdk::SettingsBackend` over `QSettings`; CDATA helpers shared with `pj_app`'s
-  layout code.
+- `QSettingsBackend.h`: `sdk::SettingsBackend` over `QSettings`; `forPlugin` is one plugin's `pj.settings.v1` store
+  ([docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Plugin settings").
+- `PluginSettingsKeys.h`: the persisted key layout of plugin stores and their browser `durable/` opt-in (header-only,
+  Qt-only, shared with `pj_app`'s `BrowserPersistence`).
+- `XmlCdata.h`: CDATA helpers shared with `pj_app`'s layout code.
 - `XmlStateOptions.h`: the reporting XML readers behind `IDataWidget::xmlValidateState`; an `XmlOptionsRecorder`
   collects the options and the first refused value they report (the MCP `widget_state` tool serves them);
   `xmlSelfDescriptionProblems` is the one check every widget family's test runs on its own saved state.
 
 Plugin hosts and extensions:
-- `DataSourceRuntimeHost.h`: runs `DataSource` plugins: DSO keepalive, advertised-topic classification, idempotent
-  parser bindings, ingest completion, record tap. A plugin `release` may run on any worker thread.
+- `DataSourceRuntimeHost.h`: runs `DataSource` plugins: `bind` (its services and the plugin's settings), DSO keepalive,
+  advertised-topic classification, idempotent parser bindings, ingest completion, record tap. A plugin `release` may
+  run on any worker thread.
 - `ToolboxRuntimeHost.h`: runs `Toolbox` plugins: write surface, settings, delegated parser ingest, progressive import,
   source-capture arming.
 - `ExtensionCatalogService.h`, `PluginRuntimeCatalog.h`, `ParserRoutingService.h`: the loaded plugin set (scan
