@@ -2417,10 +2417,10 @@ void PlotWidget::reconnectDataSignals() {
       });
 
   // An in-place reload swaps a dataset's chunks. Drop the adapters' caches synchronously before the swap:
-  // PointSeriesXY's pair index holds raw TopicChunk* that the swap frees (a use-after-free otherwise), and
-  // DatastoreCurveAdapter's window cache (plain values) would be stale. Bindings (DatasetId / TopicIds) stay valid and
-  // re-index on the next paint through the post-swap samplesIngested. DirectConnection so the clear runs inline within
-  // the emit (same thread, never queued): no event-loop turn may pass between the clear and the swap.
+  // PointSeriesXY's pair index and DatastoreCurveAdapter's window cache hold plain values, which would be stale.
+  // Bindings (DatasetId / TopicIds) stay valid and re-index on the next paint through the post-swap samplesIngested.
+  // DirectConnection so the clear runs inline within the emit (same thread, never queued): no paint may show the old
+  // values between the clear and the swap.
   dataset_replace_connection_ = connect(
       session_, &SessionManager::datasetAboutToBeReplaced, this,
       [this](DatasetId dataset_id) {
@@ -2463,8 +2463,7 @@ void PlotWidget::reconnectDataSignals() {
 
   // One source's display offset changed (a Timeline drag): the samples did not move, only their X mapping. Drop the
   // bound adapters' offset caches and replot at the current zoom so the curve slides into place without re-fitting.
-  // Unlike datasetAboutToBeReplaced there is no use-after-free window (chunks stay alive), so a normal connection is
-  // fine. PointSeriesXY ignores the display offset and is skipped.
+  // Nothing is swapped here, so a normal connection is fine. PointSeriesXY ignores the display offset and is skipped.
   display_offset_dataset_connection_ = connect(
       session_, qOverload<PJ::DatasetId>(&SessionManager::displayOffsetChanged), this, [this](DatasetId dataset_id) {
         if (invalidateAdapterOffsets(dataset_id)) {

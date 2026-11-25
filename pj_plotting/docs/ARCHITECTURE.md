@@ -18,10 +18,11 @@ invariants; each header's doc-comment owns its API contract; measurements and pl
   handler that refreshes the raw curve refreshes it too, with no timer; the processor is rebuilt fresh on every
   recompute (processors are stateful) and runs over the whole input column read through the same reader as the raw
   curve.
-- **`PointSeriesXY`** pairs two columns into an XY series over a time-ordered alignment index. It caches raw
-  `TopicChunk*` in that index, so the plot drops it synchronously before an in-place dataset reload swaps chunks
-  (`datasetAboutToBeReplaced`, a `Qt::DirectConnection`: no event-loop turn may pass between the clear and the swap).
-  It ignores the display offset.
+- **`PointSeriesXY`** pairs two columns into an XY series over a time-ordered alignment index. The index holds the
+  paired values, copied under the engine lock, so painting reads nothing of the store (a topic's last chunk changes
+  under a writer's commit). The plot clears it synchronously before an in-place dataset reload swaps chunks
+  (`datasetAboutToBeReplaced`, a `Qt::DirectConnection`), as it clears the other adapters' caches. It ignores the
+  display offset.
 - **`StateSeriesAdapter`** is the discrete-series counterpart feeding the State Transitions strip: a full-rebuild
   run-length reader over `rangeQuery`, correct under out-of-order chunk merges, retention eviction and dataset replaces
   because it keeps no watermark and no chunk pointer. Labels per type: `readString` copied out inside the cursor
