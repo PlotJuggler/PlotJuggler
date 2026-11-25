@@ -127,6 +127,8 @@ class TypedColumnBuffer {
 
   /// The value slot is zero-filled (an empty string for strings).
   void appendNull();
+  /// `count` nulls in one step: the buffers grow once, not per row.
+  void appendNulls(std::size_t count);
 
   [[nodiscard]] float readFloat32(std::size_t row) const;
 

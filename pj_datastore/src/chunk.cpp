@@ -154,7 +154,7 @@ template <>
 void TopicChunkBuilder::set<float>(std::size_t col_index, float value) {
   PJ_ASSERT(row_in_progress_, "set<float> called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendFloat32(value);
+  padColumn(col_index).appendFloat32(value);
   updateColumnStats(col_index, static_cast<double>(value));
 }
 
@@ -162,7 +162,7 @@ template <>
 void TopicChunkBuilder::set<double>(std::size_t col_index, double value) {
   PJ_ASSERT(row_in_progress_, "set<double> called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendFloat64(value);
+  padColumn(col_index).appendFloat64(value);
   updateColumnStats(col_index, value);
 }
 
@@ -170,7 +170,7 @@ template <>
 void TopicChunkBuilder::set<int32_t>(std::size_t col_index, int32_t value) {
   PJ_ASSERT(row_in_progress_, "set<int32_t> called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendInt32(value);
+  padColumn(col_index).appendInt32(value);
   updateColumnStats(col_index, static_cast<double>(value));
 }
 
@@ -178,7 +178,7 @@ template <>
 void TopicChunkBuilder::set<int64_t>(std::size_t col_index, int64_t value) {
   PJ_ASSERT(row_in_progress_, "set<int64_t> called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendInt64(value);
+  padColumn(col_index).appendInt64(value);
   updateColumnStats(col_index, static_cast<double>(value));
 }
 
@@ -186,7 +186,7 @@ template <>
 void TopicChunkBuilder::set<uint64_t>(std::size_t col_index, uint64_t value) {
   PJ_ASSERT(row_in_progress_, "set<uint64_t> called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendUint64(value);
+  padColumn(col_index).appendUint64(value);
   updateColumnStats(col_index, static_cast<double>(value));
 }
 
@@ -194,7 +194,7 @@ template <>
 void TopicChunkBuilder::set<bool>(std::size_t col_index, bool value) {
   PJ_ASSERT(row_in_progress_, "set<bool> called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendBool(value);
+  padColumn(col_index).appendBool(value);
   updateColumnStats(col_index, value ? 1.0 : 0.0);
 }
 
@@ -202,7 +202,7 @@ template <>
 void TopicChunkBuilder::set<std::string_view>(std::size_t col_index, std::string_view value) {
   PJ_ASSERT(row_in_progress_, "set<string_view> called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendString(value);
+  padColumn(col_index).appendString(value);
   auto& cs = stats_.column_stats[col_index];
   const std::size_t current_row = columns_[col_index].rowCount() - 1;
   if (current_row == 0) {
@@ -219,20 +219,12 @@ void TopicChunkBuilder::set<std::string_view>(std::size_t col_index, std::string
 void TopicChunkBuilder::setNull(std::size_t col_index) {
   PJ_ASSERT(row_in_progress_, "set_null called without begin_row");
   PJ_ASSERT(col_index < columns_.size(), "col_index out of bounds");
-  columns_[col_index].appendNull();
+  padColumn(col_index).appendNull();
   stats_.column_stats[col_index].null_count++;
 }
 
 void TopicChunkBuilder::finishRow() {
   PJ_ASSERT(row_in_progress_, "finish_row called without begin_row");
-  const std::size_t expected = rowCount() + 1;
-  for (std::size_t i = 0; i < columns_.size(); ++i) {
-    if (columns_[i].rowCount() < expected) {
-      columns_[i].appendNull();
-      stats_.column_stats[i].null_count++;
-    }
-  }
-
   timestamps_.push_back(current_timestamp_);
   stats_.t_min = std::min(stats_.t_min, current_timestamp_);
   stats_.t_max = std::max(stats_.t_max, current_timestamp_);
@@ -250,6 +242,8 @@ void TopicChunkBuilder::appendTimestamps(Span<const Timestamp> timestamps) {
   if (count == 0) {
     return;
   }
+  // The batch's columns append after the rows written so far.
+  padAllColumns();
 
   timestamps_.reserve(timestamps_.size() + count);
   timestamps_.insert(timestamps_.end(), timestamps.begin(), timestamps.end());
@@ -484,8 +478,26 @@ bool TopicChunkBuilder::isRowInProgress() const noexcept {
   return row_in_progress_;
 }
 
-const ChunkStats& TopicChunkBuilder::stats() const noexcept {
+const ChunkStats& TopicChunkBuilder::stats() {
+  padAllColumns();
   return stats_;
+}
+
+TypedColumnBuffer& TopicChunkBuilder::padColumn(std::size_t col_index) {
+  TypedColumnBuffer& column = columns_[col_index];
+  const std::size_t finished_rows = stats_.row_count;
+  if (column.rowCount() < finished_rows) {
+    const std::size_t owed = finished_rows - column.rowCount();
+    column.appendNulls(owed);
+    stats_.column_stats[col_index].null_count += static_cast<uint32_t>(owed);  // at most row_count, a uint32_t
+  }
+  return column;
+}
+
+void TopicChunkBuilder::padAllColumns() {
+  for (std::size_t i = 0; i < columns_.size(); ++i) {
+    padColumn(i);
+  }
 }
 
 Timestamp TopicChunkBuilder::lastTimestamp() const noexcept {
@@ -576,6 +588,7 @@ void TopicChunkBuilder::sortRowsByTimestamp() {
 }
 
 TopicChunk TopicChunkBuilder::seal() {
+  padAllColumns();
   sortRowsByTimestamp();
   TopicChunk chunk;
   chunk.id = nextChunkId();

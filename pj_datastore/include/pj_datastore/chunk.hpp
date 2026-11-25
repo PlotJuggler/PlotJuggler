@@ -143,7 +143,8 @@ class TopicChunkBuilder {
   /// Between beginRow() and finishRow().
   [[nodiscard]] bool isRowInProgress() const noexcept;
 
-  [[nodiscard]] const ChunkStats& stats() const noexcept;
+  /// Writes the nulls the columns still owe first (see padColumn), so the null counts are whole.
+  [[nodiscard]] const ChunkStats& stats();
 
   /// Last appended timestamp.
   [[nodiscard]] Timestamp lastTimestamp() const noexcept;
@@ -175,6 +176,13 @@ class TopicChunkBuilder {
   std::size_t bulk_pending_rows_ = 0;  // rows added via bulk but not yet finished
 
   void updateColumnStats(std::size_t col_index, double value);
+
+  // A column not set in a row owes that row a null, written only when the column is next set or before anything reads
+  // the columns (bulk append, stats(), seal()): finishRow() then costs the columns a row sets, not every column, which
+  // is what a topic of thousands of sparse columns (a flattened variable-length array) paid per row. Every path that
+  // writes or reads columns_ goes through padColumn()/padAllColumns() first, or it sees misaligned rows.
+  TypedColumnBuffer& padColumn(std::size_t col_index);
+  void padAllColumns();
 
   // Stable, so equal timestamps keep arrival order; a no-op when already sorted.
   void sortRowsByTimestamp();
