@@ -48,10 +48,11 @@ namespace pj::scene3d {
 // `rel` (text model content supplies) joined onto `folder` and cleaned: the path to open. Empty when `rel` names a
 // network share itself, or when the joined path is one and `folder` is not ("../../net/<host>/t.png" on macOS).
 [[nodiscard]] inline QString joinContentPath(const QString& folder, const QString& rel, bool macos_automount) {
-  const QString tail = QDir::fromNativeSeparators(rel);
-  if (isNetworkSharePath(tail, macos_automount)) {
+  // The raw text: on Windows QDir::fromNativeSeparators drops a "\\?\" or "//?/" prefix.
+  if (isNetworkSharePath(rel, macos_automount)) {
     return {};
   }
+  const QString tail = QDir::fromNativeSeparators(rel);
   const QString joined = QDir::cleanPath(QDir(folder).absoluteFilePath(tail));
   return isNetworkSharePath(joined, macos_automount) && !isNetworkSharePath(folder, macos_automount) ? QString{}
                                                                                                      : joined;
