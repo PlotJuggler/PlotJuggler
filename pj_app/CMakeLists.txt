@@ -28,6 +28,7 @@ add_library(pj_app_shell OBJECT
     src/LoadInput.h
     src/FileLoader.cpp
     src/FileLoader.h
+    src/FileLoadFlushInterval.h
     src/SourcePromotionHost.cpp
     src/SourcePromotionHost.h
     src/PresetController.cpp
@@ -888,6 +889,7 @@ if(PJ_BUILD_TESTS)
     add_library(progress_shutdown_source_plugin SHARED tests/progress_shutdown_source.cpp)
     target_compile_features(progress_shutdown_source_plugin PRIVATE cxx_std_20)
     target_link_libraries(progress_shutdown_source_plugin PRIVATE plotjuggler_sdk::base)
+    target_include_directories(progress_shutdown_source_plugin PRIVATE src)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(progress_shutdown_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
     endif()

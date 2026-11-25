@@ -13,6 +13,8 @@
 #include <string>
 #include <thread>
 
+#include "FileLoadFlushInterval.h"
+
 namespace {
 
 void recordProbe(const char* marker) {
@@ -55,9 +57,9 @@ class ProgressShutdownSource : public PJ::FileSourceBase {
       return append;
     }
 
-    // FileLoader throttles worker-side flush/progress posting for 50 ms. Sleep
-    // past that threshold so progressUpdate necessarily posts its GUI metacall.
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // FileLoader throttles worker-side flush/progress posting. Sleep past it so
+    // progressUpdate necessarily posts its GUI metacall.
+    std::this_thread::sleep_for(PJ::kFileLoadFlushInterval + std::chrono::milliseconds(50));
     if (!runtimeHost().progressUpdate(1)) {
       return PJ::unexpected("progress unexpectedly cancelled before probe handshake");
     }
