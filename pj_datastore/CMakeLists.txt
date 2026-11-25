@@ -86,6 +86,7 @@ if(PJ_BUILD_TESTS)
     tests/column_buffer_test.cpp
     tests/encoding_test.cpp
     tests/topic_storage_test.cpp
+    tests/chunk_growth_test.cpp
     tests/query_test.cpp
     tests/series_reader_test.cpp
     tests/engine_integration_test.cpp

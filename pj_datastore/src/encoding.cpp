@@ -333,6 +333,33 @@ DictionaryEncoded dictionaryEncodeStrings(
   return result;
 }
 
+DictionaryEncoded dictionaryRecode(const DictionaryEncoded& encoded) {
+  DictionaryEncoded result;
+  result.count = encoded.count;
+  if (encoded.count == 0) {
+    result.index_bytes = 1;
+    return result;
+  }
+  // Keys view `encoded`'s strings, which stay put.
+  tsl::robin_map<std::string_view, uint32_t> lookup;
+  std::vector<uint32_t> temp_indices;
+  temp_indices.reserve(encoded.count);
+  for (std::size_t row = 0; row < encoded.count; ++row) {
+    const std::string_view value = dictionaryLookup(encoded, row);
+    const auto [it, inserted] = lookup.try_emplace(value, static_cast<uint32_t>(result.dictionary.size()));
+    if (inserted) {
+      result.dictionary.emplace_back(value);
+    }
+    temp_indices.push_back(it->second);
+  }
+  result.index_bytes = indexBytesFor(result.dictionary.size());
+  result.indices.reserve(encoded.count * result.index_bytes);
+  for (const uint32_t index : temp_indices) {
+    writeIndex(result.indices, index, result.index_bytes);
+  }
+  return result;
+}
+
 std::string_view dictionaryLookup(const DictionaryEncoded& encoded, std::size_t row) {
   uint32_t index = readIndex(encoded.indices.data(), row, encoded.index_bytes);
   if (index >= encoded.dictionary.size()) {

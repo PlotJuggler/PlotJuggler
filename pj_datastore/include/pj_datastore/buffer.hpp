@@ -62,6 +62,9 @@ class BitVector {
   /// setNull() over [begin, end), whole bytes at a time. Same bounds rule.
   void setNullRange(std::size_t begin, std::size_t end);
 
+  /// setValid() over [begin, end), whole bytes at a time. Same bounds rule.
+  void setValidRange(std::size_t begin, std::size_t end);
+
   [[nodiscard]] bool isValid(std::size_t bit_index) const;
 
   [[nodiscard]] std::size_t countNulls(std::size_t num_bits) const;

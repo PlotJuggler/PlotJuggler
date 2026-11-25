@@ -1255,11 +1255,21 @@ struct WriteCore {
 
   void flushPending() {
     auto lock = engine.lockEngine();
-    auto flushed = writer.flushAll();
-    if (!flushed.empty()) {
-      engine.commitChunks(std::move(flushed));
+    for (const TopicId topic_id : writer.commitRows()) {
+      written_topics.insert(topic_id);
     }
   }
+
+  void finish() {
+    auto lock = engine.lockEngine();
+    flushPending();
+    const std::vector<TopicId> topics(written_topics.begin(), written_topics.end());
+    engine.compactLastChunks(Span<const TopicId>(topics.data(), topics.size()));
+    written_topics.clear();
+  }
+
+  // Topics that took rows since the last finish(): their last chunk may still be in growable form.
+  tsl::robin_set<TopicId> written_topics;
 };
 
 struct CatalogSnapshotState {
@@ -2475,6 +2485,10 @@ void DatastoreSourceWriteHost::flushPending() {
   state_->core.load(std::memory_order_acquire)->flushPending();
 }
 
+void DatastoreSourceWriteHost::finish() {
+  state_->core.load(std::memory_order_acquire)->finish();
+}
+
 void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
   // Commits the open chunks to the current engine, then binds a fresh WriteCore (writer and caches are per engine)
   // that mirrors to the other engine, so both keep the same TopicIds and FieldIds. Both under the old core's engine
@@ -2519,6 +2533,10 @@ void DatastoreParserWriteHost::flushPending() {
   state_->core.load(std::memory_order_acquire)->flushPending();
 }
 
+void DatastoreParserWriteHost::finish() {
+  state_->core.load(std::memory_order_acquire)->finish();
+}
+
 void DatastoreParserWriteHost::setTarget(DataEngine* target) {
   // As DatastoreSourceWriteHost::setTarget(). The bound topic must already exist in `target` with the same TopicId.
   const auto pinned = pinCore(*state_);
@@ -2559,6 +2577,10 @@ DatastoreToolboxHost& DatastoreToolboxHost::operator=(DatastoreToolboxHost&&) no
 
 PJ_toolbox_host_t DatastoreToolboxHost::raw() noexcept {
   return PJ_toolbox_host_t{.ctx = state_.get(), .vtable = &kToolboxVTable};
+}
+
+void DatastoreToolboxHost::finish() {
+  state_->core.write.finish();
 }
 
 void DatastoreToolboxHost::flushPending() {

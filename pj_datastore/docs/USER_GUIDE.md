@@ -79,7 +79,7 @@ writeHost().ensureField(*topic, "label",   PJ::PrimitiveType::kString);
 Pre-registration is **optional**. If you skip it, fields are auto-created on
 first non-null write via `appendRecord()`. Pre-registering is recommended when
 the schema is known upfront because it enables the faster `appendBoundRecord()`
-path and avoids mid-stream chunk sealing.
+path.
 
 ### Step 3: Append records
 
@@ -181,7 +181,7 @@ the holder + stream-builder helpers.
 ## 3. Timestamps
 
 - Type: `int64_t` (nanoseconds since Unix epoch)
-- May arrive **out of order** within a topic (multi-publisher recordings): every row is retained, rows are sorted per chunk at seal, and row queries return timestamp order
+- May arrive **out of order** within a topic (multi-publisher recordings): every row is retained, rows are sorted per chunk, and row queries return timestamp order
 - Convert from seconds: `auto ts = static_cast<int64_t>(epoch_seconds * 1e9);`
 - **Never subtract a base time** — display-time subtraction belongs in the UI layer
 
@@ -291,16 +291,15 @@ if (col_index < row.chunk->columns.size()) {
 
 ## 6. Common Pitfalls
 
-### Column addition auto-seals the current chunk
+### Fields may appear at any time
 
 When `appendRecord()` encounters a new field after rows have been written,
-the datastore seals the current chunk and adds the column to a fresh one.
-Earlier rows (in sealed chunks) have no value for the new column — readers
-treat absent columns as null.
+the datastore adds the column. Earlier rows have no value for it: readers see
+them as null.
 
-You do NOT need to pre-register all fields before writing. Fields may appear
-at any time. Pre-registration with `ensureField()` is still recommended when
-the schema is known upfront, as it avoids mid-stream chunk sealing.
+You do NOT need to pre-register all fields before writing. Pre-registration
+with `ensureField()` is still recommended when the schema is known upfront, as
+it enables `appendBoundRecord()`.
 
 For schema-based parsers (ROS, Protobuf) where a field's type is known but
 the value is null, use `TypedNull{type}` instead of `kNull` to create the

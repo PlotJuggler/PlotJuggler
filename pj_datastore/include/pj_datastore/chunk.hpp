@@ -54,8 +54,11 @@ struct ChunkStats {
   std::vector<ColumnStats> column_stats;
 };
 
-/// Immutable once sealed. The read accessors do not check for nulls: readNumericAsDouble() returns 0.0 at a null,
-/// so call isNull() first or use readColumnAsDoubles().
+/// A topic's rows, sorted by timestamp. A row never changes under its chunk's id: the values and the position of row
+/// `r` of chunk `id` stay what they are while that id exists. Only a topic's last chunk can change, by gaining rows at
+/// its end (TopicStorage::appendRows) and by having its columns re-encoded, so a consumer that remembers a chunk id
+/// also remembers how many of its rows it read. The read accessors do not check for nulls: readNumericAsDouble()
+/// returns 0.0 at a null, so call isNull() first or use readColumnAsDoubles().
 struct TopicChunk {
   ChunkId id = 0;
   TopicId topic_id = 0;
@@ -96,6 +99,19 @@ struct TopicChunk {
 
   /// NaN at nulls, and for bool and string columns.
   void readColumnAsDoubles(std::size_t col_index, Span<double> out, std::size_t row_start) const;
+
+  // ---- Growing in place: TopicStorage only ----
+
+  /// True when every column is stored in a form rows can be appended to: raw numbers, packed bools, a dictionary with
+  /// 4-byte indices. seal() and compact() pick tighter encodings.
+  [[nodiscard]] bool isGrowable() const;
+
+  /// Re-stores every column in growable form. Rows and values are unchanged (a null's placeholder may differ).
+  void makeGrowable();
+
+  /// Picks each column's encoding as seal() does for the same rows, and recomputes the stats. Id, rows and values are
+  /// unchanged. Frees and reallocates the column buffers.
+  void compact();
 };
 
 /// Accumulates one topic's rows and seals them into a TopicChunk, choosing each column's encoding from its stats.
@@ -152,6 +168,37 @@ class TopicChunkBuilder {
   /// Sorts the rows by timestamp (stable), picks the encodings and assigns the next ChunkId.
   [[nodiscard]] TopicChunk seal();
 
+  // ---- Handing rows to a chunk that grows in place: TopicStorage only ----
+
+  /// Writes the nulls the columns still owe and sorts the rows by timestamp (stable). timestampAt() and appendRowsTo()
+  /// need it first.
+  void sortRows();
+
+  [[nodiscard]] Timestamp timestampAt(std::size_t row) const {
+    return timestamps_[row];
+  }
+
+  /// Whether `chunk` can take this builder's rows: the same schema version, and the same type for every column both
+  /// have. Either may have more columns than the other: columns are only ever added at the end of a topic's layout.
+  [[nodiscard]] bool fitsLayoutOf(const TopicChunk& chunk) const;
+
+  /// An empty growable chunk with this builder's layout and the next ChunkId.
+  [[nodiscard]] TopicChunk makeGrowableChunk() const;
+
+  /// Empties the builder for the next rows, keeping its layout and its buffers' capacity; `max_rows` replaces the
+  /// constructor's. Also after seal().
+  void clearRows(uint32_t max_rows);
+
+  [[nodiscard]] std::size_t columnCount() const noexcept {
+    return columns_.size();
+  }
+
+  /// Appends rows [first, first + count) to the end of `chunk` and updates its stats (not encoded_byte_size). Needs
+  /// sortRows(), fitsLayoutOf(chunk), chunk.isGrowable() and no row older than the chunk's newest: a chunk stays sorted
+  /// and its earlier rows keep their positions. The chunk gains the columns only this builder has, null for the rows it
+  /// already holds; a column only the chunk has takes nulls.
+  void appendRowsTo(TopicChunk& chunk, std::size_t first, std::size_t count) const;
+
   /// An id above every chunk id handed out so far; seal() draws from the same counter.
   [[nodiscard]] static ChunkId nextChunkId() noexcept {
     return next_chunk_id++;
@@ -172,10 +219,15 @@ class TopicChunkBuilder {
   Timestamp current_timestamp_ = 0;
 
   Timestamp last_timestamp_ = std::numeric_limits<Timestamp>::min();
+  // False once a row arrived older than the one before it; lets seal() and sortRows() skip the sort.
+  bool sorted_ = true;
   std::vector<double> last_column_values_;
   std::size_t bulk_pending_rows_ = 0;  // rows added via bulk but not yet finished
 
+  void resetStats();
   void updateColumnStats(std::size_t col_index, double value);
+  // Float columns only: keeps ColumnStats::all_integral.
+  void noteFloat(std::size_t col_index, double value);
 
   // A column a row does not set owes it a null, written when the column is next set or before the columns are read
   // (bulk append, stats(), seal()). Every path touching columns_ pads first, or its rows misalign.

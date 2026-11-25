@@ -420,7 +420,7 @@ void SeriesRunner::collect(const std::string& key, bool backfill, GridRunner::Ro
         written = written && writer.finishRow(topic).has_value();
         series.state.rows += written ? 1 : 0;
       }
-      (void)engine_.commitChunksLocked(writer.flushAll());
+      (void)writer.commitRows();
     }
   }
   const uint64_t evaluated = rows.times.size() + rows.gaps;

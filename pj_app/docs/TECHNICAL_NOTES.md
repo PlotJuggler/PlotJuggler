@@ -5,15 +5,16 @@ observed, under which conditions, what the code does about it and when to measur
 
 ## File-load flush interval
 
-- **Observed:** loading a 30-minute ROS 1 MCAP with 117k series (topics flattening variable-length arrays into up to
-  13k columns), flushing every 50 ms sealed a chunk per topic per flush: 20.3 s, 29.8 CPU-s, 5.5 GB RSS. At 250 ms:
-  18.7 s, 26.3 CPU-s, 3.6 GB (Linux x86_64, i7-13700H, two runs each). The memory is the per-column cost of the many
-  small chunks; data shows during a load four times a second instead of twenty.
+- **Observed:** a flush copies each topic's new rows into its last chunk, one visit per column, and announces them to
+  the GUI, so its cost follows the columns of the topics with new rows and not the rows. Loading a 30-minute ROS 1
+  MCAP with 117k series (topics flattening variable-length arrays into up to 13k columns), flushing every 50 ms: 22.3 s,
+  32.0 CPU-s (8.3 on the GUI thread), 2.85 GB RSS. Every 250 ms: 19.5 s, 27.2 CPU-s (6.2 on the GUI thread), 2.73 GB
+  (Linux x86_64, i7-13700H, two runs each). The stored chunks are the same at both (`pj_datastore` TECHNICAL_NOTES
+  "Chunks cut by rows, not by commits"); data shows during a load four times a second instead of twenty.
 - **What the code does:** `PJ::kFileLoadFlushInterval` (`FileLoadFlushInterval.h`) sets the interval for file loads and
   fan-out entries; streams and toolbox imports do not use it. The flush runs on the load's worker thread on desktop and
   in the browser. Tests that need a mid-load flush wait longer than this constant.
-- **Re-test:** if a chunk's fixed cost per column drops (descriptors shared across chunks, say), or if data appearing
-  during a load feels late.
+- **Re-test:** if a flush stops visiting the columns no row set, or if data appearing during a load feels late.
 
 ## Browser preferences flush on a timer
 

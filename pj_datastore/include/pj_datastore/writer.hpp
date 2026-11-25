@@ -90,8 +90,8 @@ struct ColumnData {
 };
 
 /// Builds rows into per-topic chunk builders; nothing is visible to readers until
-/// `engine.commitChunks(writer.flushAll())`. Never takes the engine lock, though it reads and changes TopicStorage:
-/// when another thread can see the engine, call it under lockEngine() (the C-ABI write hosts do).
+/// commitRows() or `engine.commitChunks(writer.flushAll())`. Never takes the engine lock, though it reads and changes
+/// TopicStorage: when another thread can see the engine, call it under lockEngine() (the C-ABI write hosts do).
 class DataWriter {
  public:
   explicit DataWriter(DataEngine& engine);
@@ -161,20 +161,26 @@ class DataWriter {
 
   [[nodiscard]] std::vector<std::pair<PJ::TopicId, TopicChunk>> flushAll();
 
+  /// Commits every finished row to the engine and returns the sorted ids of the topics that took some, as
+  /// DataEngine::commitChunks() does. Unlike `commitChunks(flushAll())`, the rows extend each topic's last chunk
+  /// (TopicStorage::appendRows), so how often this is called does not decide where chunks end. Not inside a row.
+  std::vector<PJ::TopicId> commitRows();
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 
   TopicChunkBuilder& getOrCreateBuilder(PJ::TopicId topic_id);
 
+  // The rows a new or emptied builder of the topic takes before it is set aside.
+  [[nodiscard]] uint32_t builderRows(PJ::TopicId topic_id, const TopicStorage& storage) const;
+
   void ensureColsLoaded(PJ::TopicId topic_id, const TopicStorage& storage);
 
   static std::vector<ColumnDescriptor> buildColumnDescriptors(const PJ::TypeTreeNode& root);
 
-  void autoSeal(PJ::TopicId topic_id);
-
-  // An empty builder is dropped without sealing.
-  void sealBeforeLayoutChange(PJ::TopicId topic_id);
+  // Sets the topic's builder aside, unsealed, until the next flush or commitRows(); an empty one is dropped.
+  void setBuilderAside(PJ::TopicId topic_id);
 };
 
 }  // namespace PJ

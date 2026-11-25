@@ -52,6 +52,10 @@ struct DictionaryEncoded {
 [[nodiscard]] DictionaryEncoded dictionaryEncodeStrings(
     PJ::Span<const uint8_t> offsets_data, PJ::Span<const uint8_t> values_data, std::size_t row_count);
 
+/// The same rows with each string once, in first-seen order, and the narrowest indices: what
+/// dictionaryEncodeStrings() gives them. For a dictionary that grew row by row (TopicChunk::compact()).
+[[nodiscard]] DictionaryEncoded dictionaryRecode(const DictionaryEncoded& encoded);
+
 /// The view points into `encoded`'s dictionary.
 [[nodiscard]] std::string_view dictionaryLookup(const DictionaryEncoded& encoded, std::size_t row);
 

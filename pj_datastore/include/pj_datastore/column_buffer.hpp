@@ -109,6 +109,10 @@ class TypedColumnBuffer {
 
   [[nodiscard]] bool hasNulls() const noexcept;
 
+  [[nodiscard]] std::size_t nullCount() const noexcept {
+    return null_count_;
+  }
+
   [[nodiscard]] bool isValid(std::size_t row) const noexcept;
 
   void appendFloat32(float value);
@@ -129,6 +133,9 @@ class TypedColumnBuffer {
   void appendNull();
   /// `count` nulls in one step: the buffers grow once, not per row.
   void appendNulls(std::size_t count);
+
+  /// Drops every row and keeps the buffers' capacity.
+  void clear();
 
   [[nodiscard]] float readFloat32(std::size_t row) const;
 

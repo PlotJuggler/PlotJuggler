@@ -51,8 +51,9 @@ struct TopicMetadata {
 class DataEngine;
 
 /// One topic's committed chunks, in commit order. Out-of-order ingest makes chunk time ranges overlap, so readers
-/// merge across chunks. Also holds the inline column layout of schema-less topics and the array-expansion counts.
-/// Guarded by the engine lock.
+/// merge across chunks. Only the last chunk changes, in place (appendRows), so nothing read from a chunk outlives the
+/// engine lock it was read under. Also holds the inline column layout of schema-less topics and the array-expansion
+/// counts. Guarded by the engine lock.
 class TopicStorage {
  public:
   TopicStorage(TopicId topic_id, TopicDescriptor descriptor);
@@ -60,6 +61,18 @@ class TopicStorage {
   /// Never rejects a chunk, overlapping ones included: rejecting would drop late data. Gives the chunk a fresh id when
   /// its id is not above this topic's newest, so ids ascend in commit order.
   [[nodiscard]] PJ::Status appendSealedChunk(TopicChunk chunk);
+
+  /// Commits a writer's rows without sealing them into a chunk of their own: they extend the topic's last chunk while
+  /// it has room, a layout theirs fits (TopicChunkBuilder::fitsLayoutOf) and no row newer than theirs, and start a
+  /// new chunk otherwise. A chunk is re-encoded once, when it reaches the topic's max_chunk_rows, so a topic's chunks
+  /// are cut by its rows and not by how often its writer commits. A chunk that grows keeps its id and its rows their
+  /// positions (see TopicChunk), and gains the columns the topic gained. `batch` is left for clearRows(): its rows are
+  /// sorted and may have been moved out.
+  void appendRows(TopicChunkBuilder& batch);
+
+  /// Re-encodes the last chunk if appendRows() left it in growable form: call when a source ends, so a chunk that will
+  /// not fill does not stay stored raw.
+  void compactLastChunk();
 
   /// Drops the chunks that end before `t_keep_min` and raises the retention floor to it (rows of a chunk straddling
   /// the floor stay in memory but are hidden).
@@ -189,6 +202,15 @@ class TopicStorage {
   void ensureWholeNumberAggregate() const;
   // direction: +1 adds the chunk's float columns, -1 removes them.
   void foldWholeNumbers(const TopicChunk& chunk, int direction) const;
+  // `evidence` is a WholeEvidence (topic_storage.cpp) of one chunk about `field_id`.
+  void foldWholeEvidence(FieldId field_id, uint8_t evidence, int direction) const;
+  // Runs `change` on `chunk`, already stored, and moves the whole-number aggregate by what it changed.
+  template <typename Change>
+  void changeStoredChunk(TopicChunk& chunk, Change&& change);
+  // Grows `chunk`, the last one, by `count` rows of `batch` and keeps the cached aggregates in step.
+  void extendLastChunk(TopicChunk& chunk, const TopicChunkBuilder& batch, std::size_t first, std::size_t count);
+  // compact() on the last chunk, keeping the byte-size aggregate in step.
+  void compactChunk(TopicChunk& chunk);
   void unretireColumnsWithValues(const TopicChunk& chunk);
 
   TopicId topic_id_;

@@ -244,7 +244,7 @@ withdraws the node and, recursively, the upstreams nothing else needs (`OnDemand
 | Component | Responsibility |
 |---|---|
 | `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. A node holds its script compiled in its language (`CompiledOnDemandScript`, "Scripting languages"). |
-| `InputStager` | Resolves inputs at `t` on the GUI thread by identity (an object entry's topic, UID and parser; a scalar sample by its row, the sealed chunk's id and the row's index, so equal-time rows never alias and no value is hashed; an upstream's result) without fetching a payload, and builds the request's cache key. `decode` fetches and decodes on any thread, a parser-backed entry under its per-topic parser lock and a canonical point cloud as a view over the store's bytes, and returns the parser keepalives its objects need. |
+| `InputStager` | Resolves inputs at `t` on the GUI thread by identity (an object entry's topic, UID and parser; a scalar sample by its row, the chunk's id and the row's index there (a row never changes under its chunk's id), so equal-time rows never alias and no value is hashed; an upstream's result) without fetching a payload, and builds the request's cache key. `decode` fetches and decodes on any thread, a parser-backed entry under its per-topic parser lock and a canonical point cloud as a view over the store's bytes, and returns the parser keepalives its objects need. |
 | `ResultHistory` | Per node: the compute cache and the ring ("Where results live"). Results keyed by cache identity, ordered by stamp and sized by time span: a window around the node's cursor, then one global byte budget each that evicts the result farthest from its node's cursor. |
 | `NodeScheduler` | Per node: one running run plus one pending request, submission to `EnginePool`, supersede on meaning change (the result policy), and the node state layers read (`NodeState`: idle, pending, ready, missing input, error, with the lag). Its class comment is the result-policy spec. |
 | `GridRunner` | The per-instant loop shared by explicit evaluations and series: a window's grid (its start and every raw input change after it, through the whole chain; a finding adds its real stamp; an instant is a window of one), the chain evaluated at each instant with the job's own upstream results, one in-flight reservation per job, budgets clamped to `kHostCaps`, and a report in the SDK's shape (`GridRunner::toJson`). Nothing published, no cursor moved. `submitRows` is the series' column sink. |
@@ -687,9 +687,10 @@ A numeric output of a function with object inputs can be a plottable series, com
   - Processors advance over **every topic of the dataset**, not over the topics committed this tick ("Evidence" has
     why a changed-topic feed loses rows).
   - **The idle-node gate** keeps that advance cheap: `IncrementalEngine` skips a node, in time linear in its inputs,
-    unless an input's newest chunk id (evicted chunks included) is above the node's chunk watermark; a MIMO node
-    compares each input with that input's own newest id. It is safe because input becomes new to a node only as a
-    committed chunk numbered from one global counter, and retention raises the evicted-through id, so a gap is still
+    unless an input's newest chunk id (evicted chunks included) is above the node's chunk watermark, or that chunk
+    holds more rows than the node read from it; a MIMO node compares each input with that input's own newest id and
+    row count. It is safe because input becomes new to a node only as a committed chunk numbered from one global
+    counter or as rows added to the topic's last chunk, and retention raises the evicted-through id, so a gap is still
     seen. A node with a failure to report, a replay pending or a time-sliced replay unfinished is never skipped.
   - The marker recompute receives every topic too: its per-topic stamp filter (newest timestamp, row count, retention
     floor, series generation) sees a retention-only change on a quiet topic.

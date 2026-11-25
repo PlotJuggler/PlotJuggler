@@ -32,7 +32,7 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **Observed:** ROS recordings interleave publishers whose message stamps disagree; on `/tf` about 1% of messages
   arrive out of order, and a localizer can future-date its transforms. When the store rejected timestamp regressions,
   those rows were lost.
-- **What the code does:** every row is kept. Scalar rows sort within a chunk at seal and the reads merge overlapping
+- **What the code does:** every row is kept. Scalar rows sort within a commit and the reads merge overlapping
   chunks; ObjectStore entries are inserted at their sorted position.
 - **Cost:** an ObjectStore out-of-order insert shifts the topic's entries, O(n) under the topic's exclusive lock: about
   1.1 ms per push at 200k entries (machine not recorded). A stream that is mostly unsorted degrades toward O(n²).
@@ -48,6 +48,34 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **What the code does:** `TopicChunkBuilder` pads a column lazily (`padColumn`, `padAllColumns`), writing its owed
   nulls in one step (`TypedColumnBuffer::appendNulls`, `BitVector::setNullRange`).
 - **Re-test:** if rows become dense (most columns set per row), where the lazy path saves nothing.
+
+## Chunks cut by rows, not by commits
+
+- **Observed:** when every commit sealed a chunk per topic, a topic's chunk count followed how often its writer
+  committed, and each chunk costs about 330 bytes per column whatever its rows (the column entry, its stats, a
+  descriptor and its path). Loading a 30-minute ROS 1 MCAP with 117k series and topics of up to 13k columns (Linux
+  x86_64, i7-13700H, runs alternated in one session):
+
+  | Commit every | Stored | Chunks | Chunk-columns | Undersized | Load | CPU | RSS |
+  |---|---|---|---|---|---|---|---|
+  | 250 ms | a chunk per commit | 7,615 | 4.75 M | 6,804 | 18.6 s | 26.1 s | 3.68 GB |
+  | 50 ms | a chunk per commit | 25,712 | 11.48 M | 25,458 | 20.7 s | 30.2 s | 5.72 GB |
+  | 250 ms | last chunk grows | 1,920 | 0.66 M | 0 | 19.5 s | 27.2 s | 2.73 GB |
+  | 50 ms | last chunk grows | 1,920 | 0.66 M | 0 | 22.3 s | 32.0 s | 2.85 GB |
+
+- **What was tried, in order:** the first version re-encoded a full chunk by rebuilding it through a builder,
+  recomputed the stats of every appended row and destroyed each builder at commit: 26.4 s (a profile gave 4.0 s to the
+  row copy and 4.8 s to the re-encoding). Encoding in place with the function `seal()` uses, one step for a column no
+  row or every row of the batch set, the builder's own stats for a batch appended whole, and builders kept across
+  commits brought it to 19.5 s. Before the last chunk could gain a column it left 193 undersized chunks on this file,
+  every one cut by a growing array; none was cut by a late row.
+- **Not tried (reasoning):** sealing a snapshot of the growing rows at every commit costs their whole count times the
+  columns each time, about 13 M cells a commit for a 13k-column topic near a full chunk. Merging small chunks in tiers
+  leaves about ten trailing chunks a topic and renumbers chunks derived nodes have read.
+- **Re-test:** when a source's rows are often late across commits (count the chunks that are not full and whose
+  successor starts earlier): inserting them into the last chunk under a new id would keep its chunks full. And when
+  the per-commit cost matters: it is one visit per column of every topic with new rows, which a list of the columns a
+  batch set would cut for sparse topics.
 
 ## ObjectStore costs
 

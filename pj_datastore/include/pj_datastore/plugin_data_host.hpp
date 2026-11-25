@@ -51,7 +51,11 @@ class DatastoreSourceWriteHost {
   DatastoreSourceWriteHost& operator=(DatastoreSourceWriteHost&&) noexcept;
 
   [[nodiscard]] PJ_source_write_host_t raw() noexcept;
+  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows).
   void flushPending();
+  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (DataEngine::compactLastChunks):
+  /// for when the source ends.
+  void finish();
 
   // Flushes pending rows into the current engine, then routes later writes to `target` (the streaming pause/resume
   // swap). Not owning. Takes both engine locks, so it waits for a worker call in progress (an Arrow import holds them
@@ -100,7 +104,11 @@ class DatastoreParserWriteHost {
   DatastoreParserWriteHost& operator=(DatastoreParserWriteHost&&) noexcept;
 
   [[nodiscard]] PJ_parser_write_host_t raw() noexcept;
+  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows).
   void flushPending();
+  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (DataEngine::compactLastChunks):
+  /// for when the source ends.
+  void finish();
 
   // As DatastoreSourceWriteHost::setTarget(); the bound topic must exist in `target` with the same TopicId (the
   // streaming manager registers it on both engines).
@@ -172,7 +180,11 @@ class DatastoreToolboxHost {
   DatastoreToolboxHost& operator=(DatastoreToolboxHost&&) noexcept;
 
   [[nodiscard]] PJ_toolbox_host_t raw() noexcept;
+  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows).
   void flushPending();
+  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (DataEngine::compactLastChunks):
+  /// for when the source ends.
+  void finish();
 
  private:
   std::unique_ptr<DatastoreToolboxHostState> state_;

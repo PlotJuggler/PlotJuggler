@@ -20,6 +20,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 
 namespace PJ {
@@ -117,6 +118,89 @@ TEST(EngineConcurrencyTest, ConcurrentCommitAndReadDoesNotRace) {
   std::size_t total = 0;
   final_cursor->forEach([&total](const SampleRow&) { ++total; });
   EXPECT_EQ(total, static_cast<std::size_t>(kBatches) * kSamplesPerBatch);
+}
+
+// The same race for rows committed unsealed: the writer grows the topic's last chunk in place and re-encodes it
+// when it fills, which reallocates the buffers a reader is walking unless both hold the engine lock. Each row's value
+// is its timestamp, so a reader that sees a torn or moved buffer reads a wrong value, and ThreadSanitizer reports the
+// unsynchronized access itself.
+TEST(EngineConcurrencyTest, ConcurrentCommitRowsAndReadSeeAGrowingChunkWhole) {
+  DataEngine engine;
+  auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "grow", .time_domain_id = 0});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  DataWriter setup = engine.createWriter();
+  auto handle = setup.registerScalarSeries(*dataset, "v", NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  const TopicId topic = handle->topic_id;
+
+  constexpr int kCommits = 400;  // 2.8k rows: the chunk fills, and is re-encoded, twice during the run
+  constexpr int kRowsPerCommit = 7;
+  constexpr int kMaxReaderPasses = 1000;
+  std::atomic<bool> writer_done{false};
+  std::atomic<int> completed_reads{0};
+  std::atomic<int> wrong_values{0};
+  std::latch first_read_done{1};
+
+  std::thread writer([&]() {
+    DataWriter w = engine.createWriter();
+    const ScalarSeriesHandle wh{topic, 0};
+    Timestamp t = 0;
+    for (int commit = 0; commit < kCommits; ++commit) {
+      {
+        // As the write hosts do: the writer reads the topic's last chunk to size its builders.
+        const auto lock = engine.lockEngine();
+        for (int i = 0; i < kRowsPerCommit; ++i, ++t) {
+          w.appendScalar(wh, t, static_cast<double>(t));
+        }
+        (void)w.commitRows();
+      }
+      if (commit == 0) {
+        first_read_done.wait();
+      }
+      std::this_thread::yield();
+    }
+    writer_done.store(true, std::memory_order_release);
+  });
+
+  std::thread reader([&]() {
+    DataReader r = engine.createReader();
+    std::size_t rows_before = 0;
+    for (int i = 0; i < kMaxReaderPasses && !writer_done.load(std::memory_order_acquire); ++i) {
+      auto cursor = r.rangeQuery(
+          QueryRange{
+              .topic_id = topic,
+              .t_min = std::numeric_limits<Timestamp>::min(),
+              .t_max = std::numeric_limits<Timestamp>::max()});
+      if (cursor.has_value()) {
+        std::size_t rows = 0;
+        cursor->forEach([&](const SampleRow& row) {
+          const bool expected_row = row.timestamp == static_cast<Timestamp>(rows) &&
+                                    row.chunk->readNumericAsDouble(0, row.row_index) == static_cast<double>(rows);
+          wrong_values.fetch_add(expected_row ? 0 : 1, std::memory_order_relaxed);
+          ++rows;
+        });
+        // Whole commits only, and never fewer rows than before.
+        wrong_values.fetch_add(rows % kRowsPerCommit == 0 && rows >= rows_before ? 0 : 1, std::memory_order_relaxed);
+        rows_before = rows;
+      }
+      if (completed_reads.fetch_add(1, std::memory_order_relaxed) == 0) {
+        first_read_done.count_down();
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  reader.join();
+  writer.join();
+
+  EXPECT_GT(completed_reads.load(), 0);
+  EXPECT_EQ(wrong_values.load(), 0);
+  const auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(topic);
+  ASSERT_NE(storage, nullptr);
+  EXPECT_EQ(storage->metadata().total_row_count, static_cast<uint64_t>(kCommits) * kRowsPerCommit);
+  EXPECT_EQ(storage->sealedChunks().size(), 3U) << "cut by rows: 1024, 1024 and the rest";
 }
 
 }  // namespace
