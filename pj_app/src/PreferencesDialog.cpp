@@ -6,14 +6,17 @@
 #include <QAbstractItemModel>
 #include <QBrush>
 #include <QColor>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFormLayout>
 #include <QIcon>
 #include <QImage>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QNetworkAccessManager>
 #include <QNetworkInformation>
 #include <QNetworkReply>
@@ -22,6 +25,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QStyle>
@@ -31,6 +35,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 
+#include "AppLanguage.h"
 #include "DebugMode.h"
 #include "MainWindow.h"
 #include "PreferencesNavRow.h"
@@ -60,6 +65,30 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 namespace {
+
+// Keep the wrapped Appearance form from squeezing the selector below its current label metrics.
+class SelectorWidthGuard final : public QObject {
+ public:
+  explicit SelectorWidthGuard(QWidget* selector) : QObject(selector), selector_(selector) {
+    selector_->ensurePolished();
+    updateMinimumWidth();
+    selector_->installEventFilter(this);
+  }
+
+ protected:
+  bool eventFilter(QObject*, QEvent* event) override {
+    if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange) {
+      updateMinimumWidth();
+    }
+    return false;
+  }
+
+ private:
+  void updateMinimumWidth() {
+    selector_->setMinimumWidth(selector_->sizeHint().expandedTo(selector_->minimumSizeHint()).width());
+  }
+  QWidget* selector_;
+};
 
 // Must equal MainWindow.cpp's k*Default constants (kept by hand): Reset matches a first launch.
 constexpr int kDefaultIconSize = 24;
@@ -210,11 +239,22 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->scrubberFloatPrecision->setSingleStep(1);
   ui_->curveColorMode->setOptions(tr("global"), tr("per plot"));
   ui_->splashMode->setOptions(tr("memes"), tr("serious"));
+  new SelectorWidthGuard(ui_->splashMode);
+  // Endonyms stay recognizable in either interface language. The selection is the next launch's preference, even
+  // when --language overrides this session.
+  ui_->languageCombo->addItem(u"简体中文"_s, u"zh_CN"_s);
+  ui_->languageCombo->addItem(u"English"_s, u"en_US"_s);
+  ui_->languageCombo->addItem(u"繁體中文"_s, u"zh_TW"_s);
+  // Qt may cache the empty-model minimum hint while the page is assembled; respect both hints so the form cannot
+  // squeeze below either.
+  ui_->languageCombo->setMinimumWidth(
+      ui_->languageCombo->sizeHint().expandedTo(ui_->languageCombo->minimumSizeHint()).width());
   ui_->derivedBatchMode->setOptions(tr("Automatic"), tr("Manual"));
   ui_->clockTimeZone->setOptions(tr("local"), tr("UTC"));
   ui_->scrubberDerivedReloadHz->setRange(BatchEngine::kMinReloadHz, BatchEngine::kMaxReloadHz);
   {
     QSettings settings;
+    ui_->languageCombo->setCurrentIndex(ui_->languageCombo->findData(AppLanguage::preferredLanguage(settings)));
     ui_->scrubberFloatPrecision->setValue(valuePrecision());
     ui_->curveColorMode->setSelectedIndex(settings.value(u"Preferences::curve_color_global"_s, true).toBool() ? 0 : 1);
     ui_->clockTimeZone->setSelectedIndex(settings.value(MainWindow::kClockUtcKey, false).toBool() ? 1 : 0);
@@ -529,6 +569,12 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       }
     }
     QSettings settings;
+    // Write only a real change: a language this build does not support (saved by a newer version) shows as English
+    // but must survive an unrelated OK.
+    const QString language = ui_->languageCombo->currentData().toString();
+    if (language != AppLanguage::preferredLanguage(settings)) {
+      settings.setValue(AppLanguage::kPreferenceKey, language);
+    }
     const bool precision_changed = ui_->scrubberFloatPrecision->value() != valuePrecision();
     settings.setValue(QString::fromLatin1(kPrecisionSettingsKey), ui_->scrubberFloatPrecision->value());
     settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());

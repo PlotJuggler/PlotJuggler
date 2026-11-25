@@ -3,6 +3,7 @@
 
 #include "pj_widgets/Colormap.h"
 
+#include <QCoreApplication>
 #include <algorithm>
 #include <cstddef>
 
@@ -161,15 +162,19 @@ vec3 sampleColormap(int id, float t) {
 const char* colormapName(Colormap colormap) noexcept {
   switch (colormap) {
     case Colormap::kTurbo:
-      return "Turbo";
+      return QT_TRANSLATE_NOOP("PJ::Colormap", "Turbo");
     case Colormap::kViridis:
-      return "Viridis";
+      return QT_TRANSLATE_NOOP("PJ::Colormap", "Viridis");
     case Colormap::kPlasma:
-      return "Plasma";
+      return QT_TRANSLATE_NOOP("PJ::Colormap", "Plasma");
     case Colormap::kGrayscale:
-      return "Grayscale";
+      return QT_TRANSLATE_NOOP("PJ::Colormap", "Grayscale");
   }
-  return "Turbo";
+  return QT_TRANSLATE_NOOP("PJ::Colormap", "Turbo");
+}
+
+QString colormapDisplayName(Colormap colormap) {
+  return QCoreApplication::translate("PJ::Colormap", colormapName(colormap));
 }
 
 QString colormapToken(Colormap colormap) {

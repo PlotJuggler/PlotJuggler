@@ -305,7 +305,7 @@ void PixelInspector::updateDepth(
 
   // Sized to the wider line: a fixed width clips "— (no data)".
   const QFontMetrics fm{inspectorFont()};
-  const QString position_line = u"Position: %1, %2"_s.arg(image_x_).arg(image_y_);
+  const QString position_line = tr("Position: %1, %2").arg(image_x_).arg(image_y_);
   const int text_w = std::max(fm.horizontalAdvance(position_line), fm.horizontalAdvance(depthValueText()));
   const int content_w = std::max(text_w, kSwatchSize) + kPadding * 2;
   const int content_h = kPadding + kLineHeight + 8 + kLineHeight + 12 + kSwatchSize + kPadding;
@@ -390,7 +390,7 @@ void PixelInspector::paintRgb(QPainter& painter) {
   painter.setFont(inspectorFont());
   painter.setPen(PJ::theme::onOverlayHud(fw_theme));
 
-  painter.drawText(info_x, info_y + kLineHeight, u"Position: %1, %2"_s.arg(image_x_).arg(image_y_));
+  painter.drawText(info_x, info_y + kLineHeight, tr("Position: %1, %2").arg(image_x_).arg(image_y_));
   info_y += kLineHeight + 8;
   painter.drawText(
       info_x, info_y + kLineHeight,
@@ -418,7 +418,7 @@ void PixelInspector::paintDepth(QPainter& painter) {
   painter.setFont(inspectorFont());
   painter.setPen(PJ::theme::onOverlayHud(fw_theme));
 
-  painter.drawText(x, y + kLineHeight, u"Position: %1, %2"_s.arg(image_x_).arg(image_y_));
+  painter.drawText(x, y + kLineHeight, tr("Position: %1, %2").arg(image_x_).arg(image_y_));
   y += kLineHeight + 8;
   painter.drawText(x, y + kLineHeight, depthValueText());
   y += kLineHeight + 12;
@@ -433,9 +433,9 @@ void PixelInspector::paintDepth(QPainter& painter) {
 
 QString PixelInspector::depthValueText() const {
   if (depth_m_.has_value()) {
-    return u"Depth: %1 m"_s.arg(*depth_m_, 0, 'f', 3);
+    return tr("Depth: %1 m").arg(*depth_m_, 0, 'f', 3);
   }
-  return u"Depth: — (no data)"_s;
+  return tr("Depth: — (no data)");
 }
 
 InspectorRgb PixelInspector::cropPixel(int x, int y) const {

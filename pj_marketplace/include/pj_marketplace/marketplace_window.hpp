@@ -152,7 +152,7 @@ class MarketplaceWindow : public Dialog {
   // Shows the in-flight install with the queue depth ("Installing mcap…  ·  2 queued"); `verb` is the phase word.
   // No-op when nothing is active, so it never clobbers a terminal "Installed"/"Failed" message. A sideload is named
   // by its file name until its manifest gives an id.
-  void showInstallProgress(const QString& verb = QStringLiteral("Installing"));
+  void showInstallProgress(const QString& verb = tr("Installing"));
 
   // "  ·  N queued" for the combined depth of every queue, then "  ·  M failed" once this run has failures. Empty
   // when nothing is waiting and nothing has failed.

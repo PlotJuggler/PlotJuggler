@@ -1,5 +1,7 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg Test)
 find_package(nlohmann_json REQUIRED)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjAppLanguage.cmake)
+pj_add_app_language()
 
 # backward-cpp: symbolized crash backtraces (main.cpp installs the handler). Backward::Backward carries the
 # BACKWARD_HAS_* defines and the libdw backend transitively.
@@ -218,6 +220,7 @@ target_include_directories(pj_app_shell PUBLIC
 )
 
 target_link_libraries(pj_app_shell PUBLIC
+    pj_app_language
     pj_runtime
     pj_widgets
     pj_plotting
@@ -343,6 +346,12 @@ if(EMSCRIPTEN)
     set_target_properties(pj_app PROPERTIES
         AUTORCC ON
         QT_WASM_INITIAL_MEMORY "256MB")
+    # Browser-only CJK fallback font: desktop builds use the system's fonts.
+    qt_add_resources(pj_app pj_wasm_cjk_font
+        PREFIX "/resources"
+        BASE "${CMAKE_SOURCE_DIR}/resources"
+        FILES "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSansSC/NotoSansSC-Subset.otf"
+              "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSansSymbols2/NotoSansSymbols2-Subset.ttf")
     target_link_options(pj_app PRIVATE -sALLOW_MEMORY_GROWTH=1
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
     set_property(TARGET pj_app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser_picked_file.js")
@@ -384,6 +393,7 @@ endif()
 
 if(PJ_BUILD_TESTS)
     find_package(GTest REQUIRED)
+    pj_add_app_language_test()
 
     # Qt-only helpers, compiled without the shell's dependency closure. No WARNINGS: not every test here builds
     # under -Werror.
@@ -413,7 +423,7 @@ if(PJ_BUILD_TESTS)
             src/LayoutXml.h
             src/KeySequence.cpp
             src/RasterKeyMap.cpp
-        LIBS Qt6::Widgets Qt6::Xml
+        LIBS Qt6::Widgets Qt6::Xml pj_app_language
     )
     set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
     target_compile_definitions(pj_app_unit_tests PRIVATE
@@ -491,6 +501,7 @@ if(PJ_BUILD_TESTS)
     # resolve. MainWindow teardown leaks process-global state, so discovery
     # runs each case in its own process while sharing one linked executable.
     set(PJ_APP_GUI_TEST_SOURCES
+        tests/preferences_language_test.cpp
         tests/slider_states_test.cpp
         tests/test_process_isolation_test.cpp)
 

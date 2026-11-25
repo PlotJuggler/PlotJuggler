@@ -22,6 +22,7 @@ module.exports = defineConfig({
     'bridge.spec.js',
     'robot_deployment.spec.js',
     'dialogs.spec.js',
+    'cjk_fonts.spec.js',
     'python.spec.js',
     'python_layout.spec.js',
     'mcp_relay.spec.js',

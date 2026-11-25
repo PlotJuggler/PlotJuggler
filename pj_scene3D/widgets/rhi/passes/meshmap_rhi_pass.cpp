@@ -192,12 +192,12 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
   if (geometry && (!ensureBuffer(rhi, gpu.positions, gpu.positions_capacity, mesh.positions.size() * sizeof(float)) ||
                    !ensureBuffer(rhi, gpu.link_positions, gpu.link_positions_capacity, link_position_bytes) ||
                    !ensureBuffer(rhi, gpu.link_colors, gpu.link_colors_capacity, link_color_bytes))) {
-    layer->noteRenderFailure(tr("Could not allocate the mesh-map vertex buffers"));
+    layer->noteRenderFailure(SceneText::tr("Could not allocate the mesh-map vertex buffers"));
     releaseLayerGpu(gpu);
     return false;
   }
   if (!ensureBuffer(rhi, gpu.attributes, gpu.attributes_capacity, attribute_bytes)) {
-    layer->noteRenderFailure(tr("Could not allocate the mesh-map colour buffer"));
+    layer->noteRenderFailure(SceneText::tr("Could not allocate the mesh-map colour buffer"));
     releaseLayerGpu(gpu);
     return false;
   }
@@ -321,7 +321,7 @@ bool MeshMapRhiPass::submit(
 bool MeshMapRhiPass::ensureLayerGpu(QRhi* rhi, MeshMapLayer* layer, LayerGpu& gpu) {
   if (!ensureUniformBuffer(rhi, gpu.surface_uniforms, kUniformBytes) ||
       !ensureUniformBuffer(rhi, gpu.line_uniforms, kUniformBytes)) {
-    layer->noteRenderFailure(tr("Could not create the mesh-map uniform buffers"));
+    layer->noteRenderFailure(SceneText::tr("Could not create the mesh-map uniform buffers"));
     releaseLayerGpu(gpu);
     return false;
   }
@@ -332,7 +332,7 @@ bool MeshMapRhiPass::ensureLayerGpu(QRhi* rhi, MeshMapLayer* layer, LayerGpu& gp
     gpu.line_bindings = createLayerBindings(rhi, gpu.line_uniforms);
   }
   if (gpu.surface_bindings == nullptr || gpu.line_bindings == nullptr) {
-    layer->noteRenderFailure(tr("Could not create mesh-map shader bindings"));
+    layer->noteRenderFailure(SceneText::tr("Could not create mesh-map shader bindings"));
     releaseLayerGpu(gpu);
     return false;
   }

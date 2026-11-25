@@ -202,12 +202,12 @@ bool OccupancyRhiPass::ensureLayerGpu(QRhi* owner, OccupancyGridLayer* layer, La
   if (texture_limit <= 0 || grid.width == 0U || grid.height == 0U || grid.width > static_cast<quint32>(texture_limit) ||
       grid.height > static_cast<quint32>(texture_limit)) {
     layer->noteRenderFailure(
-        tr("Occupancy grid is %1 x %2; this GPU supports textures up to %3 x %3")
+        SceneText::tr("Occupancy grid is %1 x %2; this GPU supports textures up to %3 x %3")
             .arg(QString::number(grid.width), QString::number(grid.height), QString::number(texture_limit)));
     return false;
   }
   if (!ensureUniformBuffer(owner, gpu.uniform_buffer, kOccupancyUniformBytes)) {
-    layer->noteRenderFailure(tr("Could not create the occupancy-grid uniform buffer"));
+    layer->noteRenderFailure(SceneText::tr("Could not create the occupancy-grid uniform buffer"));
     releaseLayerGpu(gpu);
     return false;
   }
@@ -222,7 +222,7 @@ bool OccupancyRhiPass::ensureLayerGpu(QRhi* owner, OccupancyGridLayer* layer, La
       gpu.texture = nullptr;
       gpu.width = 0;
       gpu.height = 0;
-      layer->noteRenderFailure(tr("Could not allocate the occupancy-grid texture"));
+      layer->noteRenderFailure(SceneText::tr("Could not allocate the occupancy-grid texture"));
       return false;
     }
     gpu.width = grid.width;
@@ -233,7 +233,7 @@ bool OccupancyRhiPass::ensureLayerGpu(QRhi* owner, OccupancyGridLayer* layer, La
   if (gpu.shader_resources == nullptr) {
     gpu.shader_resources = createLayerBindings(owner, gpu.uniform_buffer, gpu.texture);
     if (gpu.shader_resources == nullptr) {
-      layer->noteRenderFailure(tr("Could not create occupancy-grid shader bindings"));
+      layer->noteRenderFailure(SceneText::tr("Could not create occupancy-grid shader bindings"));
       releaseLayerGpu(gpu);
       return false;
     }
