@@ -2146,4 +2146,72 @@ TEST(CatalogModelTest, PerTopicPauseCapableClearedOnDatasetRemoval) {
   EXPECT_FALSE(catalog.isPerTopicPauseCapable(*dataset));
 }
 
+// The scalar-field key of `topic_name`; empty when the catalog has none.
+QString scalarKeyOf(const PJ::CatalogModel& catalog, const QString& topic_name) {
+  for (const PJ::CatalogItem& item : catalog.items()) {
+    if (item.topic_name == topic_name && PJ::isScalarField(item)) {
+      return item.key;
+    }
+  }
+  return {};
+}
+
+// Field and topic metadata are read from the store at call time and parsed into an object.
+TEST(CatalogModelTest, FieldAndTopicMetadataReadTheStoredDocument) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const PJ::TopicId speed = addScalarTopic(session, *dataset, "/speed");
+  ASSERT_NE(speed, 0u);
+  catalog.rebuildFromDatastore();
+  const QString key = scalarKeyOf(catalog, u"/speed"_s);
+  ASSERT_FALSE(key.isEmpty());
+
+  EXPECT_TRUE(catalog.fieldMetadata(key).isEmpty());
+  EXPECT_TRUE(catalog.topicMetadata(key).isEmpty());
+
+  // Set after the catalog was built: still shows, as the read happens at call time. A scalar series has one column.
+  ASSERT_TRUE(session.dataEngine().setFieldMetadata(speed, 0, R"({"description":"Vehicle speed","unit":"m/s"})"));
+  ASSERT_TRUE(session.dataEngine().setTopicMetadata(speed, R"({"description":"Wheel odometry"})"));
+
+  const QJsonObject field = catalog.fieldMetadata(key);
+  EXPECT_EQ(field.value(u"description"_s).toString(), u"Vehicle speed"_s);
+  EXPECT_EQ(field.value(u"unit"_s).toString(), u"m/s"_s);
+  EXPECT_EQ(catalog.topicMetadata(key).value(u"description"_s).toString(), u"Wheel odometry"_s);
+}
+
+TEST(CatalogModelTest, MetadataIsEmptyForUnknownObjectOrUnparsableEntries) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const PJ::TopicId speed = addScalarTopic(session, *dataset, "/speed");
+  ASSERT_NE(speed, 0u);
+  ASSERT_TRUE(session.objectStore()
+                  .registerTopic({.dataset_id = *dataset, .topic_name = "/cloud", .metadata_json = "{}"})
+                  .has_value());
+  catalog.rebuildFromDatastore();
+  const QString key = scalarKeyOf(catalog, u"/speed"_s);
+  ASSERT_FALSE(key.isEmpty());
+  QString object_key;
+  for (const PJ::CatalogItem& item : catalog.items()) {
+    if (PJ::isObjectTopic(item)) {
+      object_key = item.key;
+    }
+  }
+  ASSERT_FALSE(object_key.isEmpty());
+
+  EXPECT_TRUE(catalog.fieldMetadata(u"no such key"_s).isEmpty());
+  EXPECT_TRUE(catalog.topicMetadata(u"no such key"_s).isEmpty());
+  EXPECT_TRUE(catalog.fieldMetadata(object_key).isEmpty());
+  EXPECT_TRUE(catalog.topicMetadata(object_key).isEmpty());
+
+  // DataEngine stores the text unchecked (the write host validates it); a stored text that does not parse reads empty.
+  ASSERT_TRUE(session.dataEngine().setFieldMetadata(speed, 0, "not json"));
+  ASSERT_TRUE(session.dataEngine().setTopicMetadata(speed, R"(["not","an","object"])"));
+  EXPECT_TRUE(catalog.fieldMetadata(key).isEmpty());
+  EXPECT_TRUE(catalog.topicMetadata(key).isEmpty());
+}
+
 }  // namespace

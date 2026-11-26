@@ -3,14 +3,13 @@
 
 // A source attaches a JSON metadata object to a field; the store keeps it per column.
 
-#include "pj_base/sdk/field_metadata.hpp"
-
 #include <gtest/gtest.h>
 
 #include <optional>
 #include <string>
 
 #include "pj_base/dataset.hpp"
+#include "pj_base/sdk/metadata_document.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -22,6 +21,10 @@ namespace {
 
 struct FieldMetadataTest : ::testing::Test {
   DataEngine engine;
+  // The streaming pause/resume staging engine; empty until mirrorToStaging().
+  DataEngine staging;
+  TimeDomainId time_domain_id = 0;
+  DatasetId dataset_id = 0;
   std::optional<DatastoreSourceWriteHost> host;
   std::optional<sdk::SourceWriteHostView> writer;
   sdk::TopicHandle topic{};
@@ -29,23 +32,47 @@ struct FieldMetadataTest : ::testing::Test {
   void SetUp() override {
     const auto td = engine.createTimeDomain("td");
     const auto ds = engine.createDataset(DatasetDescriptor{.source_name = "src", .time_domain_id = *td});
+    time_domain_id = *td;
+    dataset_id = *ds;
     host.emplace(engine, PJ_data_source_handle_t{static_cast<uint32_t>(*ds)});
     writer.emplace(host->raw());
     topic = *writer->ensureTopic("imu");
+  }
+
+  // As StreamingSourceManager does: the staging engine gets the same time domain and dataset ids, then the host
+  // mirrors every topic and field it creates from here on.
+  void mirrorToStaging() {
+    const auto mirrored_td = staging.createTimeDomain("td", time_domain_id);
+    ASSERT_TRUE(mirrored_td.has_value());
+    ASSERT_EQ(*mirrored_td, time_domain_id);
+    ASSERT_TRUE(
+        staging.createDataset(DatasetDescriptor{.source_name = "src", .time_domain_id = time_domain_id}, dataset_id)
+            .has_value());
+    host->setSecondaryEngine(&staging);
   }
 
   sdk::FieldHandle field(const char* name) {
     return *writer->ensureField(topic, name, PrimitiveType::kFloat32);
   }
 
+  static std::string metadataIn(const DataEngine& e, sdk::FieldHandle f) {
+    const auto lock = e.lockEngine();
+    const TopicStorage* storage = e.getTopicStorage(f.topic.id);
+    return storage != nullptr ? std::string(storage->fieldMetadata(f.id)) : std::string();
+  }
+
+  static std::string topicMetadataIn(const DataEngine& e, sdk::TopicHandle t) {
+    const auto lock = e.lockEngine();
+    const TopicStorage* storage = e.getTopicStorage(t.id);
+    return storage != nullptr ? std::string(storage->topicMetadata()) : std::string();
+  }
+
   std::string metadata(sdk::FieldHandle f) {
-    const auto lock = engine.lockEngine();
-    return std::string(engine.getTopicStorage(f.topic.id)->fieldMetadata(f.id));
+    return metadataIn(engine, f);
   }
 
   std::string topicMetadata(sdk::TopicHandle t) {
-    const auto lock = engine.lockEngine();
-    return std::string(engine.getTopicStorage(t.id)->topicMetadata());
+    return topicMetadataIn(engine, t);
   }
 
   // {"k":{"k":...{"k":1}...}} with `depth` objects.
@@ -64,7 +91,7 @@ TEST_F(FieldMetadataTest, StoresTheDocumentAsSent) {
   ASSERT_TRUE(writer->supportsFieldMetadata());
   const auto ax = field("ax");
   const auto ay = field("ay");
-  const std::string json = sdk::FieldMetadataBuilder().description("Acceleration along x [m/s^2]").build();
+  const std::string json = sdk::MetadataDocumentBuilder().description("Acceleration along x [m/s^2]").build();
 
   ASSERT_TRUE(writer->setFieldMetadata(ax, json).has_value());
 
@@ -74,7 +101,7 @@ TEST_F(FieldMetadataTest, StoresTheDocumentAsSent) {
 
 TEST_F(FieldMetadataTest, EnsureFieldLeavesExistingMetadataAlone) {
   const auto ax = field("ax");
-  const std::string json = sdk::FieldMetadataBuilder().description("kept").build();
+  const std::string json = sdk::MetadataDocumentBuilder().description("kept").build();
   ASSERT_TRUE(writer->setFieldMetadata(ax, json).has_value());
 
   (void)field("ax");
@@ -103,7 +130,7 @@ TEST_F(FieldMetadataTest, EmptyTextAndEmptyObjectClear) {
   EXPECT_TRUE(metadata(ax).empty());
 
   ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"x"})").has_value());
-  ASSERT_TRUE(writer->setFieldMetadata(ax, sdk::FieldMetadataBuilder().build()).has_value());
+  ASSERT_TRUE(writer->setFieldMetadata(ax, sdk::MetadataDocumentBuilder().build()).has_value());
   EXPECT_TRUE(metadata(ax).empty());
 }
 
@@ -117,7 +144,7 @@ TEST_F(FieldMetadataTest, KeepsKeysTheHostDoesNotKnow) {
 
 TEST_F(FieldMetadataTest, RejectsDocumentsThatAreNotJsonObjects) {
   const auto ax = field("ax");
-  const std::string kept = sdk::FieldMetadataBuilder().description("kept").build();
+  const std::string kept = sdk::MetadataDocumentBuilder().description("kept").build();
   ASSERT_TRUE(writer->setFieldMetadata(ax, kept).has_value());
 
   EXPECT_FALSE(writer->setFieldMetadata(ax, "not json").has_value());
@@ -131,7 +158,7 @@ TEST_F(FieldMetadataTest, RejectsDocumentsThatAreNotJsonObjects) {
 
 TEST_F(FieldMetadataTest, RejectsOversizedDocument) {
   const auto ax = field("ax");
-  const std::string huge = sdk::FieldMetadataBuilder().description(std::string(70 * 1024, 'a')).build();
+  const std::string huge = sdk::MetadataDocumentBuilder().description(std::string(70 * 1024, 'a')).build();
 
   EXPECT_FALSE(writer->setFieldMetadata(ax, huge).has_value());
   EXPECT_TRUE(metadata(ax).empty());
@@ -167,7 +194,7 @@ TEST_F(FieldMetadataTest, UnknownFieldIsRejected) {
 
 TEST_F(FieldMetadataTest, SurvivesClearingTheDatasetChunks) {
   const auto ax = field("ax");
-  const std::string json = sdk::FieldMetadataBuilder().description("kept").build();
+  const std::string json = sdk::MetadataDocumentBuilder().description("kept").build();
   ASSERT_TRUE(writer->setFieldMetadata(ax, json).has_value());
   {
     const auto lock = engine.lockEngine();
@@ -181,7 +208,7 @@ TEST_F(FieldMetadataTest, SurvivesClearingTheDatasetChunks) {
 TEST_F(FieldMetadataTest, TopicMetadataStoresTheDocumentAsSent) {
   ASSERT_TRUE(writer->supportsTopicMetadata());
   const auto other = *writer->ensureTopic("gps");
-  const std::string json = sdk::FieldMetadataBuilder().description("Inertial unit").string("frame", "base").build();
+  const std::string json = sdk::MetadataDocumentBuilder().description("Inertial unit").string("frame", "base").build();
 
   ASSERT_TRUE(writer->setTopicMetadata(topic, json).has_value());
 
@@ -228,7 +255,7 @@ TEST_F(FieldMetadataTest, UnknownTopicIsRejected) {
 }
 
 TEST_F(FieldMetadataTest, TopicMetadataSurvivesClearingTheTopicChunks) {
-  const std::string json = sdk::FieldMetadataBuilder().description("kept").build();
+  const std::string json = sdk::MetadataDocumentBuilder().description("kept").build();
   ASSERT_TRUE(writer->setTopicMetadata(topic, json).has_value());
   {
     const auto lock = engine.lockEngine();
@@ -243,7 +270,7 @@ TEST_F(FieldMetadataTest, ParserHostStoresFieldMetadataOnItsBoundTopic) {
   sdk::ParserWriteHostView parser(parser_impl.raw());
   ASSERT_TRUE(parser.supportsFieldMetadata());
 
-  const std::string json = sdk::FieldMetadataBuilder().description("parsed ax").build();
+  const std::string json = sdk::MetadataDocumentBuilder().description("parsed ax").build();
   ASSERT_TRUE(parser.setFieldMetadata(ax, json).has_value());
   EXPECT_EQ(metadata(ax), json);
 
@@ -278,8 +305,8 @@ TEST_F(FieldMetadataTest, ToolboxHostStoresFieldAndTopicMetadata) {
   const auto derived_topic = *toolbox.ensureTopic(source, "filtered");
   const auto derived_field = *toolbox.ensureField(derived_topic, "x", PrimitiveType::kFloat64);
 
-  const std::string field_json = sdk::FieldMetadataBuilder().description("filtered x").build();
-  const std::string topic_json = sdk::FieldMetadataBuilder().description("filter output").build();
+  const std::string field_json = sdk::MetadataDocumentBuilder().description("filtered x").build();
+  const std::string topic_json = sdk::MetadataDocumentBuilder().description("filter output").build();
   ASSERT_TRUE(toolbox.setFieldMetadata(derived_field, field_json).has_value());
   ASSERT_TRUE(toolbox.setTopicMetadata(derived_topic, topic_json).has_value());
   EXPECT_EQ(metadata(derived_field), field_json);
@@ -288,6 +315,107 @@ TEST_F(FieldMetadataTest, ToolboxHostStoresFieldAndTopicMetadata) {
   EXPECT_FALSE(toolbox.setFieldMetadata(derived_field, "not json").has_value());
   EXPECT_FALSE(toolbox.setTopicMetadata(sdk::TopicHandle{.id = 9999}, "{}").has_value());
   EXPECT_EQ(metadata(derived_field), field_json);
+}
+
+// --- streaming pause/resume: the write core writes the live engine and its staging mirror -------------------------
+
+TEST_F(FieldMetadataTest, WritesTheStagingMirrorToo) {
+  mirrorToStaging();
+  ASSERT_EQ(writer->ensureTopic("imu")->id, topic.id);  // a cache hit mirrors the topic
+  const auto ax = field("ax");
+  const std::string field_json = sdk::MetadataDocumentBuilder().description("ax").build();
+  const std::string topic_json = sdk::MetadataDocumentBuilder().description("imu").build();
+
+  ASSERT_TRUE(writer->setFieldMetadata(ax, field_json).has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, topic_json).has_value());
+
+  EXPECT_EQ(metadataIn(engine, ax), field_json);
+  EXPECT_EQ(metadataIn(staging, ax), field_json);
+  EXPECT_EQ(topicMetadataIn(engine, topic), topic_json);
+  EXPECT_EQ(topicMetadataIn(staging, topic), topic_json);
+
+  ASSERT_TRUE(writer->setFieldMetadata(ax, "").has_value());
+  EXPECT_TRUE(metadataIn(engine, ax).empty());
+  EXPECT_TRUE(metadataIn(staging, ax).empty());
+}
+
+TEST_F(FieldMetadataTest, WriteDuringPauseReachesBothEngines) {
+  mirrorToStaging();
+  ASSERT_EQ(writer->ensureTopic("imu")->id, topic.id);
+  const auto ax = field("ax");
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"before pause"})").has_value());
+
+  host->setTarget(&staging);  // pause: writes land in staging, the live engine becomes the mirror
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"during pause"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"imu"})").has_value());
+  EXPECT_EQ(metadataIn(engine, ax), R"({"description":"during pause"})");
+  EXPECT_EQ(metadataIn(staging, ax), R"({"description":"during pause"})");
+  EXPECT_EQ(topicMetadataIn(engine, topic), R"({"description":"imu"})");
+
+  host->setTarget(&engine);  // resume
+  EXPECT_EQ(metadataIn(engine, ax), R"({"description":"during pause"})");
+  EXPECT_EQ(topicMetadataIn(engine, topic), R"({"description":"imu"})");
+}
+
+TEST_F(FieldMetadataTest, MirrorWithoutTheFieldIsSkipped) {
+  const auto ax = field("ax");  // created before the mirror exists
+  mirrorToStaging();
+
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"ax"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"imu"})").has_value());
+
+  EXPECT_EQ(metadata(ax), R"({"description":"ax"})");
+  EXPECT_EQ(topicMetadata(topic), R"({"description":"imu"})");
+  const auto lock = staging.lockEngine();
+  EXPECT_EQ(staging.getTopicStorage(topic.id), nullptr);
+}
+
+// --- reload: replaceDatasetFrom() takes the staged layout's metadata ------------------------------------------------
+
+struct ReloadedSource {
+  DataEngine staged;
+  DatasetId dataset_id = 0;
+  std::optional<DatastoreSourceWriteHost> host;
+  std::optional<sdk::SourceWriteHostView> writer;
+  sdk::TopicHandle topic{};
+
+  ReloadedSource() {
+    dataset_id = *staged.createDataset(DatasetDescriptor{.source_name = "src"});
+    host.emplace(staged, PJ_data_source_handle_t{static_cast<uint32_t>(dataset_id)});
+    writer.emplace(host->raw());
+    topic = *writer->ensureTopic("imu");
+  }
+};
+
+TEST_F(FieldMetadataTest, ReloadTakesTheStagedMetadata) {
+  const auto ax = field("ax");
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"old"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"old topic"})").has_value());
+
+  ReloadedSource reload;
+  const auto staged_ax = *reload.writer->ensureField(reload.topic, "ax", PrimitiveType::kFloat32);
+  ASSERT_TRUE(reload.writer->setFieldMetadata(staged_ax, R"({"description":"new"})").has_value());
+  ASSERT_TRUE(reload.writer->setTopicMetadata(reload.topic, R"({"description":"new topic"})").has_value());
+
+  ASSERT_TRUE(engine.replaceDatasetFrom(reload.staged, reload.dataset_id, dataset_id).has_value());
+
+  // The topic keeps its primary id; the field ids are the staged layout's.
+  EXPECT_EQ(metadata(sdk::FieldHandle{.topic = topic, .id = staged_ax.id}), R"({"description":"new"})");
+  EXPECT_EQ(topicMetadata(topic), R"({"description":"new topic"})");
+}
+
+TEST_F(FieldMetadataTest, ReloadWithoutMetadataClearsIt) {
+  const auto ax = field("ax");
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"old"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"old topic"})").has_value());
+
+  ReloadedSource reload;  // the reloaded source sets no metadata
+  const auto staged_ax = *reload.writer->ensureField(reload.topic, "ax", PrimitiveType::kFloat32);
+
+  ASSERT_TRUE(engine.replaceDatasetFrom(reload.staged, reload.dataset_id, dataset_id).has_value());
+
+  EXPECT_TRUE(metadata(sdk::FieldHandle{.topic = topic, .id = staged_ax.id}).empty());
+  EXPECT_TRUE(topicMetadata(topic).empty());
 }
 
 }  // namespace
