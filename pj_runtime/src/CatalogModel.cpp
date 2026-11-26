@@ -374,7 +374,8 @@ struct CatalogModel::Impl {
   // setPerTopicPauseCapable). Membership only, no payload.
   tsl::robin_set<DatasetId> per_topic_pause_capable_datasets;
 
-  // Taken before the last rebuild, for rebuildIfChanged; unset until the first, so the first ingest always rebuilds.
+  // Taken before the last rebuild of either kind, for rebuildIfChanged; unset until the first, so the first ingest
+  // always rebuilds.
   std::optional<std::uint64_t> last_fingerprint;
 
   // During an open ingest, a commit's rebuild waits until `next_ingest_rebuild`; the timer runs the one left waiting.
@@ -390,7 +391,8 @@ struct CatalogModel::Impl {
     next_ingest_rebuild =
         ended + std::min<nanoseconds>(std::max<nanoseconds>(4 * (ended - started), min_ingest_rebuild_gap), 1s);
   }
-  std::atomic<std::size_t> whole_catalog_walks{0};  ///< `items()` and `forEachItem()` calls, for `wholeCatalogWalks()`
+  /// `items()` and `forEachItem()` calls and `shownTopics()` recomputations, for `wholeCatalogWalks()`.
+  std::atomic<std::size_t> whole_catalog_walks{0};
 };
 
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
@@ -780,6 +782,7 @@ CatalogModel::ShownTopics CatalogModel::shownTopics() const {
       return std::pair(lhs.first, lhs.second.id) < std::pair(rhs.first, rhs.second.id);
     });
     impl_->shown_topics = std::move(shown);
+    impl_->whole_catalog_walks.fetch_add(1, std::memory_order_relaxed);
   }
   return *impl_->shown_topics;
 }
@@ -1040,6 +1043,9 @@ void CatalogModel::rebuildNow(bool reuse_unchanged_topics) {
   // with the same items and announce the same changes.
   const bool in_place = reuse_unchanged_topics && impl_->topic_items_valid;
   const bool had_items = !impl_->items.empty();
+  // Set again once the items and their record agree: a pass cut short (an allocation that fails) leaves them apart,
+  // and the next rebuild then derives everything.
+  impl_->topic_items_valid = false;
   Impl::ItemMap next_items;  // the whole next catalog; in place, only its items that are not scalar fields
   Impl::ScalarTopicMap next_scalar_topics;
   tsl::robin_set<TopicId> live_topics;  // in place: the scalar topics this pass went through

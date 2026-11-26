@@ -9,8 +9,9 @@ observed, under which conditions, what the code does about it and when to measur
   the GUI, so its cost follows the columns of the topics with new rows and not the rows. Loading a 30-minute ROS 1
   MCAP with 117k series (topics flattening variable-length arrays into up to 13k columns), flushing every 50 ms: 21.9 s,
   26.5 CPU-s (3.1 on the GUI thread), 2.62 GB RSS. Every 250 ms: 19.3 s, 23.3 CPU-s (2.5 on the GUI thread), 2.61 GB
-  (Linux x86_64, i7-13700H, two runs each). The difference is on the import thread, about 7 ms a flush. The stored chunks are the same at both (`pj_datastore` TECHNICAL_NOTES
-  "Chunks cut by rows, not by commits"); data shows during a load four times a second instead of twenty.
+  (Linux x86_64, i7-13700H, two runs each). The difference is on the import thread, about 7 ms a flush. The stored
+  chunks are the same at both (`pj_datastore` TECHNICAL_NOTES "Chunks cut by rows, not by commits"); data shows during
+  a load four times a second instead of twenty.
 - **What the code does:** `PJ::kFileLoadFlushInterval` (`FileLoadFlushInterval.h`) sets the interval for file loads and
   fan-out entries; streams and toolbox imports do not use it. The flush runs on the load's worker thread on desktop and
   in the browser. Tests that need a mid-load flush wait longer than this constant.

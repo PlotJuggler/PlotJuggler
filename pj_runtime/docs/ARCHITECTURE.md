@@ -194,13 +194,13 @@ does not link it.
 
 ### Catalog and demand
 
-- **`CatalogModel` rebuilds**: a rebuild runs only when the content fingerprint moved. `rebuildFromDatastore` derives
-  every item anew and compares the result with the items before. `rebuildIfChanged`, the one a commit triggers,
+- **`CatalogModel` rebuilds**: `rebuildFromDatastore` derives every item anew and compares the result with the items
+  before. `rebuildIfChanged`, the one a commit triggers, runs only when the content fingerprint moved, and then
   re-derives only the scalar topics whose sources changed and edits the items in place, so its cost follows the topics
   that changed and not the catalog: per topic it keeps a hash of everything the topic's items come from (its name and
   columns, which float columns hold whole numbers, which are retired, its dataset's label and removed names) and the
-  keys of those items. Both leave the same items and emit the same signals. Anything else that edits the items (a
-  removal, a clear) makes the next rebuild derive everything again.
+  keys of those items. Both leave the same items and announce the same keys as added, removed and changed. Anything
+  else that edits the items (a removal, a clear) makes the next rebuild derive everything again.
 - **`CatalogModel` rebuild timing**: `rebuildIfChanged` and `rebuildFromDatastore` are synchronous. A commit
   (`samplesIngested`) rebuilds at once, except while a progressive ingest is open (`SessionManager::hasActiveIngests`):
   then a non-live commit, from any producer, inside the gap after the last rebuild arms a single-shot timer for the one

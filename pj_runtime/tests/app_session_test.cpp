@@ -457,7 +457,9 @@ TEST(AppSessionTest, RangeQueriesDoNotWalkEveryCatalogItem) {
   session.catalogModel().rebuildFromDatastore();
   session.seedPlaybackFromSession();
 
+  // The seed listed the catalog's topics once; they are kept until its items change.
   const std::size_t walks = session.catalogModel().wholeCatalogWalks();
+  session.recomputeRange();
   session.recomputeRange();
   const auto range = session.datasetRawTimeRange(*dataset);
   ASSERT_TRUE(range.has_value());

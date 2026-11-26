@@ -210,8 +210,8 @@ class CatalogModel : public QObject {
   /// Calls `visit` on every item in no particular order, without the copy and sort of `items()`. `visit` must not
   /// change the catalog.
   void forEachItem(const std::function<void(const CatalogItem&)>& visit) const;
-  /// How many times `items()` and `forEachItem()` have walked the whole catalog: a test reads the difference around a
-  /// call to pin that it did not walk it.
+  /// How many times `items()`, `forEachItem()` and a recomputation of `shownTopics()` have walked the whole catalog:
+  /// a test reads the difference around a call to pin that it did not walk it.
   [[nodiscard]] std::size_t wholeCatalogWalks() const noexcept;
   /// How many times a rebuild has derived a scalar topic's items from the datastore: a test reads the difference to
   /// pin that a rebuild during an ingest left the unchanged topics alone.

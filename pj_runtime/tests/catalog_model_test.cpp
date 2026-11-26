@@ -1069,7 +1069,7 @@ TEST(CatalogModelIncrementalRebuild, ATopicWhoseInputsDidNotChangeIsNotRederived
   catalog.rebuildFromDatastore();
   ASSERT_EQ(catalog.items().size(), 2U);
 
-  // Rows only: nothing the catalog shows changed, and no topic is derived again.
+  // Rows only: nothing the catalog shows changed, so no rebuild runs at all.
   std::size_t derived = catalog.scalarTopicsDerived();
   writeColumns(session, writer, *steady, 20, {{"x", 2.5}});
   writeColumns(session, writer, *growing, 20, {{"a", 2.5}});
@@ -1134,13 +1134,15 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
     };
 
     std::vector<PJ::DatasetId> datasets;
-    std::vector<PJ::TopicId> topics;
+    std::vector<PJ::TopicId> topics;         // columns made on demand
+    std::vector<PJ::TopicId> schema_topics;  // x and y from a registered schema
     std::map<PJ::TopicId, int> columns_of;
+    std::map<PJ::TopicId, PJ::DatasetId> dataset_of;
     int names = 0;
     PJ::Timestamp now = 0;
     const auto add_dataset = [&] {
       const auto dataset = session.dataEngine().createDataset(
-          PJ::DatasetDescriptor{.source_name = "bag" + std::to_string(datasets.size()) + ".mcap"});
+          PJ::DatasetDescriptor{.source_name = "bag" + std::to_string(++names) + ".mcap"});
       ASSERT_TRUE(dataset);
       datasets.push_back(*dataset);
     };
@@ -1150,6 +1152,23 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
       ASSERT_TRUE(topic.has_value()) << topic.error();
       topics.push_back(*topic);
       columns_of[*topic] = 1 + static_cast<int>(pick(3));
+      dataset_of[*topic] = dataset;
+    };
+    // Listed from its type tree until it has a row.
+    const auto add_schema_topic = [&] {
+      const PJ::DatasetId dataset = datasets[pick(datasets.size())];
+      const auto schema = writer.registerSchema(
+          "xy" + std::to_string(++names), PJ::makeStruct(
+                                              "xy", {PJ::makePrimitive("x", PJ::PrimitiveType::kFloat64),
+                                                     PJ::makePrimitive("y", PJ::PrimitiveType::kFloat64)}));
+      ASSERT_TRUE(schema.has_value()) << schema.error();
+      PJ::TopicDescriptor descriptor;
+      descriptor.name = "/schema" + std::to_string(names);
+      descriptor.schema_id = *schema;
+      const auto topic = writer.registerTopic(dataset, descriptor);
+      ASSERT_TRUE(topic.has_value()) << topic.error();
+      schema_topics.push_back(*topic);
+      dataset_of[*topic] = dataset;
     };
     // A row in every column the topic has, of whole numbers or not: a float column's kind follows its values.
     const auto write_row = [&](PJ::TopicId topic, bool whole) {
@@ -1159,79 +1178,95 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
       }
       writeColumns(session, writer, topic, now += 10, values);
     };
+    const auto write_schema_row = [&](PJ::TopicId topic, bool whole) {
+      ASSERT_TRUE(writer.beginRow(topic, now += 10).has_value());
+      writer.set(topic, 0, whole ? 2.0 : 2.5);
+      writer.set(topic, 1, 3.0);
+      ASSERT_TRUE(writer.finishRow(topic).has_value());
+      (void)session.commitChunks(writer.flushAll());
+    };
     add_dataset();
     add_topic();
 
-    for (int step = 0; step < 160; ++step) {
+    constexpr int kSteps = 240;
+    for (int step = 0; step < kSteps; ++step) {
       SCOPED_TRACE(testing::Message() << "step " << step);
-      switch (pick(12)) {
-        case 0:
-        case 1:
-        case 2:
-          write_row(topics[pick(topics.size())], pick(4) != 0);
-          break;
-        case 3:
-        case 4: {
-          const PJ::TopicId topic = topics[pick(topics.size())];
-          ++columns_of[topic];
-          write_row(topic, true);
-          break;
+      const std::size_t choice = pick(24);
+      if (choice < 7) {
+        write_row(topics[pick(topics.size())], pick(4) != 0);
+      } else if (choice < 11) {
+        const PJ::TopicId topic = topics[pick(topics.size())];
+        ++columns_of[topic];
+        write_row(topic, true);
+      } else if (choice < 13) {
+        add_topic();
+        write_row(topics.back(), pick(2) == 0);
+      } else if (choice == 13) {
+        add_dataset();
+      } else if (choice == 14) {
+        (void)session.objectStore().registerTopic(
+            {.dataset_id = datasets[pick(datasets.size())],
+             .topic_name = "/object" + std::to_string(++names),
+             .metadata_json = "{}"});
+      } else if (choice == 15) {
+        if (!mirror.empty()) {
+          auto victim = mirror.begin();
+          std::advance(victim, static_cast<std::ptrdiff_t>(pick(mirror.size())));
+          catalog.removeItems({victim->first});
         }
-        case 5:
+      } else if (choice == 16) {
+        const PJ::DatasetId dataset = datasets[pick(datasets.size())];
+        if (pick(2) == 0) {
+          (void)catalog.removeDataset(dataset);
+        } else {
+          catalog.restoreDataset(dataset);
+        }
+      } else if (choice == 17) {
+        catalog.setDatasetDisplayName(datasets[pick(datasets.size())], u"label%1"_s.arg(static_cast<int>(pick(3))));
+      } else if (choice == 18) {
+        catalog.setAdvertisedTopics(
+            datasets[pick(datasets.size())],
+            pick(2) == 0 ? std::vector<PJ::AdvertisedTopic>{}
+                         : std::vector<PJ::AdvertisedTopic>{
+                               PJ::AdvertisedTopic{.topic_name = u"/advertised%1"_s.arg(static_cast<int>(pick(3)))},
+                               PJ::AdvertisedTopic{.topic_name = u"/topic2"_s}});
+      } else if (choice < 21) {
+        add_schema_topic();
+      } else if (choice < 23) {
+        if (!schema_topics.empty()) {
+          write_schema_row(schema_topics[pick(schema_topics.size())], pick(3) != 0);
+        }
+      } else if (datasets.size() > 2) {
+        // The dataset leaves the engine, and the catalog is told nothing but to look again.
+        const std::size_t gone_index = pick(datasets.size());
+        const PJ::DatasetId gone = datasets[gone_index];
+        datasets.erase(datasets.begin() + static_cast<std::ptrdiff_t>(gone_index));
+        std::erase_if(topics, [&](PJ::TopicId topic) { return dataset_of[topic] == gone; });
+        std::erase_if(schema_topics, [&](PJ::TopicId topic) { return dataset_of[topic] == gone; });
+        (void)session.removeDataset(gone);  // true only when it took processors with it
+        if (topics.empty()) {
           add_topic();
-          write_row(topics.back(), pick(2) == 0);
-          break;
-        case 6:
-          add_dataset();
-          break;
-        case 7:
-          (void)session.objectStore().registerTopic(
-              {.dataset_id = datasets[pick(datasets.size())],
-               .topic_name = "/object" + std::to_string(++names),
-               .metadata_json = "{}"});
-          break;
-        case 8:
-          if (!mirror.empty()) {
-            auto victim = mirror.begin();
-            std::advance(victim, static_cast<std::ptrdiff_t>(pick(mirror.size())));
-            catalog.removeItems({victim->first});
-          }
-          break;
-        case 9: {
-          const PJ::DatasetId dataset = datasets[pick(datasets.size())];
-          if (pick(2) == 0) {
-            (void)catalog.removeDataset(dataset);
-          } else {
-            catalog.restoreDataset(dataset);
-          }
-          break;
         }
-        case 10:
-          catalog.setDatasetDisplayName(datasets[pick(datasets.size())], u"label%1"_s.arg(static_cast<int>(pick(3))));
-          break;
-        default:
-          catalog.setAdvertisedTopics(
-              datasets[pick(datasets.size())],
-              pick(2) == 0 ? std::vector<PJ::AdvertisedTopic>{}
-                           : std::vector<PJ::AdvertisedTopic>{
-                                 PJ::AdvertisedTopic{.topic_name = u"/advertised%1"_s.arg(static_cast<int>(pick(3)))},
-                                 PJ::AdvertisedTopic{.topic_name = u"/topic1"_s}});
-          break;
       }
       if (testing::Test::HasFatalFailure()) {
         return;
       }
       const std::size_t derived = catalog.scalarTopicsDerived();
       catalog.rebuildIfChanged();
-      topics_kept +=
-          catalog.scalarTopicsDerived() == derived ? 0U : topics.size() - (catalog.scalarTopicsDerived() - derived);
+      const std::size_t scalar_topics = topics.size() + schema_topics.size();
+      const std::size_t derived_now = catalog.scalarTopicsDerived() - derived;
+      topics_kept += derived_now > 0 && derived_now < scalar_topics ? scalar_topics - derived_now : 0U;
       largest_catalog = std::max(largest_catalog, mirror.size());
       expect_mirror_in_step("after the change");
       if (testing::Test::HasFatalFailure()) {
         return;
       }
 
-      // A full rebuild right after finds nothing to do.
+      // A full rebuild finds nothing to do. Not after every step: during a load the rebuilds that reuse follow one
+      // another, each starting from the record the one before left.
+      if (step % 8 != 7 && step != kSteps - 1) {
+        continue;
+      }
       const std::vector<PJ::CatalogItem> before = catalog.items();
       QSignalSpy added(&catalog, &PJ::CatalogModel::itemsAdded);
       QSignalSpy removed(&catalog, &PJ::CatalogModel::itemsRemoved);

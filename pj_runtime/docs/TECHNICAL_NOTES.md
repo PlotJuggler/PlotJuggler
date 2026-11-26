@@ -21,9 +21,10 @@ code works is in [ARCHITECTURE.md](./ARCHITECTURE.md).
   same load then stops the GUI thread for 30 to 55 ms a rebuild, and for about 0.5 s twice: when the first tens of
   thousands of rows enter the tree, and at the end of the load, whose rebuild derives everything. GUI-thread CPU went
   from 6.1 to 2.5 s and process CPU from 27.0 to 23.3 s; the load time, which the import thread sets, stayed at 19.3 s
-  (Linux x86_64, i7-13700H, two runs each). The factor of four (rebuilds take at most a fifth of the GUI thread, while
-  one costs under 250 ms) and the one-second cap (a new topic shows within a second) are reasoning; no other values were
-  measured.
+  (Linux x86_64, i7-13700H, two runs each). The factor of four between a rebuild's cost and the gap after it
+  (rebuilds take at most a fifth of the GUI thread, while one costs under 250 ms), its one-second cap (a new topic
+  shows within a second) and the 16 children from which the tree indexes a parent are reasoning: no other values of
+  them were measured.
 - **Re-test:** when the first fill of the tree matters, adding its rows in slices across event-loop turns; and when a
   topic of ~10k columns that gains one is slow, deriving only its new columns (its items are derived whole, about a
   microsecond each).
