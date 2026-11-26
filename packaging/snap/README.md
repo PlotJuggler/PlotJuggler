@@ -2,7 +2,6 @@
 
 Classic snap based on **core26**, configured for native **amd64** and **arm64**
 builds.
-Arm64 still needs end-to-end validation.
 
 ## Build
 
