@@ -32,7 +32,7 @@ from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time
 - **Chunks** hold a topic's rows sorted by timestamp, at most `max_chunk_rows` each. A row never changes under its
   chunk's id: its values and its position stay. Only a topic's last chunk changes: it gains rows at its end, and
   columns at the end of its layout, as writers commit, and it is re-encoded when it fills or its source ends ("Ingest
-  and schema evolution"). Ids come from one process-wide counter, and within a topic they ascend in commit order:
+  and schema evolution"). When late rows have to go between its rows it is replaced, under a new id. Ids come from one process-wide counter, and within a topic they ascend in commit order:
   derived-series watermarks and gap detection rely on that, together with the count of rows read from the newest
   chunk. A chunk sealed whole can be committed after a newer one; `TopicStorage::appendSealedChunk()` then gives it a
   fresh id.
@@ -46,9 +46,9 @@ rows in one chunk builder per topic and commits them with `DataWriter::commitRow
 - **A commit does not cut a chunk.** The committed rows extend the topic's last chunk (`TopicStorage::appendRows`)
   while it has room, so a topic's chunks are cut by its rows, `max_chunk_rows` at a time, and not by how often its
   writer commits: the same rows in the same order give the same chunks at any commit rate. A row is copied into the
-  last chunk, which stays unencoded while it grows; a builder that holds a whole chunk is encoded directly, and
-  `DataWriter` sizes each builder to end where the last chunk fills, so a fast topic's chunks take that path. The
-  writer keeps its builders across commits. `commitChunks(flushAll())` is the other path: it seals the rows as they
+  last chunk, which stays unencoded while it grows. `DataWriter` sizes each builder to end where the last chunk fills,
+  so the builders after it hold whole chunks: those are sealed when they fill, in the writer, and committed as they
+  are. The writer keeps its open builder across commits, emptied, unless the topic gained columns it lacks. `commitChunks(flushAll())` is the other path: it seals the rows as they
   are, one chunk per builder, and those chunks are stored as given.
 
 - Rows arrive one at a time (columns not set become null) or as column batches; Arrow C streams go through
@@ -63,8 +63,12 @@ rows in one chunk builder per topic and commits them with `DataWriter::commitRow
   otherwise that field is null for the row, the rest of the row is written, and the field is reported once through the
   ingest-warning handler. Registering an existing field with another type is an error.
 - **Out-of-order timestamps are kept.** The rows of one commit are stable-sorted before they land, so every chunk is
-  ascending. Rows older than the last chunk's newest would have to go before rows already there, which would move
-  them: they start a chunk of their own, so a topic's chunks can overlap in time; the reads merge them ("Reading").
+  ascending. Rows older than the last chunk's newest (a topic of several publishers, stamped by each) cannot be
+  appended: they are merged into the last chunk in timestamp order, after the rows of equal timestamp already there,
+  and the chunk takes a new id, because rows moved. Readers and derived nodes take that as a late chunk: the series
+  generation changes, and a node replays. When the merge does not fit in the chunk, or would rewrite more cells than
+  `appendRows()` allows, the rows start a chunk of their own, so a topic's chunks can overlap in time; the reads merge
+  them ("Reading").
 - Pre-registering fields is optional. It enables the bound-record write path.
 
 ## Storage, encoding and retention
@@ -80,9 +84,9 @@ in fewer bytes than the values (decoding reproduces those floats exactly), dicti
 bools, raw otherwise. A column has a validity bitmap (Arrow layout, LSB first) only when it holds a null. The last
 chunk, while it grows, stores raw numbers, packed bools and a dictionary with one entry per run of equal strings;
 `TopicChunk::compact()` gives it the encodings above with the function `seal()` uses, so a chunk that grew is stored
-as one sealed with the same rows. A source that ends leaves a last chunk that will not fill: the write hosts'
-`finish()` encodes it (`DataEngine::compactLastChunks()`). Skipping that costs memory only, and rows committed later
-still extend the chunk.
+as one sealed with the same rows. A last chunk that will not fill is encoded when another chunk follows it, and when
+its source ends: the write hosts' `finish()` (`DataEngine::compactLastChunks()`). Skipping that costs memory only, and
+rows committed later still extend the chunk.
 
 **Nulls on read.** The per-cell accessors do not check: `readNumericAsDouble()` returns 0.0 at a null. The batch
 `readColumnAsDoubles()` writes NaN, and series views skip null rows.
@@ -340,8 +344,9 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
 - `SeriesReader`'s index-based lookups (`sampleAt()`, `indexAtOrBeforeTime()`, `indexAtOrAfterTime()`) assume
   time-ordered chunks and are wrong when chunks overlap. The plots use them only to size buffers.
 - A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
-- Rows committed older than the newest row of the topic's last chunk start a chunk of their own, however few: a source
-  late at every commit gets a chunk per commit.
-- `finish()` encodes on its caller's thread, which is the GUI thread for a file load's last flush.
+- A merge of late rows rewrites the whole last chunk, not only the rows behind the first late one, so it is bounded:
+  a wide topic that is late past the bound gets a chunk per late commit.
+- `finish()` encodes on its caller's thread, which is the GUI thread for a file load's last flush. Nothing calls it
+  for a toolbox's own writes or for a derived series, whose last chunk stays unencoded until another follows it.
 - A chunk dropped whole by retention does not say how many rows it held: the rows it gained after a node last read
   it are not reported as a gap.

@@ -79,13 +79,21 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   if (chunk.stats.encoded_byte_size == 0) {
     chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
   }
+  // The chunk that stops being the last will not gain rows again: if appendRows() left it unencoded, it is encoded
+  // now, or it would stay stored raw.
+  if (!sealed_chunks_.empty()) {
+    if (TopicChunk& last = sealed_chunks_.back();
+        last.stats.row_count < descriptor_.max_chunk_rows && last.isGrowable()) {
+      compactChunk(last);
+    }
+  }
   // Derived nodes skip chunks whose id is at or below what they consumed, so ids must ascend in commit order. A chunk
-  // sealed before one already here (another writer held it, or a flush moved it) gets a fresh id.
-  const ChunkId newest = sealed_chunks_.empty() ? evicted_through_chunk_id_
-                                                : std::max(sealed_chunks_.back().id, evicted_through_chunk_id_);
-  if (chunk.id <= newest) {
+  // sealed before one this topic held (another writer held it, or a flush moved it) gets a fresh id.
+  if (chunk.id <= newest_chunk_id_ever_ || chunk.id <= evicted_through_chunk_id_ ||
+      (!sealed_chunks_.empty() && chunk.id <= sealed_chunks_.back().id)) {
     chunk.id = TopicChunkBuilder::nextChunkId();
   }
+  newest_chunk_id_ever_ = chunk.id;
 
   // Only a chunk strictly after every existing sample keeps the series generation: incremental consumers absorb it,
   // any overlap makes their caches rebuild.
@@ -155,6 +163,11 @@ void TopicStorage::extendLastChunk(
     if (!chunk.isGrowable()) {
       chunk.makeGrowable();
     }
+    // A chunk put back by a restore after newer ones were read: under its old id its new rows would not be seen.
+    if (chunk.id < newest_chunk_id_ever_) {
+      chunk.id = TopicChunkBuilder::nextChunkId();
+    }
+    newest_chunk_id_ever_ = chunk.id;
     batch.appendRowsTo(chunk, first, count);
   });
   unretireColumnsWithValues(chunk);
@@ -164,18 +177,32 @@ void TopicStorage::compactChunk(TopicChunk& chunk) {
   changeStoredChunk(chunk, [&chunk] { chunk.compact(); });
 }
 
+void TopicStorage::mergeIntoLastChunk(TopicChunk& chunk, const TopicChunkBuilder& batch) {
+  ++series_generation_;  // rows land behind rows readers hold
+  changeStoredChunk(chunk, [&] {
+    if (!chunk.isGrowable()) {
+      chunk.makeGrowable();
+    }
+    batch.addColumnsTo(chunk);
+    chunk = batch.mergedWith(chunk);  // a new id: rows moved, and a row never changes under its chunk's id
+    newest_chunk_id_ever_ = chunk.id;
+  });
+  unretireColumnsWithValues(chunk);
+}
+
 void TopicStorage::appendRows(TopicChunkBuilder& batch) {
+  // ponytail: a late merge rewrites the whole last chunk, so it is bounded: past this many cells the late rows start a
+  // chunk of their own, as they always did. Merge only the rows behind the first late one if wide topics with late
+  // rows show up.
+  constexpr std::size_t kLateMergeCells = 4'000'000;
   batch.sortRows();
   const std::size_t total = batch.rowCount();
   const std::size_t max_rows = std::max<uint32_t>(descriptor_.max_chunk_rows, 1);
   std::size_t first = 0;
   while (first < total) {
     TopicChunk* last = sealed_chunks_.empty() ? nullptr : &sealed_chunks_.back();
-    // A row older than the last chunk's newest would have to go before rows already there, moving them; such rows
-    // start a chunk of their own, which overlaps the earlier ones as a late chunk always has.
-    const bool extends = last != nullptr && last->stats.row_count < max_rows && batch.fitsLayoutOf(*last) &&
-                         batch.timestampAt(first) >= last->stats.t_max;
-    if (extends) {
+    const bool has_room = last != nullptr && last->stats.row_count < max_rows && batch.fitsLayoutOf(*last);
+    if (has_room && batch.timestampAt(first) >= last->stats.t_max) {
       const std::size_t count = std::min(total - first, max_rows - last->stats.row_count);
       extendLastChunk(*last, batch, first, count);
       if (last->stats.row_count >= max_rows) {
@@ -183,6 +210,19 @@ void TopicStorage::appendRows(TopicChunkBuilder& batch) {
       }
       first += count;
       continue;
+    }
+    // Rows older than the last chunk's newest (a topic of several publishers, stamped by each): appended they would
+    // leave the chunk unsorted, so they are merged into it in timestamp order, which moves rows and so gives the chunk
+    // a new id. Readers and derived nodes take that as they take any late chunk: they rebuild or replay. When the
+    // merge does not fit in the chunk, or is too large, the rows start a chunk of their own that overlaps it.
+    if (has_room && first == 0 && last->stats.row_count + total <= max_rows &&
+        last->columns.size() <= batch.columnCount() &&
+        (last->stats.row_count + total) * batch.columnCount() <= kLateMergeCells) {
+      mergeIntoLastChunk(*last, batch);
+      if (last->stats.row_count >= max_rows) {
+        compactChunk(*last);
+      }
+      return;
     }
     const std::size_t count = std::min(total - first, max_rows);
     if (first == 0 && count == total && count >= max_rows) {

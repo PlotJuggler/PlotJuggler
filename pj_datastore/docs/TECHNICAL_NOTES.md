@@ -60,22 +60,28 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   |---|---|---|---|---|---|---|---|
   | 250 ms | a chunk per commit | 7,615 | 4.75 M | 6,804 | 18.6 s | 26.1 s | 3.68 GB |
   | 50 ms | a chunk per commit | 25,712 | 11.48 M | 25,458 | 20.7 s | 30.2 s | 5.72 GB |
-  | 250 ms | last chunk grows | 1,920 | 0.66 M | 0 | 19.5 s | 27.2 s | 2.73 GB |
-  | 50 ms | last chunk grows | 1,920 | 0.66 M | 0 | 22.3 s | 32.0 s | 2.85 GB |
+  | 250 ms | last chunk grows | 1,920 | 0.66 M | 0 | 19.5 s | 27.2 s | 2.63 GB |
+  | 50 ms | last chunk grows | 1,920 | 0.66 M | 0 | 21.5 s | 31.0 s | 2.62 GB |
 
 - **What was tried, in order:** the first version re-encoded a full chunk by rebuilding it through a builder,
   recomputed the stats of every appended row and destroyed each builder at commit: 26.4 s (a profile gave 4.0 s to the
   row copy and 4.8 s to the re-encoding). Encoding in place with the function `seal()` uses, one step for a column no
   row or every row of the batch set, the builder's own stats for a batch appended whole, and builders kept across
-  commits brought it to 19.5 s. Before the last chunk could gain a column it left 193 undersized chunks on this file,
-  every one cut by a growing array; none was cut by a late row.
+  commits brought it to 19.5 s. Giving back the spare capacity of the buffers a full chunk keeps took RSS from 2.73
+  to 2.63 GB, which is what sealing nothing until the end of the file gives (2.64 GB, with no data shown meanwhile). Before the last chunk could gain a column it left 193 undersized chunks on this file,
+  every one cut by a growing array; none was cut by a late row, because the loader stamps rows with their log time
+  by default.
+- **Late rows:** with header timestamps, a `/tf` of several publishers had 97 chunks for 89,995 rows (88 is the
+  minimum), 17 of them cut by rows older than the last chunk's newest; a live stream would cut such a topic about one
+  commit in five. Merging those rows into the last chunk under a new id left 90 chunks.
 - **Not tried (reasoning):** sealing a snapshot of the growing rows at every commit costs their whole count times the
   columns each time, about 13 M cells a commit for a 13k-column topic near a full chunk. Merging small chunks in tiers
   leaves about ten trailing chunks a topic and renumbers chunks derived nodes have read.
-- **Re-test:** when a source's rows are often late across commits (count the chunks that are not full and whose
-  successor starts earlier): inserting them into the last chunk under a new id would keep its chunks full. And when
-  the per-commit cost matters: it is one visit per column of every topic with new rows, which a list of the columns a
-  batch set would cut for sparse topics.
+- **Re-test:** when a wide topic is late often (count the chunks that are not full and whose successor starts
+  earlier): a late merge rewrites the whole last chunk, and past `kLateMergeCells` the rows start a chunk of their
+  own; merging only the rows behind the first late one would lift that. And when the per-commit cost matters: it is
+  one visit per column of every topic with new rows, which a list of the columns a batch set would cut for sparse
+  topics.
 
 ## ObjectStore costs
 

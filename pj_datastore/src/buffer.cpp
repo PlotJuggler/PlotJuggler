@@ -29,6 +29,12 @@ void RawBuffer::clear() {
   data_.clear();
 }
 
+void RawBuffer::shrinkToFit() {
+  if (data_.capacity() > data_.size()) {
+    data_.shrink_to_fit();
+  }
+}
+
 const uint8_t* RawBuffer::data() const noexcept {
   return data_.data();
 }
@@ -135,6 +141,13 @@ void BitVector::assignBytes(Span<const uint8_t> bytes, std::size_t bit_count) {
 void BitVector::clear() {
   bytes_.clear();
   bit_count_ = 0;
+}
+
+void BitVector::shrinkToFit() {
+  bytes_.resize(bytesForBits(bit_count_));
+  if (bytes_.capacity() > bytes_.size()) {
+    bytes_.shrink_to_fit();
+  }
 }
 
 PJ::BitSpan BitVector::bitSpan() const noexcept {

@@ -31,8 +31,14 @@ struct DataWriter::Impl {
   explicit Impl(DataEngine& eng) : engine(eng) {}
   DataEngine& engine;
   tsl::robin_map<PJ::TopicId, TopicChunkBuilder> builders;
-  // Builders set aside full or before a layout change, oldest first.
-  tsl::robin_map<PJ::TopicId, std::vector<TopicChunkBuilder>> pending_batches;
+  // A topic's rows set aside, oldest first, when their builder filled or before a layout change. A builder that
+  // holds a whole chunk is sealed at once, so a long import between two commits holds encoded chunks and not raw rows;
+  // any other is kept as it is, for TopicStorage::appendRows() to put in the topic's last chunk.
+  struct Pending {
+    std::vector<std::variant<TopicChunkBuilder, TopicChunk>> batches;
+    uint64_t rows = 0;
+  };
+  tsl::robin_map<PJ::TopicId, Pending> pending_batches;
   tsl::robin_map<PJ::TopicId, std::vector<ColumnDescriptor>> topic_columns;
 };
 
@@ -248,7 +254,7 @@ PJ::Status DataWriter::beginRow(TopicId topic_id, Timestamp t) {
   if (storage == nullptr) {
     return PJ::unexpected(fmt::format("Topic {} not found", topic_id));
   }
-  auto& builder = getOrCreateBuilder(topic_id);
+  auto& builder = getOrCreateBuilder(topic_id, storage);
   builder.beginRow(t);
   return PJ::okStatus();
 }
@@ -441,13 +447,23 @@ void DataWriter::appendScalar(const ScalarSeriesHandle& handle, Timestamp t, Num
 // Flush
 // ---------------------------------------------------------------------------
 
+namespace {
+// A batch set aside, as the chunk flush() and flushAll() return.
+[[nodiscard]] TopicChunk sealed(std::variant<TopicChunkBuilder, TopicChunk>& batch) {
+  if (auto* builder = std::get_if<TopicChunkBuilder>(&batch)) {
+    return builder->seal();
+  }
+  return std::move(std::get<TopicChunk>(batch));
+}
+}  // namespace
+
 std::vector<TopicChunk> DataWriter::flush(TopicId topic_id) {
   std::vector<TopicChunk> result;
 
   auto pending_it = impl_->pending_batches.find(topic_id);
   if (pending_it != impl_->pending_batches.end()) {
-    for (TopicChunkBuilder& builder : pending_it.value()) {
-      result.push_back(builder.seal());
+    for (auto& batch : pending_it.value().batches) {
+      result.push_back(sealed(batch));
     }
     impl_->pending_batches.erase(pending_it);
   }
@@ -465,8 +481,8 @@ std::vector<std::pair<TopicId, TopicChunk>> DataWriter::flushAll() {
   std::vector<std::pair<TopicId, TopicChunk>> result;
 
   for (auto it = impl_->pending_batches.begin(); it != impl_->pending_batches.end(); ++it) {
-    for (TopicChunkBuilder& builder : it.value()) {
-      result.emplace_back(it->first, builder.seal());
+    for (auto& batch : it.value().batches) {
+      result.emplace_back(it->first, sealed(batch));
     }
   }
   impl_->pending_batches.clear();
@@ -492,11 +508,20 @@ std::vector<std::pair<TopicId, TopicChunk>> DataWriter::flushAll() {
 
 std::vector<TopicId> DataWriter::commitRows() {
   std::vector<TopicId> changed;
-  // A topic's builders set aside come before its open one: they hold its earlier rows.
+  // A topic's batches set aside come before its open builder: they hold its earlier rows.
   for (auto it = impl_->pending_batches.begin(); it != impl_->pending_batches.end(); ++it) {
-    for (TopicChunkBuilder& builder : it.value()) {
-      if (impl_->engine.commitRows(it->first, builder)) {
-        changed.push_back(it->first);
+    const TopicId topic_id = it->first;
+    for (auto& batch : it.value().batches) {
+      if (auto* builder = std::get_if<TopicChunkBuilder>(&batch)) {
+        if (impl_->engine.commitRows(topic_id, *builder)) {
+          changed.push_back(topic_id);
+        }
+        continue;
+      }
+      std::vector<std::pair<TopicId, TopicChunk>> whole;
+      whole.emplace_back(topic_id, std::move(std::get<TopicChunk>(batch)));
+      for (const TopicId id : impl_->engine.commitChunksLocked(std::move(whole))) {
+        changed.push_back(id);
       }
     }
   }
@@ -563,7 +588,7 @@ Expected<FieldId> DataWriter::ensureColumn(TopicId topic_id, std::string_view fi
             "ensure_column: topic {} has a row in progress; call finishRow() before adding new columns", topic_id));
   }
 
-  // A chunk has one column layout: seal before changing it.
+  // A builder has one column layout: its rows are set aside before it changes.
   setBuilderAside(topic_id);
 
   // Field ids are dense from 0, so the next id is the column count.
@@ -735,14 +760,22 @@ void DataWriter::ensureColsLoaded(TopicId topic_id, const TopicStorage& storage)
   // A new schemaless topic starts with no columns.
 }
 
-TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id) {
+TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id, const TopicStorage* storage) {
+  if (storage == nullptr) {
+    storage = impl_->engine.getTopicStorage(topic_id);
+  }
+  PJ_ASSERT(storage != nullptr, "get_or_create_builder: topic storage not found");
+
   auto it = impl_->builders.find(topic_id);
   if (it != impl_->builders.end()) {
-    return it.value();
+    // A builder outlives a commit, so it can be older than a column another writer added since: ensureColumn() and
+    // resolveField() hand that column's id out, and a write to it would run past this builder's columns. Its rows are
+    // set aside and a builder with the topic's layout takes its place.
+    if (storage->columnDescriptors().size() <= it->second.columnCount() || it->second.isRowInProgress()) {
+      return it.value();
+    }
+    setBuilderAside(topic_id);
   }
-
-  const auto* storage = impl_->engine.getTopicStorage(topic_id);
-  PJ_ASSERT(storage != nullptr, "get_or_create_builder: topic storage not found");
 
   const auto& desc = storage->descriptor();
   ensureColsLoaded(topic_id, *storage);
@@ -768,9 +801,7 @@ uint32_t DataWriter::builderRows(TopicId topic_id, const TopicStorage& storage) 
     rows_ahead = chunks.back().stats.row_count;
   }
   if (const auto pending = impl_->pending_batches.find(topic_id); pending != impl_->pending_batches.end()) {
-    for (const TopicChunkBuilder& batch : pending->second) {
-      rows_ahead += batch.rowCount();
-    }
+    rows_ahead += pending->second.rows;
   }
   return max_rows - static_cast<uint32_t>(rows_ahead % max_rows);
 }
@@ -799,8 +830,15 @@ void DataWriter::setBuilderAside(TopicId topic_id) {
   if (it == impl_->builders.end()) {
     return;
   }
-  if (it->second.rowCount() > 0) {
-    impl_->pending_batches[topic_id].push_back(std::move(it.value()));
+  if (const uint32_t rows = it->second.rowCount(); rows > 0) {
+    Impl::Pending& pending = impl_->pending_batches[topic_id];
+    const TopicStorage* storage = impl_->engine.getTopicStorage(topic_id);
+    if (storage != nullptr && rows >= storage->descriptor().max_chunk_rows) {
+      pending.batches.emplace_back(it.value().seal());
+    } else {
+      pending.batches.emplace_back(std::move(it.value()));
+    }
+    pending.rows += rows;
   }
   impl_->builders.erase(it);
 }

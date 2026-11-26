@@ -63,11 +63,12 @@ class TopicStorage {
   [[nodiscard]] PJ::Status appendSealedChunk(TopicChunk chunk);
 
   /// Commits a writer's rows without sealing them into a chunk of their own: they extend the topic's last chunk while
-  /// it has room, a layout theirs fits (TopicChunkBuilder::fitsLayoutOf) and no row newer than theirs, and start a
-  /// new chunk otherwise. A chunk is re-encoded once, when it reaches the topic's max_chunk_rows, so a topic's chunks
-  /// are cut by its rows and not by how often its writer commits. A chunk that grows keeps its id and its rows their
-  /// positions (see TopicChunk), and gains the columns the topic gained. `batch` is left for clearRows(): its rows are
-  /// sorted and may have been moved out.
+  /// it has room and a layout theirs fits (TopicChunkBuilder::fitsLayoutOf), and start a new chunk otherwise. Rows
+  /// older than the last chunk's newest are merged into it in timestamp order, which gives it a new id. A chunk is
+  /// re-encoded once, when it reaches the topic's max_chunk_rows, so a topic's chunks are cut by its rows and not by
+  /// how often its writer commits. A chunk that grows keeps its id and its rows their positions (see TopicChunk), and
+  /// gains the columns the topic gained. `batch` is left for clearRows(): its rows are sorted and may have been moved
+  /// out.
   void appendRows(TopicChunkBuilder& batch);
 
   /// Re-encodes the last chunk if appendRows() left it in growable form: call when a source ends, so a chunk that will
@@ -211,6 +212,8 @@ class TopicStorage {
   void extendLastChunk(TopicChunk& chunk, const TopicChunkBuilder& batch, std::size_t first, std::size_t count);
   // compact() on the last chunk, keeping the byte-size aggregate in step.
   void compactChunk(TopicChunk& chunk);
+  // Replaces `chunk`, the last one, by itself merged with `batch`'s rows in timestamp order, under a new id.
+  void mergeIntoLastChunk(TopicChunk& chunk, const TopicChunkBuilder& batch);
   void unretireColumnsWithValues(const TopicChunk& chunk);
 
   TopicId topic_id_;
@@ -239,6 +242,10 @@ class TopicStorage {
   uint64_t series_generation_ = 0;
   Timestamp retention_floor_ = kNoRetentionFloor;
   ChunkId evicted_through_chunk_id_ = 0;
+  // The highest chunk id this topic ever held: not lowered when chunks are cleared, detached or restored. A consumer
+  // may have read up to it, so a chunk with a lower id takes a new one before it gains rows, or the rows would sit
+  // under a watermark already past them.
+  ChunkId newest_chunk_id_ever_ = 0;
   // Shared by every DataWriter of this topic.
   std::unordered_map<std::string, uint32_t> array_expansion_counts_;
 };

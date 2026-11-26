@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Host side of the pj_plugins C-ABI data surfaces: each class turns one surface's calls into DataWriter, DataEngine
-// or ObjectStore operations. raw() is the vtable handed to the plugin; flushPending() seals and commits. Design:
+// or ObjectStore operations. raw() is the vtable handed to the plugin; flushPending() commits. Design:
 // docs/ARCHITECTURE.md "Plugin host bridges".
 
 #include <functional>

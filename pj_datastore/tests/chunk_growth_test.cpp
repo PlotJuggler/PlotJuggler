@@ -228,8 +228,7 @@ std::optional<std::pair<double, double>> usableRange(const ColumnStats& stats) {
   return std::pair{*stats.min_value, *stats.max_value};
 }
 
-// A chunk's per-column range against its own values: the builder's row path and its bulk path disagree on a NaN
-// (the first keeps one that comes first, the second leaves NaNs out), so the reference chunk is no oracle for it.
+// A chunk's per-column range against its own values: a NaN is in neither extreme, whichever path built the chunk.
 void expectRangesMatchValues(const TopicChunk& chunk) {
   for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
     const StorageKind kind = storageKindOf(chunk.columns[c].descriptor->logical_type);
@@ -389,6 +388,83 @@ TEST_P(ChunkGrowthProperty, CommitCadenceDoesNotChangeWhatIsStored) {
   EXPECT_EQ(growing.storage().metadata().total_byte_size, reference.storage().metadata().total_byte_size);
 }
 
+TEST_P(ChunkGrowthProperty, RowsStampedOutOfOrderAreAllKeptInSortedFullChunks) {
+  const uint32_t seed = GetParam();
+  std::mt19937 rng(seed ^ 0xA5A5A5A5U);
+  // Several publishers on one topic, each stamping its own rows: locally out of order, by up to a few rows.
+  std::vector<Row> rows = makeRows(700, seed);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rows[i].timestamp = static_cast<Timestamp>(i) * 10 + static_cast<Timestamp>(rng() % 60);
+  }
+
+  Fixture growing;
+  std::map<std::pair<ChunkId, std::size_t>, Timestamp> seen;
+  std::size_t written = 0;
+  while (written < rows.size()) {
+    const std::size_t end = std::min(rows.size(), written + 1 + rng() % 12);
+    for (; written < end; ++written) {
+      growing.write(rows[written]);
+    }
+    (void)growing.storage().wholeNumbersSignature();
+    growing.commitGrowing();
+    expectAggregatesMatchChunks(growing.storage());
+    for (const TopicChunk& chunk : growing.storage().sealedChunks()) {
+      ASSERT_TRUE(std::is_sorted(chunk.timestamps.begin(), chunk.timestamps.end()));
+      for (std::size_t r = 0; r < chunk.stats.row_count; ++r) {
+        // A row that moved did so under a new chunk id.
+        const auto [it, inserted] = seen.try_emplace({chunk.id, r}, chunk.timestamps[r]);
+        ASSERT_EQ(it->second, chunk.timestamps[r]) << "row " << r << " of chunk " << chunk.id << " moved";
+      }
+    }
+  }
+
+  // Every row is there, once: timestamp and the int32 column (set in most rows) against the model.
+  std::multimap<Timestamp, std::optional<int32_t>> expected;
+  for (const Row& row : rows) {
+    const auto* value = std::get_if<int32_t>(&row.cells[2]);
+    expected.emplace(row.timestamp, value != nullptr ? std::optional<int32_t>(*value) : std::nullopt);
+  }
+  std::multimap<Timestamp, std::optional<int32_t>> actual;
+  std::size_t full_chunks = 0;
+  const auto& chunks = growing.storage().sealedChunks();
+  for (const TopicChunk& chunk : chunks) {
+    full_chunks += chunk.stats.row_count == kMaxRows ? 1U : 0U;
+    expectRangesMatchValues(chunk);
+    for (std::size_t r = 0; r < chunk.stats.row_count; ++r) {
+      actual.emplace(
+          chunk.timestamps[r], chunk.isNull(2, r)
+                                   ? std::nullopt
+                                   : std::optional<int32_t>(static_cast<int32_t>(chunk.readNumericAsInt64(2, r))));
+    }
+  }
+  const auto sorted = [](const std::multimap<Timestamp, std::optional<int32_t>>& rows_by_time) {
+    std::vector<std::pair<Timestamp, std::optional<int32_t>>> out(rows_by_time.begin(), rows_by_time.end());
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+  EXPECT_EQ(sorted(actual), sorted(expected));
+  // Late rows are merged into the chunk that has room for them, so all but the last chunk fill.
+  EXPECT_EQ(chunks.size(), (rows.size() + kMaxRows - 1) / kMaxRows);
+  EXPECT_GE(full_chunks + 1, chunks.size());
+
+  // The reader merges the chunks, which overlap where one filled between two late rows.
+  Timestamp previous = std::numeric_limits<Timestamp>::min();
+  std::size_t read = 0;
+  const DataReader reader = growing.engine.createReader();
+  auto cursor = reader.rangeQuery(
+      QueryRange{
+          .topic_id = growing.topic,
+          .t_min = std::numeric_limits<Timestamp>::min(),
+          .t_max = std::numeric_limits<Timestamp>::max()});
+  ASSERT_TRUE(cursor.has_value());
+  cursor->forEach([&](const SampleRow& row) {
+    EXPECT_GE(row.timestamp, previous);
+    previous = row.timestamp;
+    ++read;
+  });
+  EXPECT_EQ(read, rows.size());
+}
+
 INSTANTIATE_TEST_SUITE_P(Seeds, ChunkGrowthProperty, ::testing::Range(1U, 13U));
 
 std::vector<std::pair<Timestamp, double>> readAll(DataEngine& engine, TopicId topic) {
@@ -432,7 +508,7 @@ TEST(ChunkGrowthTest, RowsOutOfOrderWithinACommitAreSortedBeforeTheyLand) {
           {10, 10.0}, {20, 20.0}, {30, 30.0}, {30, 30.5}, {40, 40.5}, {50, 50.5}}));
 }
 
-TEST(ChunkGrowthTest, RowsOlderThanTheLastChunkStartAChunkOfTheirOwn) {
+TEST(ChunkGrowthTest, RowsOlderThanTheLastChunkAreMergedIntoItUnderANewId) {
   Fixture fixture(1);
   for (const Timestamp t : {10, 20, 30}) {
     fixture.write(numberRow(t, static_cast<double>(t)));
@@ -441,24 +517,76 @@ TEST(ChunkGrowthTest, RowsOlderThanTheLastChunkStartAChunkOfTheirOwn) {
   const ChunkId first_id = fixture.storage().sealedChunks().front().id;
   const uint64_t generation = fixture.storage().seriesGeneration();
 
-  fixture.write(numberRow(25, 25.0));  // would have to go before row 30
+  fixture.write(numberRow(25, 25.0));  // goes before row 30
+  fixture.write(numberRow(20, 20.5));  // ties with a row of the chunk: after it
+  (void)fixture.storage().wholeNumbersSignature();
   fixture.commitGrowing();
 
   const auto& chunks = fixture.storage().sealedChunks();
-  ASSERT_EQ(chunks.size(), 2U);
-  EXPECT_EQ(chunks[0].id, first_id);
-  EXPECT_EQ(chunks[0].timestamps, (std::vector<Timestamp>{10, 20, 30}));
-  EXPECT_EQ(chunks[1].timestamps, (std::vector<Timestamp>{25}));
+  ASSERT_EQ(chunks.size(), 1U);
+  EXPECT_GT(chunks[0].id, first_id) << "rows moved, so the chunk is not the one readers remember";
+  EXPECT_EQ(chunks[0].timestamps, (std::vector<Timestamp>{10, 20, 20, 25, 30}));
   EXPECT_GT(fixture.storage().seriesGeneration(), generation) << "readers must rebuild: rows landed behind theirs";
   EXPECT_EQ(
       readAll(fixture.engine, fixture.topic),
-      (std::vector<std::pair<Timestamp, double>>{{10, 10.0}, {20, 20.0}, {25, 25.0}, {30, 30.0}}));
+      (std::vector<std::pair<Timestamp, double>>{{10, 10.0}, {20, 20.0}, {20, 20.5}, {25, 25.0}, {30, 30.0}}));
+  expectAggregatesMatchChunks(fixture.storage());
+  expectRangesMatchValues(chunks[0]);
 
-  // The late chunk is now the last one, and it is the one that grows.
-  fixture.write(numberRow(26, 26.0));
+  // Rows in order extend the merged chunk as any other.
+  const ChunkId merged_id = chunks[0].id;
+  fixture.write(numberRow(31, 31.0));
   fixture.commitGrowing();
+  ASSERT_EQ(chunks.size(), 1U);
+  EXPECT_EQ(chunks[0].id, merged_id);
+  EXPECT_EQ(chunks[0].stats.row_count, 6U);
+}
+
+TEST(ChunkGrowthTest, LateRowsThatBringANewColumnAreMergedToo) {
+  Fixture fixture(1);
+  fixture.write(numberRow(10, 1.0));
+  fixture.write(numberRow(30, 3.0));
+  fixture.commitGrowing();
+  ASSERT_TRUE(fixture.writer.ensureColumn(fixture.topic, "text", PrimitiveType::kString).has_value());
+  fixture.write(Row{.timestamp = 20, .cells = {Cell{2.0}, Cell{std::string("late")}}});
+  fixture.commitGrowing();
+
+  const auto& chunks = fixture.storage().sealedChunks();
+  ASSERT_EQ(chunks.size(), 1U);
+  const TopicChunk& chunk = chunks.front();
+  ASSERT_EQ(chunk.columns.size(), 2U);
+  EXPECT_EQ(chunk.timestamps, (std::vector<Timestamp>{10, 20, 30}));
+  EXPECT_TRUE(chunk.isNull(1, 0));
+  EXPECT_EQ(chunk.readString(1, 1), "late");
+  EXPECT_TRUE(chunk.isNull(1, 2));
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 1), 2.0);
+  expectAggregatesMatchChunks(fixture.storage());
+}
+
+TEST(ChunkGrowthTest, LateRowsThatDoNotFitTheLastChunkStartAChunkOfTheirOwn) {
+  Fixture fixture(1);
+  // A second writer holds four rows before the first commits: its builder was sized when the topic was empty.
+  DataWriter late = fixture.engine.createWriter();
+  for (const Timestamp t : {1, 2, 3, 4}) {
+    ASSERT_TRUE(late.beginRow(fixture.topic, t).has_value());
+    late.set<double>(fixture.topic, 0, 2.0);
+    ASSERT_TRUE(late.finishRow(fixture.topic).has_value());
+  }
+  for (Timestamp t = 0; t < static_cast<Timestamp>(kMaxRows) - 2; ++t) {
+    fixture.write(numberRow(100 + t, 1.0));
+  }
+  fixture.commitGrowing();
+  const ChunkId first_id = fixture.storage().sealedChunks().front().id;
+
+  (void)late.commitRows();  // older than every row there, and two rows more than the chunk has room for
+
+  const auto& chunks = fixture.storage().sealedChunks();
   ASSERT_EQ(chunks.size(), 2U);
-  EXPECT_EQ(chunks[1].timestamps, (std::vector<Timestamp>{25, 26}));
+  EXPECT_EQ(chunks[0].id, first_id) << "untouched";
+  EXPECT_EQ(chunks[0].stats.row_count, kMaxRows - 2);
+  EXPECT_EQ(chunks[1].timestamps, (std::vector<Timestamp>{1, 2, 3, 4}));
+  EXPECT_EQ(readAll(fixture.engine, fixture.topic).front().first, 1);
+  expectAggregatesMatchChunks(fixture.storage());
 }
 
 TEST(ChunkGrowthTest, OnlyRowsStrictlyAfterEverySampleKeepTheSeriesGeneration) {
@@ -628,6 +756,84 @@ TEST(ChunkGrowthTest, ACompactedLastChunkStillGrows) {
 
   growing.storage().compactLastChunk();
   expectSameChunk(growing.storage().sealedChunks().front(), reference.storage().sealedChunks().front(), true);
+}
+
+TEST(ChunkGrowthTest, AChunkThatStopsBeingTheLastIsEncoded) {
+  Fixture fixture(1);
+  for (const Timestamp t : {10, 20, 30}) {
+    fixture.write(numberRow(t, 7.0));  // a constant column: raw while the chunk grows
+  }
+  fixture.commitGrowing();
+  ASSERT_TRUE(fixture.storage().sealedChunks().front().isGrowable());
+
+  fixture.write(numberRow(40, 8.0));
+  fixture.commitSealed();  // a chunk of its own after it: the first will not gain rows again
+  const auto& chunks = fixture.storage().sealedChunks();
+  ASSERT_EQ(chunks.size(), 2U);
+  EXPECT_EQ(chunks[0].columnEncoding(0), EncodingType::kConstant);
+  EXPECT_EQ(chunks[0].readNumericAsDouble(0, 2), 7.0);
+  expectAggregatesMatchChunks(fixture.storage());
+}
+
+TEST(ChunkGrowthTest, AFullChunkKeepsNoSpareCapacity) {
+  Fixture fixture(1);
+  for (Timestamp t = 0; t < static_cast<Timestamp>(kMaxRows); ++t) {
+    fixture.write(numberRow(t, static_cast<double>(t) + 0.5));  // fractions: the column stays raw
+    if (t % 3 == 0) {
+      fixture.commitGrowing();
+    }
+  }
+  fixture.commitGrowing();
+  const TopicChunk& chunk = fixture.storage().sealedChunks().front();
+  ASSERT_EQ(chunk.stats.row_count, kMaxRows);
+  const auto& raw = std::get<RawBuffer>(chunk.columns[0].data);
+  EXPECT_EQ(raw.capacity(), raw.size());
+  EXPECT_EQ(chunk.timestamps.capacity(), chunk.timestamps.size());
+}
+
+TEST(ChunkGrowthTest, AKeptBuilderTakesTheColumnsAnotherWriterAdded) {
+  Fixture fixture(1);
+  fixture.write(numberRow(10, 1.0));
+  fixture.commitGrowing();  // the writer keeps its one-column builder
+
+  DataWriter other = fixture.engine.createWriter();
+  ASSERT_TRUE(other.ensureColumn(fixture.topic, "added", PrimitiveType::kFloat64).has_value());
+
+  // The first writer is handed the existing column, and writes it.
+  const auto column = fixture.writer.ensureColumn(fixture.topic, "added", PrimitiveType::kFloat64);
+  ASSERT_TRUE(column.has_value());
+  ASSERT_EQ(*column, 1U);
+  fixture.write(Row{.timestamp = 20, .cells = {Cell{2.0}, Cell{3.0}}});
+  fixture.commitGrowing();
+
+  const TopicChunk& chunk = fixture.storage().sealedChunks().front();
+  ASSERT_EQ(chunk.columns.size(), 2U);
+  ASSERT_EQ(chunk.stats.row_count, 2U);
+  EXPECT_TRUE(chunk.isNull(1, 0));
+  EXPECT_EQ(chunk.readNumericAsDouble(1, 1), 3.0);
+}
+
+TEST(ChunkGrowthTest, AChunkRestoredUnderNewerIdsTakesANewIdBeforeItGrows) {
+  Fixture fixture(1);
+  fixture.write(numberRow(10, 1.0));
+  fixture.commitGrowing();
+  const ChunkId restored_id = fixture.storage().sealedChunks().front().id;
+
+  // A refill that is rolled back: the topic held a newer chunk meanwhile, which a derived node may have read.
+  TopicStorage::DetachedState detached = fixture.storage().detachChunks();
+  fixture.write(numberRow(500, 5.0));
+  fixture.commitGrowing();
+  const ChunkId newer_id = fixture.storage().sealedChunks().front().id;
+  ASSERT_GT(newer_id, restored_id);
+  fixture.storage().restoreChunks(std::move(detached));
+  ASSERT_EQ(fixture.storage().sealedChunks().front().id, restored_id);
+
+  fixture.write(numberRow(20, 2.0));
+  fixture.commitGrowing();
+  const auto& chunks = fixture.storage().sealedChunks();
+  ASSERT_EQ(chunks.size(), 1U);
+  EXPECT_EQ(chunks[0].timestamps, (std::vector<Timestamp>{10, 20}));
+  EXPECT_GT(chunks[0].id, newer_id) << "under the old id the new row would sit below a watermark already past it";
 }
 
 TEST(ChunkGrowthTest, SealedChunksCommittedWholeAreNotMergedIntoEachOther) {

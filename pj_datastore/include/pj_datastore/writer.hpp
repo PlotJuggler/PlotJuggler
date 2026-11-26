@@ -140,8 +140,8 @@ class DataWriter {
   void appendScalar(const ScalarSeriesHandle& handle, PJ::Timestamp t, PJ::NumericValue value);
 
   // ---- Dynamic column addition ----
-  /// Returns the FieldId of `field_path`, adding the column if new: the pending builder is sealed first, so earlier
-  /// chunks have fewer columns. Errors for an existing path of another type, or a new column while a row is in
+  /// Returns the FieldId of `field_path`, adding the column if new, at the end of the topic's layout: the chunks that
+  /// filled before have fewer columns. Errors for an existing path of another type, or a new column while a row is in
   /// progress. On a topic with a schema, an added column exists only in the physical layout, not in getTypeTree().
   [[nodiscard]] PJ::Expected<PJ::FieldId> ensureColumn(
       PJ::TopicId topic_id, std::string_view field_path, PJ::PrimitiveType type);
@@ -149,8 +149,8 @@ class DataWriter {
   // ---- Variable-length array expansion ----
   /// Grows the element columns of a variable-length array to at least `new_length`, never past the topic's
   /// array_expansion_limit (a clamp is counted as a truncation), and returns the count reached. Not inside a row.
-  /// Growing seals the pending builder. With a schema the field is validated and `element_type` ignored; without
-  /// one any path is accepted with `element_type`.
+  /// With a schema the field is validated and `element_type` ignored; without one any path is accepted with
+  /// `element_type`.
   [[nodiscard]] PJ::Expected<uint32_t> expandArray(
       PJ::TopicId topic_id, std::string_view array_field_path, uint32_t new_length,
       PJ::PrimitiveType element_type = PJ::PrimitiveType::kFloat64);
@@ -170,7 +170,8 @@ class DataWriter {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 
-  TopicChunkBuilder& getOrCreateBuilder(PJ::TopicId topic_id);
+  // `storage` is the topic's, when the caller has it already.
+  TopicChunkBuilder& getOrCreateBuilder(PJ::TopicId topic_id, const TopicStorage* storage = nullptr);
 
   // The rows a new or emptied builder of the topic takes before it is set aside.
   [[nodiscard]] uint32_t builderRows(PJ::TopicId topic_id, const TopicStorage& storage) const;
@@ -179,7 +180,8 @@ class DataWriter {
 
   static std::vector<ColumnDescriptor> buildColumnDescriptors(const PJ::TypeTreeNode& root);
 
-  // Sets the topic's builder aside, unsealed, until the next flush or commitRows(); an empty one is dropped.
+  // Sets the topic's builder aside until the next flush or commitRows(), sealed if it holds a whole chunk; an empty
+  // one is dropped.
   void setBuilderAside(PJ::TopicId topic_id);
 };
 

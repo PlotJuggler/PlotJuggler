@@ -109,8 +109,8 @@ struct TopicChunk {
   /// Re-stores every column in growable form. Rows and values are unchanged (a null's placeholder may differ).
   void makeGrowable();
 
-  /// Picks each column's encoding as seal() does for the same rows, and recomputes the stats. Id, rows and values are
-  /// unchanged. Frees and reallocates the column buffers.
+  /// Picks each column's encoding as seal() does for the same rows, and gives back the buffers' spare capacity. Id,
+  /// rows, values and stats are unchanged. Frees and reallocates the column buffers.
   void compact();
 };
 
@@ -185,6 +185,15 @@ class TopicChunkBuilder {
   /// An empty growable chunk with this builder's layout and the next ChunkId.
   [[nodiscard]] TopicChunk makeGrowableChunk() const;
 
+  /// Gives `chunk`, growable, the columns only this builder has, null for the rows the chunk holds.
+  void addColumnsTo(TopicChunk& chunk) const;
+
+  /// A new growable chunk, with the next ChunkId, holding `chunk`'s rows and this builder's, sorted by timestamp:
+  /// `chunk`'s rows come first among equal timestamps, as rows that arrived first do. For rows that arrive older than
+  /// `chunk`'s newest: they cannot be appended, since that would leave the chunk unsorted, and a row that moves must
+  /// not keep its chunk id. Needs sortRows() and the same column count and types as `chunk`, which must be growable.
+  [[nodiscard]] TopicChunk mergedWith(const TopicChunk& chunk) const;
+
   /// Empties the builder for the next rows, keeping its layout and its buffers' capacity; `max_rows` replaces the
   /// constructor's. Also after seal().
   void clearRows(uint32_t max_rows);
@@ -225,6 +234,9 @@ class TopicChunkBuilder {
   std::size_t bulk_pending_rows_ = 0;  // rows added via bulk but not yet finished
 
   void resetStats();
+  // Bulk-appends the rows of a growable chunk, or of another builder with every column padded, of this layout.
+  void appendRowsOf(const TopicChunk& chunk);
+  void appendRowsOf(const TopicChunkBuilder& other);
   void updateColumnStats(std::size_t col_index, double value);
   // Float columns only: keeps ColumnStats::all_integral.
   void noteFloat(std::size_t col_index, double value);

@@ -256,7 +256,7 @@ void ToolboxRuntimeHost::onNotifyDataChanged(void* ctx) noexcept {
   }
   try {
     // Marshal to the host thread (AutoConnection: direct when already there,
-    // queued from a worker thread). Seal buffered writes so the freshly written
+    // queued from a worker thread). Commit buffered writes so the freshly written
     // rows/objects are visible before the host rebuilds its catalog — flush and
     // rebuild then always run together on the GUI thread.
     QMetaObject::invokeMethod(
@@ -403,7 +403,7 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
             return true;
           }
           progress->last_flush = now;
-          // Seal both write surfaces so the marshalled on_ingest_progress can treat "this tick" as "these rows are
+          // Commit both write surfaces so the marshalled on_ingest_progress can treat "this tick" as "these rows are
           // reader-visible": the context's own parser-binding writers AND the toolbox write host the plugin may be
           // appending through.
           raw->flushPending();

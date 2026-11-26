@@ -26,6 +26,9 @@ class RawBuffer {
   /// Keeps the capacity.
   void clear();
 
+  /// Gives back the capacity past size(): for a buffer that grew by appends and will not grow again.
+  void shrinkToFit();
+
   [[nodiscard]] const uint8_t* data() const noexcept;
 
   [[nodiscard]] uint8_t* mutableData() noexcept;
@@ -64,6 +67,9 @@ class BitVector {
 
   /// setValid() over [begin, end), whole bytes at a time. Same bounds rule.
   void setValidRange(std::size_t begin, std::size_t end);
+
+  /// Gives back the capacity past the bits held.
+  void shrinkToFit();
 
   [[nodiscard]] bool isValid(std::size_t bit_index) const;
 
