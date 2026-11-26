@@ -447,6 +447,11 @@ class CurveTreeView : public QTreeWidget {
   // Resolves a normalized catalog tree path to its top-level dataset ancestor, never the matching topic or field row.
   QTreeWidgetItem* findDatasetNode(const QString& dataset_tree_path);
   QTreeWidgetItem* ensureGroupSegments(const QStringList& segments);
+  // Every row but a ghost and the empty-filter placeholder is made here: a row made elsewhere during a batch is not
+  // sorted. batch_ notes it while a batch is open.
+  QTreeWidgetItem* newRow(QTreeWidgetItem* parent, const QString& name);
+  // The first child of `parent` named `name`, or nullptr.
+  QTreeWidgetItem* childNamed(QTreeWidgetItem* parent, const QString& name);
   // A new top-level row labelled `label` verbatim (CurvePath::display_name); never merged.
   QTreeWidgetItem* newFlatRow(const QString& label);
   QTreeWidgetItem* ensureGroup(const QString& path);
@@ -569,6 +574,16 @@ class CurveTreeView : public QTreeWidget {
   // rows without passing through this class, and a raw pointer would survive that as a dangling non-null the next
   // same-membership tick would dereference. An invalidated index is a cache miss, which falls back to the full pass.
   QHash<quint64, QPersistentModelIndex> progress_row_cache_;
+  // Open while addCurves() / addCatalogItems() add rows. Item pointers stay valid because a batch only adds rows.
+  struct RowBatch {
+    // Children by name of each parent with many (a flattened array makes thousands): no scan per added row.
+    QHash<QTreeWidgetItem*, QHash<QString, QTreeWidgetItem*>> children;
+    // Parents that got a row; the batch sorts only these.
+    QSet<QTreeWidgetItem*> grown;
+  };
+  std::optional<RowBatch> batch_;
+  // Opens batch_, runs `add_rows` and sorts the children of the parents that grew.
+  void addRowsInBatch(const std::function<void()>& add_rows);
   // The row and affordance under the pointer. Persistent, so a catalog rebuild cannot leave it dangling.
   QPersistentModelIndex hovered_stop_row_;
   StopButton hovered_stop_button_ = StopButton::kNone;

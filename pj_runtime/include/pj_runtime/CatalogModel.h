@@ -210,9 +210,12 @@ class CatalogModel : public QObject {
   /// Calls `visit` on every item in no particular order, without the copy and sort of `items()`. `visit` must not
   /// change the catalog.
   void forEachItem(const std::function<void(const CatalogItem&)>& visit) const;
-  /// How many times `items()` and `forEachItem()` have walked the whole catalog: a test reads the difference around a
-  /// call to pin that it did not walk it.
+  /// How many times `items()`, `forEachItem()` and a recomputation of `shownTopics()` have walked the whole catalog:
+  /// a test reads the difference around a call to pin that it did not walk it.
   [[nodiscard]] std::size_t wholeCatalogWalks() const noexcept;
+  /// How many times a rebuild has derived a scalar topic's items from the datastore: a test reads the difference to
+  /// pin that a rebuild during an ingest left the unchanged topics alone.
+  [[nodiscard]] std::size_t scalarTopicsDerived() const noexcept;
   /// The object-topic items named `topic_name`, in `items()` order: one per dataset that
   /// has it. A non-empty `dataset_label` keeps only the dataset so labelled (datasetByLabel), none for an unknown one.
   /// Walks the catalog in place, without the copy and sort of `items()`.
@@ -278,6 +281,13 @@ class CatalogModel : public QObject {
 
   // (id, label), dataset id ascending: the datasets the tree lists (those with items).
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> datasets() const;
+  /// The topics that have an item, each once: scalar and object topics, no advertised placeholders. Valid until the
+  /// items change.
+  struct ShownTopics {
+    std::vector<std::pair<DatasetId, TopicId>> scalar;
+    std::vector<std::pair<DatasetId, ObjectTopicId>> object;
+  };
+  [[nodiscard]] const ShownTopics& shownTopics() const;
   [[nodiscard]] std::vector<DatasetId> datasetIds() const;
 
   // The datastore's raw DatasetInfo::source_name: no display name, no "name (2)" ordinal. Layout identity
@@ -353,8 +363,9 @@ class CatalogModel : public QObject {
   void setPerTopicPauseCapable(DatasetId dataset_id, bool capable);
   [[nodiscard]] bool isPerTopicPauseCapable(DatasetId dataset_id) const;
 
-  // Rebuilds only when the content fingerprint moved; a created or retired topic always moves it. Synchronous: a
-  // caller reads the updated catalog on return.
+  // Rebuilds only when the content fingerprint moved, re-deriving only the scalar topics whose sources changed (the
+  // same items a full rebuild gives); a created or retired topic always moves it. Synchronous: a caller reads the
+  // updated catalog on return.
   void rebuildIfChanged();
 
   /// Test seam: a floor under the gap between rebuilds that commits trigger during an open ingest (still capped).

@@ -502,17 +502,9 @@ QTreeWidgetItem* CurveTreeView::ensureGroupSegments(const QStringList& segments)
     if (part.isEmpty()) {
       continue;
     }
-    QTreeWidgetItem* found = nullptr;
-    for (int i = 0; i < parent->childCount(); ++i) {
-      auto* child = parent->child(i);
-      if (child->text(kNameColumn) == part) {
-        found = child;
-        break;
-      }
-    }
+    QTreeWidgetItem* found = childNamed(parent, part);
     if (!found) {
-      found = new CurveTreeItem(parent);
-      setItemName(found, part);
+      found = newRow(parent, part);
       // Top-level groups are the datasets: kept selectable so they can be multi-selected for the dataset context menu
       // (merge, remove). Intermediate topic-path folders stay non-selectable. Neither is a drag source.
       const bool is_dataset = (parent == invisibleRootItem());
@@ -527,9 +519,43 @@ QTreeWidgetItem* CurveTreeView::ensureGroupSegments(const QStringList& segments)
   return parent;
 }
 
+QTreeWidgetItem* CurveTreeView::newRow(QTreeWidgetItem* parent, const QString& name) {
+  auto* item = new CurveTreeItem(parent);
+  setItemName(item, name);
+  if (batch_) {
+    batch_->grown.insert(parent);
+    if (const auto index = batch_->children.find(parent); index != batch_->children.end()) {
+      index->tryEmplace(name, item);
+    }
+  }
+  return item;
+}
+
+QTreeWidgetItem* CurveTreeView::childNamed(QTreeWidgetItem* parent, const QString& name) {
+  // Below this many children a scan beats a hash table, and most parents (a message's fields) stay below it.
+  constexpr int kIndexedFrom = 16;
+  const int count = parent->childCount();
+  if (!batch_ || count < kIndexedFrom) {
+    for (int i = 0; i < count; ++i) {
+      if (parent->child(i)->text(kNameColumn) == name) {
+        return parent->child(i);
+      }
+    }
+    return nullptr;
+  }
+  auto index = batch_->children.find(parent);
+  if (index == batch_->children.end()) {
+    index = batch_->children.insert(parent, {});
+    index->reserve(count);
+    for (int i = count - 1; i >= 0; --i) {  // backwards, so the first child of a name is the one kept, as in the scan
+      index->insert(parent->child(i)->text(kNameColumn), parent->child(i));
+    }
+  }
+  return index->value(name, nullptr);
+}
+
 QTreeWidgetItem* CurveTreeView::newFlatRow(const QString& label) {
-  auto* item = new CurveTreeItem(invisibleRootItem());
-  setItemName(item, label);
+  QTreeWidgetItem* item = newRow(invisibleRootItem(), label);
   item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
   return item;
 }
@@ -567,14 +593,10 @@ void CurveTreeView::addCurves(const std::vector<QString>& names) {
   if (names.empty()) {
     return;
   }
-  mutateStructure([&]() {
-    const bool updates_were_enabled = updatesEnabled();
-    setUpdatesEnabled(false);
+  addRowsInBatch([&] {
     for (const QString& name : names) {
       addCurve(name, SortMode::kDeferred);
     }
-    sortTree();
-    setUpdatesEnabled(updates_were_enabled);
   });
 }
 
@@ -586,8 +608,7 @@ void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
     parent = ensureGroup(name.left(last_sep));
     leaf_name = name.mid(last_sep + 1);
   }
-  auto* item = new CurveTreeItem(parent);
-  setItemName(item, leaf_name);
+  QTreeWidgetItem* item = newRow(parent, leaf_name);
   styleValueCell(item);
   item->setData(kNameColumn, Qt::UserRole, name);
   item->setData(kNameColumn, kSearchRole, name);
@@ -638,14 +659,10 @@ void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
   if (paths.empty()) {
     return;
   }
-  mutateStructure([&]() {
-    const bool updates_were_enabled = updatesEnabled();
-    setUpdatesEnabled(false);
+  addRowsInBatch([&] {
     for (const CurvePath& path : paths) {
       addCatalogItem(path, SortMode::kDeferred);
     }
-    sortTree();
-    setUpdatesEnabled(updates_were_enabled);
   });
 }
 
@@ -671,8 +688,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
       } else {
         parent = ensureGroupSegments(segments);
       }
-      item = new CurveTreeItem(parent);
-      setItemName(item, leaf_name);
+      item = newRow(parent, leaf_name);
       styleValueCell(item);
       item->setData(kNameColumn, Qt::UserRole, path.key);
       item->setData(kNameColumn, kCatalogItemRole, path.key);
@@ -695,8 +711,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
       parent = ensureGroup(tree_path.left(last_sep));
       leaf_name = tree_path.mid(last_sep + 1);
     }
-    item = new CurveTreeItem(parent);
-    setItemName(item, leaf_name);
+    item = newRow(parent, leaf_name);
     styleValueCell(item);
     item->setData(kNameColumn, Qt::UserRole, path.key);
     item->setData(kNameColumn, kCatalogItemRole, path.key);
@@ -2106,6 +2121,22 @@ QString CurveTreeView::treePathOfItem(const QTreeWidgetItem* item) {
 
 void CurveTreeView::setDragSelectionProvider(DragSelectionProvider provider) {
   drag_selection_provider_ = std::move(provider);
+}
+
+void CurveTreeView::addRowsInBatch(const std::function<void()>& add_rows) {
+  mutateStructure([&]() {
+    const bool updates_were_enabled = updatesEnabled();
+    setUpdatesEnabled(false);
+    batch_.emplace();
+    const auto end_batch = qScopeGuard([this, updates_were_enabled] {
+      batch_.reset();
+      setUpdatesEnabled(updates_were_enabled);
+    });
+    add_rows();
+    for (QTreeWidgetItem* parent : std::as_const(batch_->grown)) {
+      parent->sortChildren(kNameColumn, Qt::AscendingOrder);  // its own children only
+    }
+  });
 }
 
 void CurveTreeView::sortTree() {

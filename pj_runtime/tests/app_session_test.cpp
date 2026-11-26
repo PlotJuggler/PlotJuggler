@@ -444,6 +444,30 @@ TEST(AppSessionTest, DatasetRawTimeRangeReturnsRawBounds) {
   EXPECT_FALSE(session.datasetRawTimeRange(99999).has_value());  // unknown dataset
 }
 
+// Both run on every progress tick of a file load: they visit each topic once, not each of its series.
+TEST(AppSessionTest, RangeQueriesDoNotWalkEveryCatalogItem) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  auto dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {1'000, 5'000});
+  addScalarSamples(session, *dataset, "/gps/fix", {3'000, 9'000});
+  session.catalogModel().rebuildFromDatastore();
+  session.seedPlaybackFromSession();
+
+  // The seed listed the catalog's topics once; they are kept until its items change.
+  const std::size_t walks = session.catalogModel().wholeCatalogWalks();
+  session.recomputeRange();
+  session.recomputeRange();
+  const auto range = session.datasetRawTimeRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_EQ(range->min, 1'000);
+  EXPECT_EQ(range->max, 9'000);
+  EXPECT_EQ(session.catalogModel().wholeCatalogWalks(), walks);
+}
+
 // datasetRawTimeRange is RAW (pre-offset): a display offset on the dataset's
 // domain must not shift the reported bounds (the caller applies the offset).
 TEST(AppSessionTest, DatasetRawTimeRangeIgnoresDisplayOffset) {

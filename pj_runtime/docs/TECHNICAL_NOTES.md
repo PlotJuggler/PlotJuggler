@@ -9,11 +9,27 @@ code works is in [ARCHITECTURE.md](./ARCHITECTURE.md).
   flushes (every 50 ms), and the rebuilds took most of the GUI thread. Deferring a rebuild that a commit triggers during
   an open ingest until four times the last rebuild's cost had passed cut GUI-thread CPU from 14.8 to 8.0 s, process CPU
   from 37.5 to 29.8 s and the load from 21.6 to 20.3 s (Linux x86_64, i7-13700H, two runs each).
-- **What the code does:** see ARCHITECTURE "`CatalogModel` rebuild timing". The factor of four (rebuilds take at most a
-  fifth of the GUI thread, while one costs under 250 ms) and the one-second cap (a new topic shows within a second)
-  are reasoning; no other values were measured.
-- **Re-test:** if a rebuild becomes incremental (cost proportional to the change, not the catalog), which would make the
-  gap unnecessary.
+- **Observed, with the rebuilds deferred:** in a profiled run of that load, the GUI thread still stopped for 150 to
+  290 ms about once a second, and for 1.3 s twice near its start (gaps of a 5 ms timer; 6.9 s of GUI-thread CPU in a
+  19 s load). The profile put 85% of it under `CatalogModel::rebuildNow`: deriving all 117k items and comparing them
+  with the ones before, about 130 ms a rebuild, when a few topics had gained a column; adding the new rows to the
+  curve tree, 2.7 s in all, of which 1.7 s finding a group by scanning its siblings (a flattened array makes
+  thousands) and 0.6 s sorting the whole tree after each batch; and walking every item for the playback range on each
+  progress tick, 6.5 ms a tick.
+- **What the code does:** see ARCHITECTURE "`CatalogModel` rebuilds" and "`CatalogModel` rebuild timing";
+  `CurveTreeView` adds a batch of rows through an index of the large groups and sorts only the parents that grew. The
+  factor of four between a rebuild's cost and the gap after it (rebuilds take at most a fifth of the GUI thread, while
+  one costs under 250 ms), its one-second cap (a new topic shows within a second) and the child count from which the
+  tree indexes a parent (`kIndexedFrom` in `CurveTreeView::childNamed`) are reasoning: no other values of them were
+  measured.
+- **Result:** the same load then stops the GUI thread for 30 to 55 ms a rebuild, and for about 0.5 s twice: when the
+  first tens of thousands of rows enter the tree, and at the end of the load, whose rebuild derives everything. In the
+  two-run benchmark of `pj_app` TECHNICAL_NOTES "File-load flush interval" (runs other than the profiled one above),
+  GUI-thread CPU went from 6.1 to 2.5 s and process CPU from 27.0 to 23.3 s; the load time, which the import thread
+  sets, stayed at 19.3 s (Linux x86_64, i7-13700H).
+- **Re-test:** when the first fill of the tree matters, adding its rows in slices across event-loop turns; and when a
+  topic of ~10k columns that gains one is slow, deriving only its new columns (its items are derived whole, about a
+  microsecond each).
 
 ## Qt's browser network backend keeps every response body
 

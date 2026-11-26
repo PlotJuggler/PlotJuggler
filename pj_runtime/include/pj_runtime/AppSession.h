@@ -160,10 +160,8 @@ class AppSession : public QObject {
     std::vector<DatasetMergeSource> sources;
   };
 
-  // Raw [min,max] ns per visible time-bearing topic, passed to `visit` with the item's DatasetId. Walks the
-  // catalog-visible items once, deduping multi-field scalar topics by topic_id and object topics by ObjectTopicId: the
-  // one scan shared by seedPlaybackFromSession / recomputeRange / datasetRawTimeRange, so visibility and dedup rules
-  // live in one place.
+  // Raw [min,max] ns of each visible time-bearing topic (CatalogModel::shownTopics), with its DatasetId: the one scan
+  // shared by seedPlaybackFromSession / recomputeRange / datasetRawTimeRange.
   void forEachVisibleRawRange(
       const std::function<void(PJ::DatasetId dataset_id, PJ::Timestamp raw_min, PJ::Timestamp raw_max)>& visit) const;
 
