@@ -108,8 +108,8 @@ endif()
 # Pin the reviewed upstream commit by immutable archive and hash so PJ4 consumes the official
 # sources without a local patch layer.
 FetchContent_Declare(pj_official_plugins
-    URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/0710cd5444a0807c3ad42a1b79e0549436caa415
-    URL_HASH SHA256=1f219b63cb639552e8fd3c7087b9374bfc0fbdfe1b32ff17ad0651b0fc5d4ee1
+    URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/dcf6190b843ed97f96d33e11669c0f207de710e0
+    URL_HASH SHA256=e369c12633dc6ad06e8d84aaf831949ffd80abc4dd6bcca3c5f7fcebdd34b7bc
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 FetchContent_MakeAvailable(pj_official_plugins)
