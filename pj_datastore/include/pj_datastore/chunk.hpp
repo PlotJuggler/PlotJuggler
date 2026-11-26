@@ -54,16 +54,15 @@ struct ChunkStats {
   std::vector<ColumnStats> column_stats;
 };
 
-/// A topic's rows, sorted by timestamp, in one column layout. A row never changes under its chunk's id: the values
-/// and the position of row `r` of chunk `id` stay what they are while that id exists. Only a topic's last chunk can
-/// change, by gaining rows at its end (TopicStorage::appendRows) and by having its columns re-encoded, so a consumer
-/// that remembers a chunk id also remembers how many of its rows it read. The read accessors do not check for nulls:
+/// A topic's rows, sorted by timestamp, in one column layout. A row never changes under its chunk's id; only a topic's
+/// last chunk changes, by gaining rows at its end (TopicStorage::appendRows) and by re-encoding, so a consumer that
+/// remembers a chunk id also remembers how many of its rows it read. The read accessors do not check for nulls:
 /// readNumericAsDouble() returns 0.0 at a null, so call isNull() first or use readColumnAsDoubles().
 struct TopicChunk {
   ChunkId id = 0;
   /// 0, or the first id these rows had in their topic: set when TopicStorage gives the chunk a new id in place (late
-  /// rows merged into it, or an id above those already read). A consumer whose watermark id is in [replaced_id, id)
-  /// may have read some of this chunk's rows under the earlier id, and would read them again from row 0.
+  /// rows merged in, or an id above those a consumer may have read). A consumer whose watermark id is in
+  /// [replaced_id, id) may have read some of these rows already.
   ChunkId replaced_id = 0;
   TopicId topic_id = 0;
   /// The topic's schema when the chunk was sealed; the topic may have moved on.
@@ -80,6 +79,11 @@ struct TopicChunk {
   };
 
   std::vector<Column> columns;
+
+  /// The id these rows first had in their topic.
+  [[nodiscard]] ChunkId firstId() const noexcept {
+    return replaced_id != 0 ? replaced_id : id;
+  }
 
   [[nodiscard]] EncodingType columnEncoding(std::size_t index) const;
 
@@ -204,9 +208,9 @@ class TopicChunkBuilder {
   /// not keep its chunk id. Needs sortRows() and hasLayoutOf(chunk), which must be growable.
   [[nodiscard]] TopicChunk mergedWith(const TopicChunk& chunk) const;
 
-  /// Empties the builder for the next rows, keeping its layout and its buffers' capacity; `max_rows` replaces the
-  /// constructor's. Also after seal().
-  void clearRows(uint32_t max_rows);
+  /// Empties the builder for the next rows, keeping its layout and its buffers' capacity; setMaxRows() before the
+  /// next row. Also after seal().
+  void clearRows();
 
   [[nodiscard]] std::size_t columnCount() const noexcept {
     return columns_.size();
@@ -240,8 +244,7 @@ class TopicChunkBuilder {
 
   std::vector<Timestamp> timestamps_;
   std::vector<TypedColumnBuffer> columns_;
-  std::vector<ColumnDescriptor> column_descriptors_;
-  // The same descriptors, as the chunks made here share them (TopicChunk::Column::descriptor).
+  // Shared with the chunks made here (TopicChunk::Column::descriptor).
   std::vector<std::shared_ptr<const ColumnDescriptor>> shared_descriptors_;
   ChunkStats stats_;
 

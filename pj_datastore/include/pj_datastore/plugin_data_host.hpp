@@ -51,10 +51,11 @@ class DatastoreSourceWriteHost {
   DatastoreSourceWriteHost& operator=(DatastoreSourceWriteHost&&) noexcept;
 
   [[nodiscard]] PJ_source_write_host_t raw() noexcept;
-  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows).
+  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows). The other hosts'
+  /// flushPending() does the same.
   void flushPending();
-  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (DataEngine::compactLastChunks):
-  /// for when the source ends.
+  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (TopicStorage::compactLastChunk):
+  /// for when the source ends. The same on DatastoreParserWriteHost.
   void finish();
 
   // Flushes pending rows into the current engine, then routes later writes to `target` (the streaming pause/resume
@@ -104,10 +105,7 @@ class DatastoreParserWriteHost {
   DatastoreParserWriteHost& operator=(DatastoreParserWriteHost&&) noexcept;
 
   [[nodiscard]] PJ_parser_write_host_t raw() noexcept;
-  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows).
   void flushPending();
-  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (DataEngine::compactLastChunks):
-  /// for when the source ends.
   void finish();
 
   // As DatastoreSourceWriteHost::setTarget(); the bound topic must exist in `target` with the same TopicId (the
@@ -180,11 +178,7 @@ class DatastoreToolboxHost {
   DatastoreToolboxHost& operator=(DatastoreToolboxHost&&) noexcept;
 
   [[nodiscard]] PJ_toolbox_host_t raw() noexcept;
-  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows).
   void flushPending();
-  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (DataEngine::compactLastChunks):
-  /// for when the source ends.
-  void finish();
 
  private:
   std::unique_ptr<DatastoreToolboxHostState> state_;

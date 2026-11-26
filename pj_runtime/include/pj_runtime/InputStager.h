@@ -36,9 +36,8 @@ class InputStager {
     TopicId topic = 0;
     std::size_t column = 0;
     Timestamp timestamp = 0;
-    /// The row's chunk and its index there: with `topic` and `column`, the sample's identity in a cache key (a row
-    /// never changes under its chunk's id, and an id is never reused), so equal-time rows never alias and no value is
-    /// hashed.
+    /// The row's chunk and its index there: with `topic` and `column`, the sample's identity in a cache key
+    /// (TopicChunk), so equal-time rows never alias and no value is hashed.
     ChunkId chunk = 0;
     std::size_t row = 0;
     /// Empty: a null string cell, a missing input when staged, whose time still moves the live edge.

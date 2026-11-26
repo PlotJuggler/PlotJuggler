@@ -21,30 +21,48 @@ namespace PJ {
 namespace {
 
 // A column's fixed-width values and validity, wherever they are stored: a builder's buffers or a growable chunk's.
-// The validity bit is read here, not through BitVector::isValid(): these loops run once per cell and that call is not
-// inlined across translation units.
-[[nodiscard]] inline bool bitIsSet(const uint8_t* bits, std::size_t index) {
-  return ((bits[index / 8] >> (index % 8)) & 1U) != 0;
-}
-
 struct FixedColumnView {
   const uint8_t* values = nullptr;
   std::size_t rows = 0;
   std::size_t byte_size = 0;
-  const uint8_t* validity = nullptr;  // Arrow bitmap; null: every row is valid
+  const BitVector* validity = nullptr;  // null: every row is valid
 
   [[nodiscard]] std::size_t rowCount() const {
     return rows;
   }
   [[nodiscard]] bool isValid(std::size_t row) const {
-    return validity == nullptr || bitIsSet(validity, row);
+    return validity == nullptr || validity->isValid(row);
   }
 };
 
 [[nodiscard]] FixedColumnView viewOf(const TypedColumnBuffer& col) {
   return {
       col.valueBuffer().data(), col.rowCount(), col.valueBuffer().size(),
-      col.hasNulls() ? col.validityBuffer().data() : nullptr};
+      col.hasNulls() ? &col.validityBuffer() : nullptr};
+}
+
+// One byte per row of a bool column.
+void unpackBools(const TopicChunk& chunk, std::size_t col_index, std::vector<uint8_t>& bytes) {
+  bytes.resize(chunk.stats.row_count);
+  for (std::size_t r = 0; r < bytes.size(); ++r) {
+    bytes[r] = chunk.readBool(col_index, r) ? 1 : 0;
+  }
+}
+
+// One value into min/max (a NaN is in neither), run_count and is_constant; `previous` is the last value folded.
+// Every path that builds stats folds through here, so a chunk's stats do not depend on which one built it.
+inline void foldValue(ColumnStats& cs, double& previous, double v) {
+  if (!std::isnan(v)) {
+    cs.min_value = cs.min_value.has_value() ? std::min(*cs.min_value, v) : v;
+    cs.max_value = cs.max_value.has_value() ? std::max(*cs.max_value, v) : v;
+  }
+  if (cs.run_count == 0) {
+    cs.run_count = 1;
+  } else if (v != previous) {
+    cs.is_constant = false;
+    cs.run_count++;
+  }
+  previous = v;
 }
 
 // For a non-constant float column: sets `all_integral` when every non-null value passes encoding::isWholeInt64, and
@@ -202,7 +220,7 @@ std::optional<encoding::EncodedData> encodeNumbers(
     return std::nullopt;
   }
 
-  const bool is_float = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
+  const bool is_float = isFloatKind(kind);
   if (cs.is_constant) {
     if (const auto value = constantValueBytes(col, kind); value.has_value()) {
       if (is_float) {
@@ -242,9 +260,6 @@ std::optional<encoding::EncodedData> encodeConstantBools(const FixedColumnView& 
   return std::nullopt;
 }
 
-}  // namespace
-
-namespace {
 [[nodiscard]] std::vector<std::shared_ptr<const ColumnDescriptor>> sharedCopies(
     const std::vector<ColumnDescriptor>& columns) {
   std::vector<std::shared_ptr<const ColumnDescriptor>> shared;
@@ -254,6 +269,7 @@ namespace {
   }
   return shared;
 }
+
 }  // namespace
 
 TopicChunkBuilder::TopicChunkBuilder(
@@ -264,10 +280,8 @@ TopicChunkBuilder::TopicChunkBuilder(
     TopicId topic_id, SchemaId schema_id, uint32_t max_rows,
     std::vector<std::shared_ptr<const ColumnDescriptor>> columns)
     : topic_id_(topic_id), schema_id_(schema_id), max_rows_(max_rows), shared_descriptors_(std::move(columns)) {
-  column_descriptors_.reserve(shared_descriptors_.size());
   columns_.reserve(shared_descriptors_.size());
   for (const auto& descriptor : shared_descriptors_) {
-    column_descriptors_.push_back(*descriptor);
     columns_.emplace_back(*descriptor);
   }
   resetStats();
@@ -275,24 +289,21 @@ TopicChunkBuilder::TopicChunkBuilder(
 
 void TopicChunkBuilder::resetStats() {
   stats_ = ChunkStats{};
-  stats_.column_stats.resize(column_descriptors_.size());
-  last_column_values_.assign(column_descriptors_.size(), 0.0);
-  // Of no value yet. Kept while rows arrive, so appendRowsTo() takes it without reading the values; seal() computes it
-  // again while it picks the encoding.
-  for (std::size_t i = 0; i < column_descriptors_.size(); ++i) {
-    const StorageKind kind = storageKindOf(column_descriptors_[i].logical_type);
-    stats_.column_stats[i].all_integral = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
+  stats_.column_stats.resize(shared_descriptors_.size());
+  last_column_values_.assign(shared_descriptors_.size(), 0.0);
+  // all_integral starts true (no value yet) and narrows per float row; seal() recomputes it.
+  for (std::size_t i = 0; i < shared_descriptors_.size(); ++i) {
+    stats_.column_stats[i].all_integral = isFloatKind(storageKindOf(shared_descriptors_[i]->logical_type));
   }
 }
 
-void TopicChunkBuilder::clearRows(uint32_t max_rows) {
+void TopicChunkBuilder::clearRows() {
   PJ_ASSERT(!row_in_progress_, "clearRows called while row in progress");
   timestamps_.clear();
   for (TypedColumnBuffer& column : columns_) {
     column.clear();
   }
   resetStats();
-  max_rows_ = max_rows;
   last_timestamp_ = std::numeric_limits<Timestamp>::min();
   sorted_ = true;
   bulk_pending_rows_ = 0;
@@ -487,7 +498,7 @@ void TopicChunkBuilder::finishBulkAppend() {
         columns_[col].rowCount() == expected_rows,
         "finishBulkAppend: column has more rows than the batch — appendColumn*() called twice for one column?");
     const std::size_t first_row = expected_rows - count;
-    const auto kind = storageKindOf(column_descriptors_[col].logical_type);
+    const auto kind = storageKindOf(shared_descriptors_[col]->logical_type);
 
     if (kind == StorageKind::kString) {
       computeBulkStringStats(col, first_row, count);
@@ -518,83 +529,37 @@ void TopicChunkBuilder::computeBulkNumericStats(
   const auto& col = columns_[col_index];
   const bool has_validity = col.hasNulls();
 
-  auto process = [&]<typename T>(const T* /*tag*/) {
-    const auto* buf = reinterpret_cast<const T*>(col.valueBuffer().data());
-    double local_min = cs.min_value.value_or(std::numeric_limits<double>::max());
-    double local_max = cs.max_value.value_or(std::numeric_limits<double>::lowest());
-    bool has_extremes = cs.min_value.has_value();  // false while every value so far is a NaN
-    double prev = last_column_values_[col_index];
-    bool had_valid = cs.run_count > 0;
-
+  // A local copy: the per-row writes need not go through a reference the value reads may alias.
+  ColumnStats folded = cs;
+  double prev = last_column_values_[col_index];
+  const auto fold_rows = [&](auto value_at) {
     for (std::size_t i = 0; i < count; ++i) {
       const std::size_t row = first_row + i;
       if (has_validity && !col.isValid(row)) {
-        cs.null_count++;
+        folded.null_count++;
         continue;
       }
+      foldValue(folded, prev, value_at(row));
+    }
+  };
+  const bool numeric = dispatchNumericKind(kind, [&]<typename T>(const T* /*tag*/) {
+    const auto* buf = reinterpret_cast<const T*>(col.valueBuffer().data());
+    fold_rows([&](std::size_t row) {
       const double v = static_cast<double>(buf[row]);
       if constexpr (std::is_floating_point_v<T>) {
-        if (cs.all_integral && !encoding::isWholeInt64(v)) {
-          cs.all_integral = false;
+        if (folded.all_integral && !encoding::isWholeInt64(v)) {
+          folded.all_integral = false;
         }
       }
-      if (!std::isnan(v)) {
-        local_min = std::min(local_min, v);
-        local_max = std::max(local_max, v);
-        has_extremes = true;
-      }
-      if (!had_valid) {
-        cs.run_count = 1;
-        had_valid = true;
-      } else if (v != prev) {
-        cs.is_constant = false;
-        cs.run_count++;
-      }
-      prev = v;
-    }
-    if (has_extremes) {
-      cs.min_value = local_min;
-      cs.max_value = local_max;
-    }
-    last_column_values_[col_index] = prev;
-  };
-
-  if (!dispatchNumericKind(kind, process)) {
-    if (kind == StorageKind::kBool) {
-      const auto* buf = col.valueBuffer().data();
-      double prev = last_column_values_[col_index];
-      double local_min = cs.min_value.value_or(std::numeric_limits<double>::max());
-      double local_max = cs.max_value.value_or(std::numeric_limits<double>::lowest());
-      bool had_valid = cs.run_count > 0;
-      for (std::size_t i = 0; i < count; ++i) {
-        const std::size_t row = first_row + i;
-        if (has_validity && !col.isValid(row)) {
-          cs.null_count++;
-          continue;
-        }
-        const double v = buf[row] ? 1.0 : 0.0;
-        if (v < local_min) {
-          local_min = v;
-        }
-        if (v > local_max) {
-          local_max = v;
-        }
-        if (!had_valid) {
-          cs.run_count = 1;
-          had_valid = true;
-        } else if (v != prev) {
-          cs.is_constant = false;
-          cs.run_count++;
-        }
-        prev = v;
-      }
-      if (had_valid) {
-        cs.min_value = local_min;
-        cs.max_value = local_max;
-      }
-      last_column_values_[col_index] = prev;
-    }
+      return v;
+    });
+  });
+  if (!numeric && kind == StorageKind::kBool) {
+    const uint8_t* buf = col.valueBuffer().data();
+    fold_rows([&](std::size_t row) { return buf[row] ? 1.0 : 0.0; });
   }
+  cs = folded;
+  last_column_values_[col_index] = prev;
 }
 
 void TopicChunkBuilder::computeBulkStringStats(std::size_t col_index, std::size_t first_row, std::size_t count) {
@@ -682,24 +647,8 @@ void TopicChunkBuilder::noteFloat(std::size_t col_index, double value) {
 }
 
 void TopicChunkBuilder::updateColumnStats(std::size_t col_index, double value) {
-  auto& cs = stats_.column_stats[col_index];
-
-  // A NaN is in neither extreme, in any of the three places that compute them (here, the bulk path, appendRowsTo()):
-  // a chunk's stats do not depend on which one built it.
-  if (!std::isnan(value)) {
-    cs.min_value = cs.min_value.has_value() ? std::min(*cs.min_value, value) : value;
-    cs.max_value = cs.max_value.has_value() ? std::max(*cs.max_value, value) : value;
-  }
-
-  // Constancy starts at the first NON-NULL value (as in the bulk path): a
-  // leading null must not make a constant column look varying.
-  if (cs.run_count == 0) {
-    cs.run_count = 1;
-  } else if (value != last_column_values_[col_index]) {
-    cs.is_constant = false;
-    cs.run_count++;
-  }
-  last_column_values_[col_index] = value;
+  // Only non-null values fold: a leading null must not make a constant column look varying.
+  foldValue(stats_.column_stats[col_index], last_column_values_[col_index], value);
 }
 
 // ---------------------------------------------------------------------------
@@ -730,8 +679,8 @@ void TopicChunkBuilder::sortRowsByTimestamp() {
   for (std::size_t i = 0; i < columns_.size(); ++i) {
     TypedColumnBuffer& col = columns_[i];
     PJ_ASSERT(col.rowCount() == perm.size(), "column/timestamp row count mismatch at seal");
-    const StorageKind kind = storageKindOf(column_descriptors_[i].logical_type);
-    TypedColumnBuffer sorted(column_descriptors_[i]);
+    const StorageKind kind = storageKindOf(shared_descriptors_[i]->logical_type);
+    TypedColumnBuffer sorted(*shared_descriptors_[i]);
     for (const std::size_t row : perm) {
       if (!col.isValid(row)) {
         sorted.appendNull();
@@ -781,7 +730,7 @@ TopicChunk TopicChunkBuilder::seal() {
 
   for (std::size_t i = 0; i < num_cols; ++i) {
     const auto& col = columns_[i];
-    const StorageKind kind = storageKindOf(column_descriptors_[i].logical_type);
+    const StorageKind kind = storageKindOf(shared_descriptors_[i]->logical_type);
     const auto& cs = stats_.column_stats[i];
 
     chunk.columns[i].descriptor = shared_descriptors_[i];
@@ -799,7 +748,7 @@ TopicChunk TopicChunkBuilder::seal() {
     } else {
       bool all_integral = false;
       auto encoded = encodeNumbers(viewOf(col), kind, cs, all_integral);
-      if (kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64) {
+      if (isFloatKind(kind)) {
         chunk.stats.column_stats[i].all_integral = all_integral;
       }
       if (encoded.has_value()) {
@@ -833,12 +782,12 @@ void TopicChunkBuilder::sortRows() {
 }
 
 bool TopicChunkBuilder::hasLayoutOf(const TopicChunk& chunk) const {
-  if (chunk.schema_version != schema_id_ || chunk.columns.size() != column_descriptors_.size()) {
+  if (chunk.schema_version != schema_id_ || chunk.columns.size() != shared_descriptors_.size()) {
     return false;
   }
-  for (std::size_t i = 0; i < column_descriptors_.size(); ++i) {
+  for (std::size_t i = 0; i < shared_descriptors_.size(); ++i) {
     const auto& descriptor = chunk.columns[i].descriptor;
-    if (descriptor == nullptr || descriptor->logical_type != column_descriptors_[i].logical_type) {
+    if (descriptor == nullptr || descriptor->logical_type != shared_descriptors_[i]->logical_type) {
       return false;
     }
   }
@@ -850,23 +799,20 @@ TopicChunk TopicChunkBuilder::makeGrowableChunk() const {
   chunk.id = nextChunkId();
   chunk.topic_id = topic_id_;
   chunk.schema_version = schema_id_;
-  chunk.columns.resize(column_descriptors_.size());
-  chunk.stats.column_stats.resize(column_descriptors_.size());
-  for (std::size_t i = 0; i < column_descriptors_.size(); ++i) {
+  chunk.columns.resize(shared_descriptors_.size());
+  chunk.stats.column_stats.resize(shared_descriptors_.size());
+  for (std::size_t i = 0; i < shared_descriptors_.size(); ++i) {
     chunk.columns[i].descriptor = shared_descriptors_[i];
-    switch (storageKindOf(column_descriptors_[i].logical_type)) {
+    const StorageKind kind = storageKindOf(shared_descriptors_[i]->logical_type);
+    switch (kind) {
       case StorageKind::kString:
         chunk.columns[i].data = encoding::DictionaryEncoded{};  // 4-byte indices
         break;
       case StorageKind::kBool:
         chunk.columns[i].data = encoding::PackedBools{};
         break;
-      case StorageKind::kFloat32:
-      case StorageKind::kFloat64:
-        chunk.stats.column_stats[i].all_integral = true;  // of no value yet; appendRowsTo() narrows it
-        chunk.columns[i].data = RawBuffer{};
-        break;
       default:
+        chunk.stats.column_stats[i].all_integral = isFloatKind(kind);  // of no value yet; appendRowsTo() narrows it
         chunk.columns[i].data = RawBuffer{};
         break;
     }
@@ -883,8 +829,7 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
   }
   const std::size_t old_rows = chunk.stats.row_count;
   PJ_ASSERT(old_rows == 0 || timestamps_[first] >= chunk.stats.t_max, "appendRowsTo: rows older than the chunk's");
-  // The usual case, and the cheap one: this builder's own stats cover exactly the rows appended, so no value is read
-  // to compute them. Only a batch cut at a chunk boundary is appended in parts.
+  // A whole batch reuses this builder's stats; only a batch cut at a chunk boundary recomputes them from the values.
   const bool whole_batch = first == 0 && count == timestamps_.size();
 
   for (std::size_t c = 0; c < columns_.size(); ++c) {
@@ -892,12 +837,12 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
     PJ_ASSERT(col.rowCount() == timestamps_.size(), "appendRowsTo: column not padded");
     TopicChunk::Column& out = chunk.columns[c];
     ColumnStats& cs = chunk.stats.column_stats[c];
-    const StorageKind kind = storageKindOf(column_descriptors_[c].logical_type);
+    const StorageKind kind = storageKindOf(shared_descriptors_[c]->logical_type);
     const std::size_t esize = storageKindSize(kind);
 
     // Validity first. A column no row of the batch set, the usual case of a wide sparse topic, and one every row
     // set, take no pass over their rows. The chunk has a bitmap only once it holds a null, as a sealed chunk does.
-    const uint8_t* validity = col.validityBuffer().data();
+    const BitVector& validity = col.validityBuffer();
     std::size_t nulls = 0;
     if (col.nullCount() == col.rowCount()) {
       nulls = count;
@@ -905,7 +850,7 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
       nulls = col.nullCount();
     } else if (col.hasNulls()) {
       for (std::size_t i = 0; i < count; ++i) {
-        nulls += bitIsSet(validity, first + i) ? 0U : 1U;
+        nulls += validity.isValid(first + i) ? 0U : 1U;
       }
     }
     if (nulls > 0 && !out.validity_bitmap.has_value()) {
@@ -922,13 +867,13 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
         bitmap.setValidRange(old_rows, old_rows + count);
       } else if (old_rows % 8 == 0 && first % 8 == 0) {
         // Byte-aligned on both sides: whole bytes, whose spare bits past the last row no reader looks at.
-        std::memcpy(bitmap.mutableData() + old_rows / 8, validity + first / 8, BitVector::bytesForBits(count));
+        std::memcpy(bitmap.mutableData() + old_rows / 8, validity.data() + first / 8, BitVector::bytesForBits(count));
       } else {
         uint8_t* bits = bitmap.mutableData();
         for (std::size_t i = 0; i < count; ++i) {
           const std::size_t bit = old_rows + i;
           const auto mask = static_cast<uint8_t>(1U << (bit % 8));
-          if (bitIsSet(validity, first + i)) {
+          if (validity.isValid(first + i)) {
             bits[bit / 8] |= mask;
           } else {
             bits[bit / 8] &= static_cast<uint8_t>(~mask);
@@ -938,7 +883,7 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
     }
     cs.null_count += static_cast<uint32_t>(nulls);
     const bool all_null = nulls == count;
-    const auto is_null = [&](std::size_t i) { return nulls > 0 && (all_null || !bitIsSet(validity, first + i)); };
+    const auto is_null = [&](std::size_t i) { return nulls > 0 && (all_null || !validity.isValid(first + i)); };
 
     if (kind == StorageKind::kString) {
       // The dictionary is not searched: a string equal to the row before it shares its entry, any other gets a new
@@ -950,7 +895,7 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
         std::memcpy(&last_index, dict.indices.data() + (old_rows - 1) * sizeof(uint32_t), sizeof(uint32_t));
       }
       uint32_t previous_index = kNoRow;  // of the last non-null string, for the run stats
-      if (cs.run_count > 0) {
+      if (cs.run_count > 0 && !all_null) {
         for (std::size_t r = old_rows; r > 0 && previous_index == kNoRow; --r) {
           if (!chunk.isNull(c, r - 1)) {
             std::memcpy(&previous_index, dict.indices.data() + (r - 1) * sizeof(uint32_t), sizeof(uint32_t));
@@ -997,7 +942,7 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
       continue;
     }
 
-    const bool is_float = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
+    const bool is_float = isFloatKind(kind);
     if (whole_batch) {
       // Numbers and bools, from the builder's stats. While a column is constant its one value is its minimum (or a
       // NaN, which has no minimum and equals nothing), so two constant runs are one when their minimums are equal.
@@ -1036,17 +981,7 @@ void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::
     double previous =
         cs.is_constant && cs.min_value.has_value() ? *cs.min_value : std::numeric_limits<double>::quiet_NaN();
     const auto add_value = [&](double v) {
-      if (!std::isnan(v)) {
-        cs.min_value = cs.min_value.has_value() ? std::min(*cs.min_value, v) : v;
-        cs.max_value = cs.max_value.has_value() ? std::max(*cs.max_value, v) : v;
-      }
-      if (cs.run_count == 0) {
-        cs.run_count = 1;
-      } else if (v != previous) {
-        cs.is_constant = false;
-        cs.run_count++;
-      }
-      previous = v;
+      foldValue(cs, previous, v);
       if (is_float && !encoding::isWholeInt64(v)) {
         cs.all_integral = false;
       }
@@ -1096,7 +1031,7 @@ void TopicChunkBuilder::appendRowsOf(const TopicChunk& chunk) {
   std::string text;
   for (std::size_t c = 0; c < columns_.size(); ++c) {
     const TopicChunk::Column& column = chunk.columns[c];
-    const StorageKind kind = storageKindOf(column_descriptors_[c].logical_type);
+    const StorageKind kind = storageKindOf(shared_descriptors_[c]->logical_type);
     if (kind == StorageKind::kString) {
       const auto& dict = std::get<encoding::DictionaryEncoded>(column.data);
       offsets.assign(1, 0);
@@ -1108,10 +1043,7 @@ void TopicChunkBuilder::appendRowsOf(const TopicChunk& chunk) {
       appendColumnStrings(
           c, Span<const uint32_t>(offsets.data(), offsets.size()), Span<const char>(text.data(), text.size()));
     } else if (kind == StorageKind::kBool) {
-      bool_bytes.resize(rows);
-      for (std::size_t r = 0; r < rows; ++r) {
-        bool_bytes[r] = chunk.readBool(c, r) ? 1 : 0;
-      }
+      unpackBools(chunk, c, bool_bytes);
       appendColumn<uint8_t>(c, Span<const uint8_t>(bool_bytes.data(), rows));
     } else {
       const RawBuffer& raw = std::get<RawBuffer>(column.data);
@@ -1136,7 +1068,7 @@ void TopicChunkBuilder::appendRowsOf(const TopicChunkBuilder& other) {
   appendTimestamps(Span<const Timestamp>(other.timestamps_.data(), rows));
   for (std::size_t c = 0; c < columns_.size(); ++c) {
     const TypedColumnBuffer& col = other.columns_[c];
-    const StorageKind kind = storageKindOf(column_descriptors_[c].logical_type);
+    const StorageKind kind = storageKindOf(shared_descriptors_[c]->logical_type);
     if (kind == StorageKind::kString) {
       appendColumnStrings(
           c, Span<const uint32_t>(reinterpret_cast<const uint32_t*>(col.offsetsBuffer().data()), rows + 1),
@@ -1227,10 +1159,8 @@ void TopicChunk::makeGrowable() {
     }
     if (kind == StorageKind::kBool) {
       if (!std::holds_alternative<encoding::PackedBools>(column.data)) {
-        std::vector<uint8_t> bytes(rows);
-        for (std::size_t r = 0; r < rows; ++r) {
-          bytes[r] = readBool(c, r) ? 1 : 0;
-        }
+        std::vector<uint8_t> bytes;
+        unpackBools(*this, c, bytes);
         column.data = encoding::packBools(Span<const uint8_t>(bytes.data(), bytes.size()));
       }
       continue;
@@ -1279,15 +1209,16 @@ void TopicChunk::compact() {
     if (column.validity_bitmap.has_value()) {
       column.validity_bitmap->shrinkToFit();
     }
-    const uint8_t* validity = column.validity_bitmap.has_value() ? column.validity_bitmap->data() : nullptr;
+    const BitVector* validity = column.validity_bitmap.has_value() ? &*column.validity_bitmap : nullptr;
     if (kind == StorageKind::kString) {
       column.data = encoding::dictionaryRecode(std::get<encoding::DictionaryEncoded>(column.data));
     } else if (kind == StorageKind::kBool) {
-      bool_bytes.resize(rows);
-      for (std::size_t r = 0; r < rows; ++r) {
-        bool_bytes[r] = readBool(c, r) ? 1 : 0;
+      std::optional<encoding::EncodedData> constant;
+      if (cs.is_constant) {  // else encodeConstantBools() gives nullopt without reading the rows
+        unpackBools(*this, c, bool_bytes);
+        constant = encodeConstantBools({bool_bytes.data(), rows, rows, validity}, cs);
       }
-      if (auto constant = encodeConstantBools({bool_bytes.data(), rows, rows, validity}, cs); constant.has_value()) {
+      if (constant.has_value()) {
         column.data = std::move(*constant);
       } else {
         std::get<encoding::PackedBools>(column.data).bits.shrinkToFit();
@@ -1296,7 +1227,7 @@ void TopicChunk::compact() {
       RawBuffer& raw = std::get<RawBuffer>(column.data);
       bool all_integral = false;
       auto encoded = encodeNumbers({raw.data(), rows, raw.size(), validity}, kind, cs, all_integral);
-      if (kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64) {
+      if (isFloatKind(kind)) {
         cs.all_integral = all_integral;
       }
       if (encoded.has_value()) {

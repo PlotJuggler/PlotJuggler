@@ -31,23 +31,21 @@ struct DataWriter::Impl {
   explicit Impl(DataEngine& eng) : engine(eng) {}
   DataEngine& engine;
   tsl::robin_map<PJ::TopicId, TopicChunkBuilder> builders;
-  // A topic's rows set aside, oldest first, when their builder filled or before a layout change. A builder that
-  // holds a whole chunk is sealed at once, so a long import between two commits holds encoded chunks and not raw rows;
-  // any other is kept as it is, for TopicStorage::appendRows() to put in the topic's last chunk.
+  // A topic's rows set aside, oldest first, when their builder filled or before a layout change. A whole chunk is
+  // sealed at once, so a long import between commits holds encoded chunks, not raw rows; a partial one waits for
+  // TopicStorage::appendRows().
   struct Pending {
     std::vector<std::variant<TopicChunkBuilder, TopicChunk>> batches;
-    // The chunk the last batch ends in, once committed: the rows it will hold, and the column count of its layout.
-    // builderRows() sizes the next builder from them.
+    // The rows and column count of the chunk the last batch ends in, once committed: builderRows() sizes from them.
     uint32_t tail_fill = 0;
     std::size_t tail_columns = 0;
   };
   tsl::robin_map<PJ::TopicId, Pending> pending_batches;
-  // Each topic's max_chunk_rows, noted when one of its builders is fitted under the engine lock: setBuilderAside()
-  // runs where a caller may hold no lock, and must not read the engine there.
+  // Each topic's max_chunk_rows, noted under the engine lock when a builder is fitted: setBuilderAside() may run
+  // unlocked and must not read the engine.
   tsl::robin_map<PJ::TopicId, uint32_t> max_chunk_rows;
   tsl::robin_map<PJ::TopicId, std::vector<ColumnDescriptor>> topic_columns;
-  // topic_columns as the chunks hold them: one descriptor per column for every chunk this writer makes of the topic,
-  // where each chunk would otherwise allocate its own copy, name included.
+  // topic_columns as the chunks hold them: every chunk this writer makes of the topic shares one copy.
   tsl::robin_map<PJ::TopicId, std::vector<std::shared_ptr<const ColumnDescriptor>>> shared_columns;
 };
 
@@ -558,7 +556,7 @@ std::vector<TopicId> DataWriter::commitRows() {
         storage->columnDescriptors().size() > builder.columnCount()) {
       stale.push_back(topic_id);
     } else {
-      builder.clearRows(storage->descriptor().max_chunk_rows);  // sized when its next row begins
+      builder.clearRows();  // sized when its next row begins (getOrCreateBuilder)
     }
   }
   for (const TopicId topic_id : stale) {
@@ -826,11 +824,9 @@ TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id, const TopicS
 }
 
 uint32_t DataWriter::builderRows(TopicId topic_id, const TopicStorage& storage, std::size_t columns) const {
-  // Sized to end where the chunk its rows will land in fills: the one the rows set aside end in, else the topic's
-  // last. The rows committed then complete that chunk, and the builders after it are whole chunks, which
-  // TopicStorage::appendRows() encodes straight from the builder. Rows of another layout start a chunk
-  // (TopicChunkBuilder::hasLayoutOf), so they get a whole one. A wrong guess (another writer's rows landed first) only
-  // costs a copy.
+  // Ends where the chunk its rows land in fills (the one the set-aside rows end in, else the topic's last), so the
+  // builders after it are whole chunks that TopicStorage::appendRows() encodes straight from the builder. Rows of
+  // another layout start a chunk. A wrong guess (another writer's rows landed first) only costs a copy.
   const uint32_t max_rows = storage.descriptor().max_chunk_rows;
   if (max_rows <= 1) {
     return max_rows;

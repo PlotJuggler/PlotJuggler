@@ -142,11 +142,6 @@ class DataEngine {
   /// the engine.
   bool commitRows(PJ::TopicId topic_id, TopicChunkBuilder& rows);
 
-  /// Re-encodes the last chunk of each of `topics` that commitRows() left in growable form
-  /// (TopicStorage::compactLastChunk). For when a source ends: a chunk that will not fill should not stay stored raw.
-  /// Skipping it costs memory only.
-  void compactLastChunks(PJ::Span<const PJ::TopicId> topics);
-
   /// Evicts, in every dataset, what is older than each topic's newest row minus the window.
   void enforceRetention(PJ::Timestamp retention_window_ns);
 

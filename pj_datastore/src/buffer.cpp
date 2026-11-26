@@ -81,36 +81,19 @@ void BitVector::setNull(std::size_t bit_index) {
   bytes_[bit_index / 8] &= static_cast<uint8_t>(~(1u << (bit_index % 8)));
 }
 
-void BitVector::setNullRange(std::size_t begin, std::size_t end) {
+void BitVector::fillRange(std::size_t begin, std::size_t end, bool valid) {
+  const auto set = [&](std::size_t bit) { valid ? setValid(bit) : setNull(bit); };
   while (begin < end && begin % 8 != 0) {
-    setNull(begin++);
+    set(begin++);
   }
   const std::size_t whole_bytes = (end - begin) / 8;
   if (whole_bytes > 0) {
-    std::memset(bytes_.data() + begin / 8, 0, whole_bytes);
+    std::memset(bytes_.data() + begin / 8, valid ? 0xFF : 0, whole_bytes);
     begin += whole_bytes * 8;
   }
   while (begin < end) {
-    setNull(begin++);
+    set(begin++);
   }
-}
-
-void BitVector::setValidRange(std::size_t begin, std::size_t end) {
-  while (begin < end && begin % 8 != 0) {
-    setValid(begin++);
-  }
-  const std::size_t whole_bytes = (end - begin) / 8;
-  if (whole_bytes > 0) {
-    std::memset(bytes_.data() + begin / 8, 0xFF, whole_bytes);
-    begin += whole_bytes * 8;
-  }
-  while (begin < end) {
-    setValid(begin++);
-  }
-}
-
-bool BitVector::isValid(std::size_t bit_index) const {
-  return (bytes_[bit_index / 8] & (1u << (bit_index % 8))) != 0;
 }
 
 std::size_t BitVector::countNulls(std::size_t num_bits) const {

@@ -56,7 +56,7 @@ constexpr uint8_t kFractionalEvidence = 2;
     return kNoWholeEvidence;
   }
   const PJ::StorageKind kind = PJ::storageKindOf(descriptor->logical_type);
-  if (kind != PJ::StorageKind::kFloat32 && kind != PJ::StorageKind::kFloat64) {
+  if (!PJ::isFloatKind(kind)) {
     return kNoWholeEvidence;
   }
   if (c < chunk.stats.column_stats.size() && chunk.stats.column_stats[c].null_count >= chunk.stats.row_count) {
@@ -81,12 +81,7 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   }
   // The chunk that stops being the last will not gain rows again: if appendRows() left it unencoded, it is encoded
   // now, or it would stay stored raw.
-  if (!sealed_chunks_.empty()) {
-    if (TopicChunk& last = sealed_chunks_.back();
-        last.stats.row_count < descriptor_.max_chunk_rows && last.isGrowable()) {
-      compactChunk(last);
-    }
-  }
+  compactLastChunk();
   // Derived nodes skip chunks whose id is at or below what they consumed, so ids must ascend in commit order. A chunk
   // sealed before one this topic held (another writer held it, or a flush moved it) gets a fresh id.
   if (chunk.id <= newest_chunk_id_ever_ || chunk.id <= evicted_through_chunk_id_ ||
@@ -104,12 +99,7 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   }
 
   // An append only widens the extrema, so the cached aggregate absorbs it without a rescan.
-  if (chunk_agg_valid_) {
-    chunk_agg_t_min_ = std::min(chunk_agg_t_min_, chunk.stats.t_min);
-    chunk_agg_t_max_ = std::max(chunk_agg_t_max_, chunk.stats.t_max);
-    chunk_agg_row_count_ += chunk.stats.row_count;
-    chunk_agg_byte_size_ += chunk.stats.encoded_byte_size;
-  }
+  foldChunkAggregate(chunk.stats, 0, 0);
   if (whole_agg_valid_) {
     foldWholeNumbers(chunk, +1);
   }
@@ -117,6 +107,15 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   unretireColumnsWithValues(chunk);
   sealed_chunks_.push_back(std::move(chunk));
   return PJ::okStatus();
+}
+
+void TopicStorage::foldChunkAggregate(const ChunkStats& stats, uint32_t rows_before, uint64_t bytes_before) {
+  if (chunk_agg_valid_) {
+    chunk_agg_t_min_ = std::min(chunk_agg_t_min_, stats.t_min);
+    chunk_agg_t_max_ = std::max(chunk_agg_t_max_, stats.t_max);
+    chunk_agg_row_count_ += stats.row_count - rows_before;
+    chunk_agg_byte_size_ += stats.encoded_byte_size - bytes_before;
+  }
 }
 
 template <typename Change>
@@ -136,12 +135,7 @@ void TopicStorage::changeStoredChunk(TopicChunk& chunk, Change&& change) {
   std::forward<Change>(change)();
   chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
 
-  if (chunk_agg_valid_) {
-    chunk_agg_t_min_ = std::min(chunk_agg_t_min_, chunk.stats.t_min);
-    chunk_agg_t_max_ = std::max(chunk_agg_t_max_, chunk.stats.t_max);
-    chunk_agg_row_count_ += chunk.stats.row_count - rows_before;
-    chunk_agg_byte_size_ += chunk.stats.encoded_byte_size - bytes_before;
-  }
+  foldChunkAggregate(chunk.stats, rows_before, bytes_before);
   if (whole_agg_valid_) {
     for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
       const uint8_t evidence = wholeEvidence(chunk, c);
@@ -161,12 +155,10 @@ void TopicStorage::extendLastChunk(
     ++series_generation_;
   }
   changeStoredChunk(chunk, [&] {
-    if (!chunk.isGrowable()) {
-      chunk.makeGrowable();
-    }
+    chunk.makeGrowable();
     // A chunk put back by a restore after newer ones were read: under its old id its new rows would not be seen.
     if (chunk.id < newest_chunk_id_ever_) {
-      chunk.replaced_id = chunk.replaced_id != 0 ? chunk.replaced_id : chunk.id;
+      chunk.replaced_id = chunk.firstId();
       chunk.id = TopicChunkBuilder::nextChunkId();
     }
     newest_chunk_id_ever_ = chunk.id;
@@ -182,11 +174,9 @@ void TopicStorage::compactChunk(TopicChunk& chunk) {
 void TopicStorage::mergeIntoLastChunk(TopicChunk& chunk, const TopicChunkBuilder& batch) {
   ++series_generation_;  // rows land behind rows readers hold
   changeStoredChunk(chunk, [&] {
-    if (!chunk.isGrowable()) {
-      chunk.makeGrowable();
-    }
-    const ChunkId first_id = chunk.replaced_id != 0 ? chunk.replaced_id : chunk.id;
-    chunk = batch.mergedWith(chunk);  // a new id: rows moved, and a row never changes under its chunk's id
+    chunk.makeGrowable();
+    const ChunkId first_id = chunk.firstId();
+    chunk = batch.mergedWith(chunk);  // a new id: rows moved
     chunk.replaced_id = first_id;
     newest_chunk_id_ever_ = chunk.id;
   });
@@ -201,6 +191,11 @@ void TopicStorage::appendRows(TopicChunkBuilder& batch) {
   batch.sortRows();
   const std::size_t total = batch.rowCount();
   const std::size_t max_rows = std::max<uint32_t>(descriptor_.max_chunk_rows, 1);
+  const auto compact_if_full = [&](TopicChunk& chunk) {
+    if (chunk.stats.row_count >= max_rows) {
+      compactChunk(chunk);
+    }
+  };
   std::size_t first = 0;
   while (first < total) {
     TopicChunk* last = sealed_chunks_.empty() ? nullptr : &sealed_chunks_.back();
@@ -209,23 +204,16 @@ void TopicStorage::appendRows(TopicChunkBuilder& batch) {
     if (has_room && batch.timestampAt(first) >= last->stats.t_max) {
       const std::size_t count = std::min(total - first, max_rows - last->stats.row_count);
       extendLastChunk(*last, batch, first, count);
-      if (last->stats.row_count >= max_rows) {
-        compactChunk(*last);
-      }
+      compact_if_full(*last);
       first += count;
       continue;
     }
-    // Rows older than the last chunk's newest (a topic of several publishers, stamped by each): appended they would
-    // leave the chunk unsorted, so they are merged into it in timestamp order, which moves rows and so gives the chunk
-    // a new id, with the old one kept in TopicChunk::replaced_id. Readers rebuild, as for any late chunk; a derived
-    // node that read rows under the old id replays. When the merge does not fit in the chunk, or is too large, the
-    // rows start a chunk of their own that overlaps it.
+    // Rows older than the last chunk's newest would leave it unsorted: merge them in under a new id (`replaced_id`
+    // keeps the old). Too large or another layout: they start a chunk that overlaps it.
     if (has_room && first == 0 && last->stats.row_count + total <= max_rows &&
         (last->stats.row_count + total) * batch.columnCount() <= kLateMergeCells) {
       mergeIntoLastChunk(*last, batch);
-      if (last->stats.row_count >= max_rows) {
-        compactChunk(*last);
-      }
+      compact_if_full(*last);
       return;
     }
     const std::size_t count = std::min(total - first, max_rows);

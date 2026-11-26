@@ -1263,8 +1263,11 @@ struct WriteCore {
   void finish() {
     auto lock = engine.lockEngine();
     flushPending();
-    const std::vector<TopicId> topics(written_topics.begin(), written_topics.end());
-    engine.compactLastChunks(Span<const TopicId>(topics.data(), topics.size()));
+    for (const TopicId topic_id : written_topics) {
+      if (auto* storage = engine.getTopicStorage(topic_id)) {
+        storage->compactLastChunk();
+      }
+    }
     written_topics.clear();
   }
 
@@ -2577,10 +2580,6 @@ DatastoreToolboxHost& DatastoreToolboxHost::operator=(DatastoreToolboxHost&&) no
 
 PJ_toolbox_host_t DatastoreToolboxHost::raw() noexcept {
   return PJ_toolbox_host_t{.ctx = state_.get(), .vtable = &kToolboxVTable};
-}
-
-void DatastoreToolboxHost::finish() {
-  state_->core.write.finish();
 }
 
 void DatastoreToolboxHost::flushPending() {

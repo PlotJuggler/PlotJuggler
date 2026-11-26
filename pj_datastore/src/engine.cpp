@@ -395,18 +395,8 @@ bool DataEngine::commitRows(TopicId topic_id, TopicChunkBuilder& rows) {
     return false;
   }
   storage->appendRows(rows);
-  // A recomputed filter output retired by a reload reappears once fresh rows land.
   impl_->retired_topic_ids.erase(topic_id);
   return true;
-}
-
-void DataEngine::compactLastChunks(Span<const TopicId> topics) {
-  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
-  for (const TopicId topic_id : topics) {
-    if (auto* storage = getTopicStorage(topic_id)) {
-      storage->compactLastChunk();
-    }
-  }
 }
 
 void DataEngine::enforceRetention(Timestamp retention_window_ns) {

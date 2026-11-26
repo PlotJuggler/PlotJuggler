@@ -19,8 +19,8 @@ invariants; each header's doc-comment owns its API contract; measurements and pl
   recompute (processors are stateful) and runs over the whole input column read through the same reader as the raw
   curve.
 - **`PointSeriesXY`** pairs two columns into an XY series over a time-ordered alignment index. The index holds the
-  paired values, copied under the engine lock, so painting reads nothing of the store (a topic's last chunk changes
-  under a writer's commit). The plot clears it synchronously before an in-place dataset reload swaps chunks
+  paired values, copied under the engine lock: nothing read from a chunk outlives that lock (`TopicStorage`). The
+  plot clears it synchronously before an in-place dataset reload swaps chunks
   (`datasetAboutToBeReplaced`, a `Qt::DirectConnection`), as it clears the other adapters' caches. It ignores the
   display offset.
 - **`StateSeriesAdapter`** is the discrete-series counterpart feeding the State Transitions strip: a full-rebuild

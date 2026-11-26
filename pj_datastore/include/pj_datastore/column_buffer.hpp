@@ -30,6 +30,10 @@ enum class StorageKind : uint8_t {
   kString,
 };
 
+[[nodiscard]] constexpr bool isFloatKind(StorageKind kind) noexcept {
+  return kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
+}
+
 [[nodiscard]] constexpr StorageKind storageKindOf(PrimitiveType t) noexcept {
   switch (t) {
     case PrimitiveType::kFloat32:

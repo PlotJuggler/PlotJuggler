@@ -78,8 +78,8 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   start of the chunk. A reader tells "this chunk lacks the column" from "this cell is null" by the chunk's column
   count, in about a dozen places, and the read tools report the difference: for an array that grows at message 1,550
   of 3,000, `read_series` gave 1,976 samples with 526 invalid where the file holds 1,450, and `export_series` wrote the
-  526 NaN rows. Exploratory QA found it; the suite did not, since plots, the tracker and filters skip nulls
-  (`scripts/qa/regressions/growing_array_field_has_no_rows_before_it.pjqa` now covers it). A chunk keeps one layout.
+  526 NaN rows. Plots, the tracker and filters skip nulls, so only the read tools show it;
+  `scripts/qa/regressions/growing_array_field_has_no_rows_before_it.pjqa` covers it. A chunk keeps one layout.
 - **Late rows:** with header timestamps, a `/tf` of several publishers had 97 chunks for 89,995 rows (88 is the
   minimum), 17 of them cut by rows older than the last chunk's newest; a live stream would cut such a topic about one
   commit in five. Merging those rows into the last chunk under a new id left 90 chunks. With the loader's default,
@@ -87,7 +87,7 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **A chunk given a new id in place says which id it replaces.** A SISO node reads a chunk it has not seen from its
   first row, and replays only when the chunk starts before its last fed timestamp. A last chunk merged with a late
   row starts where it did, so a node that had fed nothing after the chunk's first timestamp fed those rows twice (a
-  topic of two publishers: x at 100, y at 110, then x at 105; found by review). The chunk now keeps the id it replaced
+  topic of two publishers: x at 100, y at 110, then x at 105). The chunk now keeps the id it replaced
   (`TopicChunk::replaced_id`) and such a node replays, so every late merge replays the nodes that read the topic,
   where a late chunk of its own replayed only those that had fed past it. Re-test when derived series over topics
   with late rows are slow: the rows before the first late one keep their positions, so a node that fed nothing after
@@ -95,13 +95,15 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **Not tried (reasoning):** sealing a snapshot of the growing rows at every commit costs their whole count times the
   columns each time, about 13 M cells a commit for a 13k-column topic near a full chunk. Merging small chunks in tiers
   leaves about ten trailing chunks a topic and renumbers chunks derived nodes have read.
-- **Re-test:** when topics with growing arrays matter more than these 193 chunks: the last chunk could gain a column
-  if each column of a chunk recorded the row it starts at and every read path took the rows before it as rows the
-  chunk lacks. When a wide topic is late often (count the chunks that are not full and whose successor starts
-  earlier): a late merge rewrites the whole last chunk, and past `kLateMergeCells` the rows start a chunk of their
-  own; merging only the rows behind the first late one would lift that. And when the per-commit cost matters: it is
-  one visit per column of every topic with new rows, which a list of the columns a batch set would cut for sparse
-  topics.
+- **Re-test:**
+  - When topics with growing arrays matter more than these 193 chunks: the last chunk could gain a column if each
+    column of a chunk recorded the row it starts at and every read path took the rows before it as rows the chunk
+    lacks.
+  - When a wide topic is late often (count the chunks that are not full and whose successor starts earlier): a late
+    merge rewrites the whole last chunk, and past `kLateMergeCells` the rows start a chunk of their own; merging only
+    the rows behind the first late one would lift that.
+  - When the per-commit cost matters: it is one visit per column of every topic with new rows, which a list of the
+    columns a batch set would cut for sparse topics.
 
 ## ObjectStore costs
 

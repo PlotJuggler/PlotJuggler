@@ -411,12 +411,12 @@ class SessionManager : public QObject {
 
   // Begins a transactional in-place refill of `dataset_id` that keeps its ids, so bound plot adapters stay valid and
   // the refill writes back into the same ids. On return, on the GUI thread with no event loop, it has:
-  //   1) emitted datasetAboutToBeReplaced (adapters drop cached TopicChunk*),
+  //   1) emitted datasetAboutToBeReplaced (adapters drop their caches of the old values),
   //   2) detached (moved aside, not freed) the scalar chunks and object entries, sharing each prior object topic's
   //      parser slot,
   //   3) notifyIngest(<the dataset's topic ids>, live=false), so the UI shows it empty.
-  // 1 before 2, or cached chunk pointers dangle. The caller commit()s the guard on success (or to keep a partial
-  // load); otherwise its destructor rolls back to the exact prior data.
+  // 1 before 2, or an adapter keeps serving the detached data. The caller commit()s the guard on success (or to keep a
+  // partial load); otherwise its destructor rolls back to the exact prior data.
   [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
   /// True from beginRefill until the dataset's guard commits or rolls back. Meanwhile the dataset's earliest-sample pin
   /// is held (a static reference's is dropped instead), so emptying it does not move the time origin ("Use time

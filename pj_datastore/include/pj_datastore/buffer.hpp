@@ -63,15 +63,22 @@ class BitVector {
   void setNull(std::size_t bit_index);
 
   /// setNull() over [begin, end), whole bytes at a time. Same bounds rule.
-  void setNullRange(std::size_t begin, std::size_t end);
+  void setNullRange(std::size_t begin, std::size_t end) {
+    fillRange(begin, end, false);
+  }
 
   /// setValid() over [begin, end), whole bytes at a time. Same bounds rule.
-  void setValidRange(std::size_t begin, std::size_t end);
+  void setValidRange(std::size_t begin, std::size_t end) {
+    fillRange(begin, end, true);
+  }
 
   /// Gives back the capacity past the bits held.
   void shrinkToFit();
 
-  [[nodiscard]] bool isValid(std::size_t bit_index) const;
+  // Inline: per-cell loops in other translation units call it.
+  [[nodiscard]] bool isValid(std::size_t bit_index) const {
+    return (bytes_[bit_index / 8] & (1u << (bit_index % 8))) != 0;
+  }
 
   [[nodiscard]] std::size_t countNulls(std::size_t num_bits) const;
 
@@ -93,6 +100,8 @@ class BitVector {
   [[nodiscard]] bool empty() const noexcept;
 
  private:
+  void fillRange(std::size_t begin, std::size_t end, bool valid);
+
   std::vector<uint8_t> bytes_;
   std::size_t bit_count_ = 0;
 };

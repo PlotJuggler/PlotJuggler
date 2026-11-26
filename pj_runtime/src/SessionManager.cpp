@@ -1187,7 +1187,7 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   //     On-demand results go before the detach, so a rollback cannot bring back one of the old meaning, and nothing is
   //     served from detached or partial data until commit or rollback.
   session.suspendOnDemand(dataset_id);
-  // (1) Adapters drop cached TopicChunk* before any deque moves.
+  // (1) Adapters drop their caches of the old values before any deque moves.
   session.announceRefill(dataset_id);
   // (2) Detach, not free, keeping the ids registered for the refill.
   scalar_snapshot_ = session.dataEngine().detachDatasetChunks(dataset_id);
@@ -1459,8 +1459,8 @@ std::size_t RefillGuard::snapshotBytes() const noexcept {
 void SessionManager::replaceDataset(
     DataEngine& staged_engine, ObjectStore& staged_store, DatasetId staged_id, DatasetId primary_id,
     std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers) {
-  // (1) Adapters drop cached TopicChunk* before any deque is touched. Direct same-thread connections, and no event loop
-  // runs here (nor in the caller until the catalog rebuild), so no slot sees the freed chunks.
+  // (1) Adapters drop their caches of the old values before any deque is touched. Direct same-thread connections, and
+  // no event loop runs here (nor in the caller until the catalog rebuild), so no slot sees the freed chunks.
   notifyDatasetAboutToBeReplaced(primary_id);
   suspendOnDemand(primary_id);
 
@@ -1520,8 +1520,8 @@ void SessionManager::replaceDataset(
 
 std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
     DatasetId anchor, const std::vector<DatasetMergeSource>& sources) {
-  // (1) Adapters bound to the anchor or a source drop cached TopicChunk* (no event loop runs here). The helper also
-  // invalidates the minimum caches, since an object-only merge may notify no scalar topic later.
+  // (1) Adapters bound to the anchor or a source drop their caches of the old values (no event loop runs here). The
+  // helper also invalidates the minimum caches, since an object-only merge may notify no scalar topic later.
   notifyDatasetAboutToBeReplaced(anchor);
   for (const auto& source : sources) {
     notifyDatasetAboutToBeReplaced(source.dataset_id);
