@@ -10,7 +10,6 @@
 #include <set>
 #include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 #include "pj_base/builtin/plot_markers.hpp"
@@ -265,50 +264,39 @@ void AppSession::forEachVisibleRawRange(
   const DataReader reader = session_manager_->createReader();
   const ObjectStore& object_store = session_manager_->objectStore();
 
-  // Bounds come from the CATALOG-VISIBLE items per topic: the engine retains removed/trashed topics' data (append-only
+  // Bounds come from the topics the CATALOG shows: the engine retains removed/trashed topics' data (append-only
   // tombstones), and a hidden topic must not stretch the timeline even while sibling topics keep its dataset visible.
-  // Multi-field topics surface one catalog item per field; each underlying topic is bounded once.
-  std::unordered_set<TopicId> seen_topics;
-  std::unordered_set<uint32_t> seen_object_topics;
+  // One visit per topic, from the catalog's own list of them: this runs on every ingest notification, and a walk of
+  // every series took milliseconds at ~100k of them.
+  const CatalogModel::ShownTopics shown = catalog_model_->shownTopics();
   std::unordered_map<DatasetId, bool> static_references;
-  // Unordered walk: every caller folds the visits into a min/max or a set, and this runs on every ingest notification,
-  // where items()' copy and collated sort of the whole catalog takes about a second at ~100k series.
-  catalog_model_->forEachItem([&](const CatalogItem& item) {
-    auto [reference, inserted] = static_references.try_emplace(item.dataset_id, false);
+  const auto is_static_reference = [&](DatasetId dataset_id) {
+    auto [reference, inserted] = static_references.try_emplace(dataset_id, false);
     if (inserted) {
-      reference->second = session_manager_->isStaticReferenceDataset(item.dataset_id);
+      reference->second = session_manager_->isStaticReferenceDataset(dataset_id);
     }
-    if (reference->second) {
-      return;
+    return reference->second;
+  };
+  for (const auto& [dataset_id, topic_id] : shown.scalar) {
+    if (is_static_reference(dataset_id)) {
+      continue;
     }
-    Timestamp raw_min = 0;
-    Timestamp raw_max = 0;
-    if (const ScalarFieldPayload* scalar = asScalarField(item)) {
-      if (!seen_topics.insert(scalar->topic_id).second) {
-        return;
-      }
-      const auto metadata = reader.getMetadata(scalar->topic_id);
-      if (!metadata.has_value() || metadata->total_row_count == 0) {
-        return;
-      }
-      raw_min = metadata->time_range_min;
-      raw_max = metadata->time_range_max;
-    } else if (const ObjectTopicPayload* object = asObjectTopic(item)) {
-      if (!seen_object_topics.insert(object->object_topic_id.id).second) {
-        return;
-      }
-      // A marker set or an on-demand result is host-published off the data clock (a finding sits at
-      // kFindingTimestamp): it never stretches a range.
-      if (object_store.entryCount(object->object_topic_id) == 0 ||
-          isOffClockTopic(object_store.descriptor(object->object_topic_id))) {
-        return;
-      }
-      std::tie(raw_min, raw_max) = object_store.timeRange(object->object_topic_id);
-    } else {
-      return;
+    const auto metadata = reader.getMetadata(topic_id);
+    if (!metadata.has_value() || metadata->total_row_count == 0) {
+      continue;
     }
-    visit(item.dataset_id, raw_min, raw_max);
-  });
+    visit(dataset_id, metadata->time_range_min, metadata->time_range_max);
+  }
+  for (const auto& [dataset_id, object_topic_id] : shown.object) {
+    // A marker set or an on-demand result is host-published off the data clock (a finding sits at
+    // kFindingTimestamp): it never stretches a range.
+    if (is_static_reference(dataset_id) || object_store.entryCount(object_topic_id) == 0 ||
+        isOffClockTopic(object_store.descriptor(object_topic_id))) {
+      continue;
+    }
+    const auto [raw_min, raw_max] = object_store.timeRange(object_topic_id);
+    visit(dataset_id, raw_min, raw_max);
+  }
 }
 
 std::optional<PJ::Range<PJ::Timestamp>> AppSession::datasetRawTimeRange(DatasetId dataset_id) const {

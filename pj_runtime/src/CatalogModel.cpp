@@ -185,28 +185,58 @@ void collectTypeTreeLeaves(
   return columns;
 }
 
-[[nodiscard]] std::vector<ColumnDescriptor> topicColumns(const TopicStorage& storage, const TypeTreeNode* type_tree) {
+// A well-mixed hash of `value` under `tag`: summed where the order does not matter, chained (the result as the next
+// tag) where it does.
+[[nodiscard]] std::uint64_t mixHash(std::uint64_t tag, std::uint64_t value) {
+  std::uint64_t x = (tag * 1099511628211ULL) ^ (value + 0x9E3779B97F4A7C15ULL);
+  x ^= x >> 30;
+  x *= 0xBF58476D1CE4E5B9ULL;
+  x ^= x >> 27;
+  return x;
+}
+
+// The columns a topic's items come from: the storage's own, else its first chunk's, else its type tree's. The last two
+// are built into `scratch`; the first is returned as it is, valid while the caller holds the engine lock.
+[[nodiscard]] const std::vector<ColumnDescriptor>& topicColumns(
+    const TopicStorage& storage, const TypeTreeNode* type_tree, std::vector<ColumnDescriptor>& scratch) {
   if (!storage.columnDescriptors().empty()) {
     return storage.columnDescriptors();
   }
 
   const auto& chunks = storage.sealedChunks();
   if (!chunks.empty()) {
-    std::vector<ColumnDescriptor> columns;
-    columns.reserve(chunks.front().columns.size());
+    scratch.reserve(chunks.front().columns.size());
     for (const auto& column : chunks.front().columns) {
       if (column.descriptor) {
-        columns.push_back(*column.descriptor);
+        scratch.push_back(*column.descriptor);
       }
     }
-    return columns;
+  } else if (type_tree != nullptr) {
+    scratch = columnsFromTypeTree(*type_tree);
   }
+  return scratch;
+}
 
-  if (type_tree != nullptr) {
-    return columnsFromTypeTree(*type_tree);
+// Everything a scalar topic's items are derived from, in one number: a topic whose hash has not moved since its items
+// were derived keeps them (CatalogModel::rebuildNow). `dataset_hash` covers what they take from their dataset;
+// `columns` are topicColumns(), read under the engine lock like `storage`.
+[[nodiscard]] std::uint64_t scalarTopicSourceHash(
+    std::uint64_t dataset_hash, const std::string& topic_name, const std::vector<ColumnDescriptor>& columns,
+    const TopicStorage& storage) {
+  std::uint64_t hash = mixHash(dataset_hash, std::hash<std::string>{}(topic_name));
+  hash = mixHash(hash, columns.size());
+  for (const ColumnDescriptor& column : columns) {
+    hash = mixHash(
+        hash, (static_cast<std::uint64_t>(column.field_id) << 8) ^ static_cast<std::uint64_t>(column.logical_type));
+    hash = mixHash(hash, std::hash<std::string>{}(column.field_path));
   }
-
-  return {};
+  // Which float columns hold whole numbers only (ScalarFieldPayload::whole_numbers_only), and which are retired.
+  hash = mixHash(hash, storage.wholeNumbersSignature());
+  std::uint64_t retired = 0;
+  for (const FieldId field_id : storage.retiredColumns()) {
+    retired += mixHash(3, field_id);
+  }
+  return mixHash(hash, retired);
 }
 
 }  // namespace
@@ -269,10 +299,61 @@ struct CatalogModel::Impl {
   tsl::robin_map<DatasetId, std::array<tsl::robin_map<std::string, ScalarFieldPayload>, 2>> scalar_lookups;
   // datasets(), filled on first read.
   std::optional<std::vector<std::pair<DatasetId, QString>>> datasets;
+  // shownTopics(), computed on first read, for the same reason.
+  std::optional<ShownTopics> shown_topics;
+
+  // A scalar topic's items as of the last rebuild: the hash of everything they were derived from
+  // (scalarTopicSourceHash) and their keys. A rebuild that may reuse them (rebuildIfChanged) skips a topic whose hash
+  // has not moved, so it costs the topics that changed and not the catalog: a load that keeps adding columns to a few
+  // topics re-derived ~100k items a second.
+  struct ScalarTopicItems {
+    std::uint64_t source_hash = 0;
+    DatasetId dataset_id = 0;
+    QString topic_name;
+    std::vector<QString> keys;
+  };
+  using ScalarTopicMap = tsl::robin_map<TopicId, ScalarTopicItems>;
+  ScalarTopicMap scalar_topics;
+  // Keys of the items that are not scalar fields: object topics and advertised placeholders.
+  std::vector<QString> other_keys;
+  // False once anything but rebuildNow() edited `items`: scalar_topics and other_keys then no longer describe them,
+  // and the next rebuild derives everything.
+  bool topic_items_valid = false;
+  std::size_t scalar_topics_derived = 0;  ///< for scalarTopicsDerived()
 
   void dropCaches() {
     scalar_lookups.clear();
     datasets.reset();
+    shown_topics.reset();
+    topic_items_valid = false;
+  }
+
+  // Puts `fresh` in place of the items `topic` had, and adds what that changed to the three lists.
+  void replaceScalarTopicItems(
+      ScalarTopicItems& topic, std::vector<CatalogItem>&& fresh, std::vector<CatalogItem>& added, QStringList& removed,
+      QStringList& changed) {
+    std::vector<QString> keys;
+    keys.reserve(fresh.size());
+    NameSet fresh_keys;
+    fresh_keys.reserve(fresh.size());
+    for (CatalogItem& item : fresh) {
+      keys.push_back(item.key);
+      fresh_keys.insert(item.key);
+      const auto existing = items.find(keys.back());
+      if (existing == items.end()) {
+        added.push_back(item);
+        items.insert({keys.back(), std::move(item)});
+      } else if (!(existing->second == item)) {
+        changed.push_back(keys.back());
+        existing.value() = std::move(item);
+      }
+    }
+    for (const QString& key : topic.keys) {
+      if (fresh_keys.count(key) == 0 && items.erase(key) > 0) {
+        removed.push_back(key);
+      }
+    }
+    topic.keys = std::move(keys);
   }
   // Datasets hidden by clearAll: rebuildFromDatastore skips them entirely.
   // A reload of the same file creates a fresh DatasetId not in this set, so
@@ -375,6 +456,10 @@ std::vector<CatalogItem> CatalogModel::items() const {
 
 std::size_t CatalogModel::wholeCatalogWalks() const noexcept {
   return impl_->whole_catalog_walks.load(std::memory_order_relaxed);
+}
+
+std::size_t CatalogModel::scalarTopicsDerived() const noexcept {
+  return impl_->scalar_topics_derived;
 }
 
 void CatalogModel::forEachItem(const std::function<void(const CatalogItem&)>& visit) const {
@@ -673,6 +758,32 @@ std::vector<std::pair<DatasetId, QString>> CatalogModel::datasets() const {
   return *impl_->datasets;
 }
 
+CatalogModel::ShownTopics CatalogModel::shownTopics() const {
+  if (!impl_->shown_topics) {
+    ShownTopics shown;
+    tsl::robin_set<TopicId> seen_scalar;
+    tsl::robin_set<uint32_t> seen_object;
+    for (const auto& [key, item] : impl_->items) {
+      (void)key;
+      if (const ScalarFieldPayload* scalar = asScalarField(item)) {
+        if (seen_scalar.insert(scalar->topic_id).second) {
+          shown.scalar.emplace_back(item.dataset_id, scalar->topic_id);
+        }
+      } else if (const ObjectTopicPayload* object = asObjectTopic(item)) {
+        if (seen_object.insert(object->object_topic_id.id).second) {
+          shown.object.emplace_back(item.dataset_id, object->object_topic_id);
+        }
+      }
+    }
+    std::sort(shown.scalar.begin(), shown.scalar.end());
+    std::sort(shown.object.begin(), shown.object.end(), [](const auto& lhs, const auto& rhs) {
+      return std::pair(lhs.first, lhs.second.id) < std::pair(rhs.first, rhs.second.id);
+    });
+    impl_->shown_topics = std::move(shown);
+  }
+  return *impl_->shown_topics;
+}
+
 std::vector<DatasetId> CatalogModel::datasetIds() const {
   const auto listed = datasets();
   std::vector<DatasetId> ids;
@@ -817,19 +928,20 @@ void CatalogModel::rebuildFromDatastore() {
   // next ingest rebuilds instead of skipping the change.
   const std::uint64_t fingerprint = catalogFingerprint();
   const auto started = std::chrono::steady_clock::now();
-  rebuildNow();
+  rebuildNow(/*reuse_unchanged_topics=*/false);
   impl_->recordRebuildCost(started);
   impl_->last_fingerprint = fingerprint;
 }
 
 void CatalogModel::rebuildIfChanged() {
-  // Most ingest batches only append rows: skip when nothing the catalog lists changed.
+  // Most ingest batches only append rows: skip when nothing the catalog lists changed, else re-derive only the
+  // topics that changed.
   const std::uint64_t fp = catalogFingerprint();
   if (impl_->last_fingerprint == fp) {
     return;
   }
   const auto started = std::chrono::steady_clock::now();
-  rebuildNow();
+  rebuildNow(/*reuse_unchanged_topics=*/true);
   impl_->recordRebuildCost(started);
   impl_->last_fingerprint = fp;  // taken before the rebuild — see rebuildFromDatastore
 }
@@ -842,13 +954,7 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
   // Order-independent accumulation (sum of well-mixed per-element hashes) so it
   // does not depend on list*() enumeration order. Allocation-light: only the
   // small vectors returned by list*(); no per-column QString building.
-  const auto mix = [](std::uint64_t tag, std::uint64_t value) -> std::uint64_t {
-    std::uint64_t x = (tag * 1099511628211ULL) ^ (value + 0x9E3779B97F4A7C15ULL);
-    x ^= x >> 30;
-    x *= 0xBF58476D1CE4E5B9ULL;
-    x ^= x >> 27;
-    return x;
-  };
+  const auto mix = &mixHash;
   std::uint64_t fp = 0;
 
   if (impl_->session != nullptr) {
@@ -919,7 +1025,7 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
   return fp;
 }
 
-void CatalogModel::rebuildNow() {
+void CatalogModel::rebuildNow(bool reuse_unchanged_topics) {
   if (impl_->session == nullptr) {
     if (!impl_->items.empty()) {
       impl_->items.clear();
@@ -929,7 +1035,21 @@ void CatalogModel::rebuildNow() {
     return;
   }
 
-  Impl::ItemMap next_items;
+  // In place: the items are edited topic by topic, and a scalar topic whose sources did not change is left alone
+  // (Impl::ScalarTopicItems). Otherwise the whole catalog is derived anew and compared with the one before. Both end
+  // with the same items and announce the same changes.
+  const bool in_place = reuse_unchanged_topics && impl_->topic_items_valid;
+  const bool had_items = !impl_->items.empty();
+  Impl::ItemMap next_items;  // the whole next catalog; in place, only its items that are not scalar fields
+  Impl::ScalarTopicMap next_scalar_topics;
+  tsl::robin_set<TopicId> live_topics;  // in place: the scalar topics this pass went through
+  std::vector<QString> next_other_keys;
+  std::vector<CatalogItem> added_items;
+  QStringList removed_keys;
+  QStringList changed_keys;
+  if (!in_place) {
+    next_items.reserve(impl_->items.size());
+  }
   const DataReader reader = impl_->session->createReader();
   DataEngine& engine = impl_->session->dataEngine();
   ObjectStore& object_store = impl_->session->objectStore();
@@ -953,6 +1073,15 @@ void CatalogModel::rebuildNow() {
     }
 
     const QString dataset_label = QString::fromStdString(engine.datasetLabel(dataset_id));
+    // What every item of the dataset takes from it: its label, and the names removed from it.
+    std::uint64_t dataset_hash = mixHash(1, qHash(dataset_label));
+    if (removed_names_for_dataset != nullptr) {
+      std::uint64_t removed_names = 0;
+      for (const QString& name : *removed_names_for_dataset) {
+        removed_names += mixHash(2, qHash(name));
+      }
+      dataset_hash = mixHash(dataset_hash, removed_names);
+    }
 
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
       if (ephemeral_outputs.count(topic_id) > 0) {
@@ -974,13 +1103,24 @@ void CatalogModel::rebuildNow() {
       std::vector<ColumnDescriptor> columns;
       std::vector<bool> whole_numbers_only;
       std::vector<bool> retired;
+      std::uint64_t source_hash = 0;
       {
         const auto lock = engine.lockEngine();
         const TopicStorage* storage = engine.getTopicStorage(topic_id);
         if (storage == nullptr) {
           continue;
         }
-        columns = topicColumns(*storage, type_tree);
+        std::vector<ColumnDescriptor> built_columns;
+        const std::vector<ColumnDescriptor>& live_columns = topicColumns(*storage, type_tree, built_columns);
+        source_hash = scalarTopicSourceHash(dataset_hash, metadata->name, live_columns, *storage);
+        if (in_place) {
+          live_topics.insert(topic_id);
+          if (const auto known = impl_->scalar_topics.find(topic_id);
+              known != impl_->scalar_topics.end() && known->second.source_hash == source_hash) {
+            continue;  // its items are what they would be derived to
+          }
+        }
+        columns = live_columns;
         whole_numbers_only.reserve(columns.size());
         retired.reserve(columns.size());
         for (const ColumnDescriptor& column : columns) {
@@ -990,6 +1130,9 @@ void CatalogModel::rebuildNow() {
           whole_numbers_only.push_back(is_float && storage->wholeNumbersOnly(column.field_id).value_or(false));
         }
       }
+      ++impl_->scalar_topics_derived;
+      const QString topic_name = QString::fromStdString(metadata->name);  // one string for all the topic's items
+      std::vector<CatalogItem> topic_items;
       for (std::size_t column_index = 0; column_index < columns.size(); ++column_index) {
         const ColumnDescriptor& column = columns[column_index];
         // Surface every column in a consumer family (plottable curves and/or
@@ -1003,22 +1146,36 @@ void CatalogModel::rebuildNow() {
         if (removed_names_for_dataset != nullptr && removed_names_for_dataset->count(key) > 0) {
           continue;
         }
-        next_items.insert_or_assign(
-            key, CatalogItem{
-                     .key = key,
-                     .dataset_name = dataset_label,
-                     .topic_name = QString::fromStdString(metadata->name),
-                     .dataset_id = dataset_id,
-                     .payload =
-                         ScalarFieldPayload{
-                             .field_name = QString::fromStdString(column.field_path),
-                             .field_path = QString::fromStdString(column.field_path),
-                             .topic_id = topic_id,
-                             .column_index = column_index,
-                             .logical_type = column.logical_type,
-                             .whole_numbers_only = whole_numbers_only[column_index],
-                         },
-                 });
+        const QString field_path = QString::fromStdString(column.field_path);
+        topic_items.push_back(
+            CatalogItem{
+                .key = key,
+                .dataset_name = dataset_label,
+                .topic_name = topic_name,
+                .dataset_id = dataset_id,
+                .payload =
+                    ScalarFieldPayload{
+                        .field_name = field_path,
+                        .field_path = field_path,
+                        .topic_id = topic_id,
+                        .column_index = column_index,
+                        .logical_type = column.logical_type,
+                        .whole_numbers_only = whole_numbers_only[column_index],
+                    },
+            });
+      }
+      Impl::ScalarTopicItems& topic = in_place ? impl_->scalar_topics[topic_id] : next_scalar_topics[topic_id];
+      topic.source_hash = source_hash;
+      topic.dataset_id = dataset_id;
+      topic.topic_name = topic_name;
+      if (in_place) {
+        impl_->replaceScalarTopicItems(topic, std::move(topic_items), added_items, removed_keys, changed_keys);
+      } else {
+        topic.keys.reserve(topic_items.size());
+        for (CatalogItem& item : topic_items) {
+          topic.keys.push_back(item.key);
+          next_items.insert_or_assign(topic.keys.back(), std::move(item));
+        }
       }
     }
 
@@ -1036,6 +1193,7 @@ void CatalogModel::rebuildNow() {
         // the next rebuildFromDatastore.
         continue;
       }
+      next_other_keys.push_back(key);
       next_items.insert_or_assign(
           key, CatalogItem{
                    .key = key,
@@ -1052,12 +1210,37 @@ void CatalogModel::rebuildNow() {
     }
   }
 
+  if (in_place) {
+    // The scalar topics this pass did not meet are gone, their items with them: a dataset removed or hidden, a topic
+    // deleted or turned into a preview output.
+    for (auto topic = impl_->scalar_topics.begin(); topic != impl_->scalar_topics.end();) {
+      if (live_topics.count(topic->first) > 0) {
+        ++topic;
+        continue;
+      }
+      for (const QString& key : topic->second.keys) {
+        if (impl_->items.erase(key) > 0) {
+          removed_keys.push_back(key);
+        }
+      }
+      topic = impl_->scalar_topics.erase(topic);
+    }
+  }
+
   // Merge advertised (available-but-unsubscribed) placeholders: a data-less node
   // for every advertised topic that storage has NOT already produced an entry for
   // (real data wins) and that isn't tombstoned. Superseded automatically once the
   // topic subscribes and its real scalar/object entries appear.
   if (!impl_->advertised.empty()) {
-    Impl::NameSet materialized;  // "<dataset_id>\x1f<topic_name>" produced by storage this pass
+    Impl::NameSet materialized;  // "<dataset_id>\x1f<topic_name>" of every topic storage gave an item
+    if (in_place) {
+      for (const auto& [topic_id, topic] : impl_->scalar_topics) {
+        (void)topic_id;
+        if (!topic.keys.empty()) {
+          materialized.insert(u"%1\x1f%2"_s.arg(topic.dataset_id).arg(topic.topic_name));
+        }
+      }
+    }
     for (const auto& [key, item] : next_items) {
       (void)key;
       materialized.insert(u"%1\x1f%2"_s.arg(item.dataset_id).arg(item.topic_name));
@@ -1080,6 +1263,7 @@ void CatalogModel::rebuildNow() {
         if (removed_names_for_dataset != nullptr && removed_names_for_dataset->count(key) > 0) {
           continue;
         }
+        next_other_keys.push_back(key);
         next_items.insert_or_assign(
             key, CatalogItem{
                      .key = key,
@@ -1092,31 +1276,50 @@ void CatalogModel::rebuildNow() {
     }
   }
 
-  const Impl::ItemMap previous_items = std::move(impl_->items);
-  impl_->items = std::move(next_items);
+  if (in_place) {
+    // The items that are not scalar fields are few: they were derived whole above, and are compared here.
+    for (const QString& key : impl_->other_keys) {
+      if (next_items.find(key) == next_items.end() && impl_->items.erase(key) > 0) {
+        removed_keys.push_back(key);
+      }
+    }
+    for (const auto& [key, item] : next_items) {
+      const auto existing = impl_->items.find(key);
+      if (existing == impl_->items.end()) {
+        added_items.push_back(item);
+        impl_->items.insert({key, item});
+      } else if (!(existing->second == item)) {
+        changed_keys.push_back(key);
+        existing.value() = item;
+      }
+    }
+  } else {
+    const Impl::ItemMap previous_items = std::move(impl_->items);
+    impl_->items = std::move(next_items);
+    impl_->scalar_topics = std::move(next_scalar_topics);
+    for (const auto& [key, descriptor] : previous_items) {
+      const auto current = impl_->items.find(key);
+      if (current == impl_->items.end()) {
+        removed_keys.push_back(key);
+      } else if (!(current->second == descriptor)) {
+        changed_keys.push_back(key);
+      }
+    }
+    for (const auto& [key, descriptor] : impl_->items) {
+      if (previous_items.find(key) == previous_items.end()) {
+        added_items.push_back(descriptor);
+      }
+    }
+  }
+  impl_->other_keys = std::move(next_other_keys);
   impl_->dropCaches();
+  impl_->topic_items_valid = true;  // dropCaches() clears it; scalar_topics and other_keys describe the items again
 
-  if (!previous_items.empty() && impl_->items.empty()) {
+  if (had_items && impl_->items.empty()) {
     emit cleared();
     return;
   }
 
-  std::vector<CatalogItem> added_items;
-  QStringList removed_keys;
-  QStringList changed_keys;
-  for (const auto& [key, descriptor] : previous_items) {
-    const auto current = impl_->items.find(key);
-    if (current == impl_->items.end()) {
-      removed_keys.push_back(key);
-    } else if (!(current->second == descriptor)) {
-      changed_keys.push_back(key);
-    }
-  }
-  for (const auto& [key, descriptor] : impl_->items) {
-    if (previous_items.find(key) == previous_items.end()) {
-      added_items.push_back(descriptor);
-    }
-  }
   if (!added_items.empty()) {
     std::sort(added_items.begin(), added_items.end(), catalogItemLess);
     emit itemsAdded(added_items);
