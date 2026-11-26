@@ -982,8 +982,8 @@ struct WriteCore {
     return true;
   }
 
-  // Sets the metadata on the live engine and the staging mirror, so it survives the pause/resume swap. The field must
-  // exist on the live engine; on the mirror a missing field is not an error (it is created lazily).
+  // Sets the metadata on the live engine and the staging mirror, so it survives the pause/resume swap.
+  // The field must exist on the live engine; a mirror without it is skipped silently.
   [[nodiscard]] bool setFieldMetadata(FieldHandle field, std::string_view metadata_json) {
     const PJ::Expected<bool> has_keys = checkFieldMetadata(metadata_json);
     if (!has_keys.has_value()) {
