@@ -1,0 +1,16 @@
+# A field that first appears mid-file has no rows before its first value. The array of /arr has 1 element for 100
+# messages, 3 for the next 100 and 5 for the last 100: data[1] is 200 samples and data[3] is 100, none invalid. Rows
+# written before a column existed are not nulls of it: a reader tells the two apart, and read_series and
+# export_series would report 100 or 200 invalid samples the file does not hold.
+# Fixture: a ROS 1 MCAP of one topic (std_msgs/Header header, float64[] data), 300 messages 10 ms apart.
+# app: -d scripts/qa/regressions/fixtures/growing_array.mcap
+# needs: plugins
+until read_series {"paths":["/arr/data[0]"]} "count":300
+absent "invalid"
+read_series {"paths":["/arr/data[1]"]}
+expect "count":200
+absent "invalid"
+read_series {"paths":["/arr/data[3]"]}
+expect "count":100
+absent "invalid"
+expect "duration_s":0.99

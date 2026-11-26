@@ -63,12 +63,11 @@ class TopicStorage {
   [[nodiscard]] PJ::Status appendSealedChunk(TopicChunk chunk);
 
   /// Commits a writer's rows without sealing them into a chunk of their own: they extend the topic's last chunk while
-  /// it has room and a layout theirs fits (TopicChunkBuilder::fitsLayoutOf), and start a new chunk otherwise. Rows
-  /// older than the last chunk's newest are merged into it in timestamp order, which gives it a new id. A chunk is
-  /// re-encoded once, when it reaches the topic's max_chunk_rows, so a topic's chunks are cut by its rows and not by
-  /// how often its writer commits. A chunk that grows keeps its id and its rows their positions (see TopicChunk), and
-  /// gains the columns the topic gained. `batch` is left for clearRows(): its rows are sorted and may have been moved
-  /// out.
+  /// it has room and their column layout (TopicChunkBuilder::hasLayoutOf), and start a new chunk otherwise. Rows older
+  /// than the last chunk's newest are merged into it in timestamp order, which gives it a new id. A chunk is
+  /// re-encoded once, when it reaches the topic's max_chunk_rows, so a topic's chunks are cut by its rows and its
+  /// layout, not by how often its writer commits. A chunk that grows keeps its id and its rows their positions (see
+  /// TopicChunk). `batch` is left for clearRows(): its rows are sorted and may have been moved out.
   void appendRows(TopicChunkBuilder& batch);
 
   /// Re-encodes the last chunk if appendRows() left it in growable form: call when a source ends, so a chunk that will

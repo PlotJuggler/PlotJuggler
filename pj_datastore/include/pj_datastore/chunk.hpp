@@ -54,11 +54,11 @@ struct ChunkStats {
   std::vector<ColumnStats> column_stats;
 };
 
-/// A topic's rows, sorted by timestamp. A row never changes under its chunk's id: the values and the position of row
-/// `r` of chunk `id` stay what they are while that id exists. Only a topic's last chunk can change, by gaining rows at
-/// its end (TopicStorage::appendRows) and by having its columns re-encoded, so a consumer that remembers a chunk id
-/// also remembers how many of its rows it read. The read accessors do not check for nulls: readNumericAsDouble()
-/// returns 0.0 at a null, so call isNull() first or use readColumnAsDoubles().
+/// A topic's rows, sorted by timestamp, in one column layout. A row never changes under its chunk's id: the values
+/// and the position of row `r` of chunk `id` stay what they are while that id exists. Only a topic's last chunk can
+/// change, by gaining rows at its end (TopicStorage::appendRows) and by having its columns re-encoded, so a consumer
+/// that remembers a chunk id also remembers how many of its rows it read. The read accessors do not check for nulls:
+/// readNumericAsDouble() returns 0.0 at a null, so call isNull() first or use readColumnAsDoubles().
 struct TopicChunk {
   ChunkId id = 0;
   TopicId topic_id = 0;
@@ -178,20 +178,18 @@ class TopicChunkBuilder {
     return timestamps_[row];
   }
 
-  /// Whether `chunk` can take this builder's rows: the same schema version, and the same type for every column both
-  /// have. Either may have more columns than the other: columns are only ever added at the end of a topic's layout.
-  [[nodiscard]] bool fitsLayoutOf(const TopicChunk& chunk) const;
+  /// Whether `chunk` has this builder's schema version, column count and column types. A chunk has one layout, and a
+  /// reader tells a column the chunk lacks (it did not exist when the rows were written) from a null in it: rows of
+  /// another layout are never put in a chunk.
+  [[nodiscard]] bool hasLayoutOf(const TopicChunk& chunk) const;
 
   /// An empty growable chunk with this builder's layout and the next ChunkId.
   [[nodiscard]] TopicChunk makeGrowableChunk() const;
 
-  /// Gives `chunk`, growable, the columns only this builder has, null for the rows the chunk holds.
-  void addColumnsTo(TopicChunk& chunk) const;
-
   /// A new growable chunk, with the next ChunkId, holding `chunk`'s rows and this builder's, sorted by timestamp:
   /// `chunk`'s rows come first among equal timestamps, as rows that arrived first do. For rows that arrive older than
   /// `chunk`'s newest: they cannot be appended, since that would leave the chunk unsorted, and a row that moves must
-  /// not keep its chunk id. Needs sortRows() and the same column count and types as `chunk`, which must be growable.
+  /// not keep its chunk id. Needs sortRows() and hasLayoutOf(chunk), which must be growable.
   [[nodiscard]] TopicChunk mergedWith(const TopicChunk& chunk) const;
 
   /// Empties the builder for the next rows, keeping its layout and its buffers' capacity; `max_rows` replaces the
@@ -208,9 +206,8 @@ class TopicChunkBuilder {
   }
 
   /// Appends rows [first, first + count) to the end of `chunk` and updates its stats (not encoded_byte_size). Needs
-  /// sortRows(), fitsLayoutOf(chunk), chunk.isGrowable() and no row older than the chunk's newest: a chunk stays sorted
-  /// and its earlier rows keep their positions. The chunk gains the columns only this builder has, null for the rows it
-  /// already holds; a column only the chunk has takes nulls.
+  /// sortRows(), hasLayoutOf(chunk), chunk.isGrowable() and no row older than the chunk's newest: a chunk stays sorted
+  /// and its earlier rows keep their positions.
   void appendRowsTo(TopicChunk& chunk, std::size_t first, std::size_t count) const;
 
   /// An id above every chunk id handed out so far; seal() draws from the same counter.

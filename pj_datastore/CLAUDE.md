@@ -14,9 +14,12 @@ it only through the C ABI. Timestamps are absolute int64 nanoseconds. How it wor
 - Nothing read from a chunk outlives the lock it was read under: a writer's commit grows a topic's last chunk in place
   and re-encodes it when it fills, on the writer's thread. A `TopicChunk*` survives that; a value's address, a
   `readString()` view or a column pointer does not. Copy what must last (`PointSeriesXY` copies its points).
-- A row never changes under its chunk id, and only a topic's last chunk gains rows and columns; rows that must go
-  between its rows replace it under a new id. A consumer that remembers a chunk id also remembers how many of its
-  rows it read (`IncrementalEngine` does), or it misses the rows the chunk gains.
+- A row never changes under its chunk id, and only a topic's last chunk gains rows; rows that must go between its
+  rows replace it under a new id. A consumer that remembers a chunk id also remembers how many of its rows it read
+  (`IncrementalEngine` does), or it misses the rows the chunk gains.
+- A chunk has one column layout. Rows written before a column existed are in chunks that lack it, and readers (the
+  read tools' sample counts among them) take that as "not a row of this field", unlike a null: putting such rows in
+  a chunk that has the column turns them into nulls it never held.
 - Freeing or moving chunks (retention, clear, retire, detach, `flushTo()`, `replaceDatasetFrom()`, `mergeDatasets()`,
   `removeDataset()`) happens on the GUI thread after consumers drop cached `TopicChunk*`, or those pointers dangle.
 - Two engines are locked together with `lockEnginePair()`; locking one, then the other deadlocks against `flushTo()`.

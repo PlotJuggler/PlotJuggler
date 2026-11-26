@@ -542,7 +542,7 @@ TEST(ChunkGrowthTest, RowsOlderThanTheLastChunkAreMergedIntoItUnderANewId) {
   EXPECT_EQ(chunks[0].stats.row_count, 6U);
 }
 
-TEST(ChunkGrowthTest, LateRowsThatBringANewColumnAreMergedToo) {
+TEST(ChunkGrowthTest, LateRowsThatBringANewColumnStartAChunkOfTheirOwn) {
   Fixture fixture(1);
   fixture.write(numberRow(10, 1.0));
   fixture.write(numberRow(30, 3.0));
@@ -552,14 +552,14 @@ TEST(ChunkGrowthTest, LateRowsThatBringANewColumnAreMergedToo) {
   fixture.commitGrowing();
 
   const auto& chunks = fixture.storage().sealedChunks();
-  ASSERT_EQ(chunks.size(), 1U);
-  const TopicChunk& chunk = chunks.front();
-  ASSERT_EQ(chunk.columns.size(), 2U);
-  EXPECT_EQ(chunk.timestamps, (std::vector<Timestamp>{10, 20, 30}));
-  EXPECT_TRUE(chunk.isNull(1, 0));
-  EXPECT_EQ(chunk.readString(1, 1), "late");
-  EXPECT_TRUE(chunk.isNull(1, 2));
-  EXPECT_EQ(chunk.readNumericAsDouble(0, 1), 2.0);
+  ASSERT_EQ(chunks.size(), 2U) << "rows of another layout never join a chunk";
+  EXPECT_EQ(chunks[0].columns.size(), 1U);
+  EXPECT_EQ(chunks[0].timestamps, (std::vector<Timestamp>{10, 30}));
+  ASSERT_EQ(chunks[1].columns.size(), 2U);
+  EXPECT_EQ(chunks[1].readString(1, 0), "late");
+  EXPECT_EQ(
+      readAll(fixture.engine, fixture.topic),
+      (std::vector<std::pair<Timestamp, double>>{{10, 1.0}, {20, 2.0}, {30, 3.0}}));
   expectAggregatesMatchChunks(fixture.storage());
 }
 
@@ -605,7 +605,7 @@ TEST(ChunkGrowthTest, OnlyRowsStrictlyAfterEverySampleKeepTheSeriesGeneration) {
   EXPECT_EQ(fixture.storage().sealedChunks().size(), 1U);
 }
 
-TEST(ChunkGrowthTest, TheLastChunkGainsAColumnAddedLater) {
+TEST(ChunkGrowthTest, AColumnAddedLaterStartsANewChunk) {
   Fixture fixture(1);
   fixture.write(numberRow(10, 1.0));
   fixture.commitGrowing();
@@ -614,21 +614,21 @@ TEST(ChunkGrowthTest, TheLastChunkGainsAColumnAddedLater) {
   fixture.write(Row{.timestamp = 20, .cells = {Cell{2.0}, Cell{3.0F}}});
   fixture.commitGrowing();
 
+  // A chunk has one layout: the row written before the column existed is in a chunk that lacks the column, which a
+  // reader takes as "no such field then", not as a null of it.
   const auto& chunks = fixture.storage().sealedChunks();
-  ASSERT_EQ(chunks.size(), 1U) << "a new column does not cut the chunk";
-  const TopicChunk& chunk = chunks.front();
-  EXPECT_EQ(chunk.id, id);
-  ASSERT_EQ(chunk.columns.size(), 2U);
-  EXPECT_EQ(chunk.readNumericAsDouble(0, 0), 1.0);
-  EXPECT_TRUE(chunk.isNull(1, 0)) << "the row written before the column existed";
-  EXPECT_FALSE(chunk.isNull(1, 1));
-  EXPECT_EQ(chunk.readNumericAsDouble(1, 1), 3.0);
-  EXPECT_EQ(chunk.stats.column_stats[1].null_count, 1U);
+  ASSERT_EQ(chunks.size(), 2U);
+  EXPECT_EQ(chunks[0].id, id);
+  EXPECT_EQ(chunks[0].columns.size(), 1U);
+  EXPECT_EQ(chunks[0].stats.row_count, 1U);
+  EXPECT_FALSE(chunks[0].isGrowable()) << "it will not gain rows again, so it is encoded";
+  ASSERT_EQ(chunks[1].columns.size(), 2U);
+  EXPECT_EQ(chunks[1].readNumericAsDouble(1, 0), 3.0);
+  EXPECT_EQ(chunks[1].stats.column_stats[1].null_count, 0U);
   expectAggregatesMatchChunks(fixture.storage());
-  expectRangesMatchValues(chunk);
 }
 
-TEST(ChunkGrowthTest, RowsOfAWriterWithAnOlderLayoutTakeNullsInTheNewColumns) {
+TEST(ChunkGrowthTest, RowsOfAWriterWithAnOlderLayoutStartAChunkOfTheirOwn) {
   Fixture fixture(1);
   DataWriter other = fixture.engine.createWriter();
   // The other writer has its builder, with one column, before the first adds a second.
@@ -642,17 +642,15 @@ TEST(ChunkGrowthTest, RowsOfAWriterWithAnOlderLayoutTakeNullsInTheNewColumns) {
   (void)other.commitRows();
 
   const auto& chunks = fixture.storage().sealedChunks();
-  ASSERT_EQ(chunks.size(), 1U);
-  const TopicChunk& chunk = chunks.front();
-  ASSERT_EQ(chunk.columns.size(), 2U);
-  ASSERT_EQ(chunk.stats.row_count, 2U);
-  EXPECT_EQ(chunk.readString(1, 0), "first");
-  EXPECT_EQ(chunk.readNumericAsDouble(0, 1), 7.0);
-  EXPECT_TRUE(chunk.isNull(1, 1));
+  ASSERT_EQ(chunks.size(), 2U);
+  EXPECT_EQ(chunks[0].columns.size(), 2U);
+  EXPECT_EQ(chunks[0].readString(1, 0), "first");
+  EXPECT_EQ(chunks[1].columns.size(), 1U);
+  EXPECT_EQ(chunks[1].readNumericAsDouble(0, 0), 7.0);
   expectAggregatesMatchChunks(fixture.storage());
 }
 
-TEST_P(ChunkGrowthProperty, ColumnsAddedMidStreamKeepEveryValueAndDoNotCutChunks) {
+TEST_P(ChunkGrowthProperty, ColumnsAddedMidStreamCutTheChunkExactlyThere) {
   const uint32_t seed = GetParam();
   const std::vector<Row> rows = makeRows(600, seed);
   std::mt19937 rng(seed ^ 0x51ED270BU);
@@ -662,6 +660,13 @@ TEST_P(ChunkGrowthProperty, ColumnsAddedMidStreamKeepEveryValueAndDoNotCutChunks
   for (std::size_t c = 3; c < kColumns.size(); ++c) {
     appears[c] = appears[c - 1] + rng() % 90;
   }
+  const auto columns_at = [&](std::size_t row) {
+    std::size_t count = 0;
+    while (count < kColumns.size() && appears[count] <= row) {
+      ++count;
+    }
+    return count;
+  };
 
   Fixture growing(3);
   std::size_t columns = 3;
@@ -681,25 +686,20 @@ TEST_P(ChunkGrowthProperty, ColumnsAddedMidStreamKeepEveryValueAndDoNotCutChunks
     }
   }
   growing.commitGrowing();
-  growing.writer = growing.engine.createWriter();  // nothing pending
 
+  // Every row is in a chunk whose layout is the topic's layout when the row was written: a column a row predates is
+  // missing from its chunk, never a null in it, at whatever points the rows were committed.
   const auto& chunks = growing.storage().sealedChunks();
-  ASSERT_EQ(chunks.size(), (rows.size() + kMaxRows - 1) / kMaxRows);
   std::size_t row_index = 0;
-  for (std::size_t k = 0; k < chunks.size(); ++k) {
-    const TopicChunk& chunk = chunks[k];
-    ASSERT_EQ(chunk.stats.row_count, std::min<std::size_t>(kMaxRows, rows.size() - k * kMaxRows));
+  for (const TopicChunk& chunk : chunks) {
+    ASSERT_LE(chunk.stats.row_count, kMaxRows);
     expectRangesMatchValues(chunk);
     for (std::size_t r = 0; r < chunk.stats.row_count; ++r, ++row_index) {
       ASSERT_EQ(chunk.timestamps[r], rows[row_index].timestamp);
-      for (std::size_t c = 0; c < kColumns.size(); ++c) {
-        // Set in the model only from the row its column appeared at.
+      ASSERT_EQ(chunk.columns.size(), columns_at(row_index)) << "row " << row_index;
+      for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
         const Cell& expected = rows[row_index].cells[c];
-        const bool set = row_index >= appears[c] && !std::holds_alternative<std::monostate>(expected);
-        if (c >= chunk.columns.size()) {
-          ASSERT_FALSE(set) << kColumns[c].name << " row " << row_index;
-          continue;
-        }
+        const bool set = !std::holds_alternative<std::monostate>(expected);
         ASSERT_EQ(!chunk.isNull(c, r), set) << kColumns[c].name << " row " << row_index;
         if (!set) {
           continue;
@@ -724,6 +724,13 @@ TEST_P(ChunkGrowthProperty, ColumnsAddedMidStreamKeepEveryValueAndDoNotCutChunks
     }
   }
   ASSERT_EQ(row_index, rows.size());
+  // Chunks are cut where a column appears and where they fill, nowhere else: at most one more chunk per row at which
+  // columns appeared than the rows alone need.
+  std::size_t cuts = 0;
+  for (std::size_t c = 3; c < kColumns.size(); ++c) {
+    cuts += appears[c] > 0 && appears[c] < rows.size() && appears[c] != appears[c - 1] ? 1U : 0U;
+  }
+  EXPECT_LE(chunks.size(), ((rows.size() + kMaxRows - 1) / kMaxRows) + cuts);
 }
 
 TEST(ChunkGrowthTest, ACompactedLastChunkStillGrows) {
@@ -799,18 +806,20 @@ TEST(ChunkGrowthTest, AKeptBuilderTakesTheColumnsAnotherWriterAdded) {
   DataWriter other = fixture.engine.createWriter();
   ASSERT_TRUE(other.ensureColumn(fixture.topic, "added", PrimitiveType::kFloat64).has_value());
 
-  // The first writer is handed the existing column, and writes it.
+  // The first writer is handed the existing column, and writes it: its builder has to have it by then.
   const auto column = fixture.writer.ensureColumn(fixture.topic, "added", PrimitiveType::kFloat64);
   ASSERT_TRUE(column.has_value());
   ASSERT_EQ(*column, 1U);
   fixture.write(Row{.timestamp = 20, .cells = {Cell{2.0}, Cell{3.0}}});
   fixture.commitGrowing();
 
-  const TopicChunk& chunk = fixture.storage().sealedChunks().front();
-  ASSERT_EQ(chunk.columns.size(), 2U);
-  ASSERT_EQ(chunk.stats.row_count, 2U);
-  EXPECT_TRUE(chunk.isNull(1, 0));
-  EXPECT_EQ(chunk.readNumericAsDouble(1, 1), 3.0);
+  const auto& chunks = fixture.storage().sealedChunks();
+  ASSERT_EQ(chunks.size(), 2U);
+  EXPECT_EQ(chunks[0].columns.size(), 1U);
+  ASSERT_EQ(chunks[1].columns.size(), 2U);
+  ASSERT_EQ(chunks[1].stats.row_count, 1U);
+  EXPECT_EQ(chunks[1].readNumericAsDouble(0, 0), 2.0);
+  EXPECT_EQ(chunks[1].readNumericAsDouble(1, 0), 3.0);
 }
 
 TEST(ChunkGrowthTest, AChunkRestoredUnderNewerIdsTakesANewIdBeforeItGrows) {

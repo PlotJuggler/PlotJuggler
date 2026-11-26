@@ -22,10 +22,11 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **What the code does:** order does not matter for a min and max, so `bounds` skips the cursor; a chunk wholly inside
   the window answers from its `ColumnStats`, any other is scanned. The same undo takes 0.46 s.
   `SeriesReaderBounds.MatchesAFullScan` pins the result against the full scan.
-- **Why some chunks are still scanned:** the statistics keep infinities, a NaN first value poisons them (the scalar
-  path's first comparison), an all-NaN chunk leaves min > max, and `t_min`/`t_max` count null rows.
-- **Re-test:** when the builder's statistics change (excluding non-finite values would let every whole chunk skip the
-  scan).
+- **Why some chunks are still scanned:** the statistics keep infinities, a chunk of nothing but NaNs has no extremes,
+  and `t_min`/`t_max` count null rows. A NaN is in neither extreme, so a chunk that holds some answers from its
+  statistics.
+- **Re-test:** when the builder's statistics change (excluding infinities too would let every whole chunk without
+  nulls skip the scan).
 
 ## Out-of-order ingest
 
@@ -60,24 +61,34 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   |---|---|---|---|---|---|---|---|
   | 250 ms | a chunk per commit | 7,615 | 4.75 M | 6,804 | 18.6 s | 26.1 s | 3.68 GB |
   | 50 ms | a chunk per commit | 25,712 | 11.48 M | 25,458 | 20.7 s | 30.2 s | 5.72 GB |
-  | 250 ms | last chunk grows | 1,920 | 0.66 M | 0 | 19.5 s | 27.2 s | 2.63 GB |
-  | 50 ms | last chunk grows | 1,920 | 0.66 M | 0 | 21.5 s | 31.0 s | 2.62 GB |
+  | 250 ms | last chunk grows | 2,105 | 1.19 M | 193 | 19.1 s | 26.7 s | 2.76 GB |
+  | 50 ms | last chunk grows | 2,105 | 1.19 M | 193 | 21.5 s | 31.3 s | 2.75 GB |
+
+  The 193 chunks that are not full are each cut by a new column (a growing array); 1,920 would be the fewest.
 
 - **What was tried, in order:** the first version re-encoded a full chunk by rebuilding it through a builder,
   recomputed the stats of every appended row and destroyed each builder at commit: 26.4 s (a profile gave 4.0 s to the
   row copy and 4.8 s to the re-encoding). Encoding in place with the function `seal()` uses, one step for a column no
   row or every row of the batch set, the builder's own stats for a batch appended whole, and builders kept across
-  commits brought it to 19.5 s. Giving back the spare capacity of the buffers a full chunk keeps took RSS from 2.73
-  to 2.63 GB, which is what sealing nothing until the end of the file gives (2.64 GB, with no data shown meanwhile). Before the last chunk could gain a column it left 193 undersized chunks on this file,
-  every one cut by a growing array; none was cut by a late row, because the loader stamps rows with their log time
-  by default.
+  commits brought it to about 19 s. Giving back the spare capacity of the buffers a full chunk keeps saved about
+  0.1 GB.
+- **Letting the last chunk gain a new column, tried and taken out:** it left no chunk short of full (1,920 chunks,
+  0.66 M chunk-columns, 2.63 GB), but the rows written before the column existed became nulls of it, back to the
+  start of the chunk. A reader tells "this chunk lacks the column" from "this cell is null" by the chunk's column
+  count, in about a dozen places, and the read tools report the difference: for an array that grows at message 1,550
+  of 3,000, `read_series` gave 1,976 samples with 526 invalid where the file holds 1,450, and `export_series` wrote the
+  526 NaN rows. Exploratory QA found it; the suite did not, since plots, the tracker and filters skip nulls
+  (`scripts/qa/regressions/growing_array_field_has_no_rows_before_it.pjqa` now covers it). A chunk keeps one layout.
 - **Late rows:** with header timestamps, a `/tf` of several publishers had 97 chunks for 89,995 rows (88 is the
   minimum), 17 of them cut by rows older than the last chunk's newest; a live stream would cut such a topic about one
-  commit in five. Merging those rows into the last chunk under a new id left 90 chunks.
+  commit in five. Merging those rows into the last chunk under a new id left 90 chunks. With the loader's default,
+  log time, no chunk of four recordings was cut by a late row.
 - **Not tried (reasoning):** sealing a snapshot of the growing rows at every commit costs their whole count times the
   columns each time, about 13 M cells a commit for a 13k-column topic near a full chunk. Merging small chunks in tiers
   leaves about ten trailing chunks a topic and renumbers chunks derived nodes have read.
-- **Re-test:** when a wide topic is late often (count the chunks that are not full and whose successor starts
+- **Re-test:** when topics with growing arrays matter more than these 193 chunks: the last chunk could gain a column
+  if each column of a chunk recorded the row it starts at and every read path took the rows before it as rows the
+  chunk lacks. When a wide topic is late often (count the chunks that are not full and whose successor starts
   earlier): a late merge rewrites the whole last chunk, and past `kLateMergeCells` the rows start a chunk of their
   own; merging only the rows behind the first late one would lift that. And when the per-commit cost matters: it is
   one visit per column of every topic with new rows, which a list of the columns a batch set would cut for sparse

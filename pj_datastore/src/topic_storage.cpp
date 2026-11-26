@@ -133,7 +133,6 @@ void TopicStorage::changeStoredChunk(TopicChunk& chunk, Change&& change) {
 
   std::forward<Change>(change)();
   chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
-  evidence_before.resize(chunk.columns.size(), kNoWholeEvidence);  // the change can add columns
 
   if (chunk_agg_valid_) {
     chunk_agg_t_min_ = std::min(chunk_agg_t_min_, chunk.stats.t_min);
@@ -183,7 +182,6 @@ void TopicStorage::mergeIntoLastChunk(TopicChunk& chunk, const TopicChunkBuilder
     if (!chunk.isGrowable()) {
       chunk.makeGrowable();
     }
-    batch.addColumnsTo(chunk);
     chunk = batch.mergedWith(chunk);  // a new id: rows moved, and a row never changes under its chunk's id
     newest_chunk_id_ever_ = chunk.id;
   });
@@ -201,7 +199,8 @@ void TopicStorage::appendRows(TopicChunkBuilder& batch) {
   std::size_t first = 0;
   while (first < total) {
     TopicChunk* last = sealed_chunks_.empty() ? nullptr : &sealed_chunks_.back();
-    const bool has_room = last != nullptr && last->stats.row_count < max_rows && batch.fitsLayoutOf(*last);
+    // Rows of another layout never join a chunk: a reader tells a column a chunk lacks from a null in it.
+    const bool has_room = last != nullptr && last->stats.row_count < max_rows && batch.hasLayoutOf(*last);
     if (has_room && batch.timestampAt(first) >= last->stats.t_max) {
       const std::size_t count = std::min(total - first, max_rows - last->stats.row_count);
       extendLastChunk(*last, batch, first, count);
@@ -216,7 +215,6 @@ void TopicStorage::appendRows(TopicChunkBuilder& batch) {
     // a new id. Readers and derived nodes take that as they take any late chunk: they rebuild or replay. When the
     // merge does not fit in the chunk, or is too large, the rows start a chunk of their own that overlaps it.
     if (has_room && first == 0 && last->stats.row_count + total <= max_rows &&
-        last->columns.size() <= batch.columnCount() &&
         (last->stats.row_count + total) * batch.columnCount() <= kLateMergeCells) {
       mergeIntoLastChunk(*last, batch);
       if (last->stats.row_count >= max_rows) {

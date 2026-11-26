@@ -29,10 +29,10 @@ from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time
 - **Columns are append-only.** Field ids are dense from 0 and never change once given, so adding a column never
   invalidates a `FieldId` or a column index. The app keys curves by (topic id, column index); reload and merge keep
   both (see "Reload, merge and removal").
-- **Chunks** hold a topic's rows sorted by timestamp, at most `max_chunk_rows` each. A row never changes under its
-  chunk's id: its values and its position stay. Only a topic's last chunk changes: it gains rows at its end, and
-  columns at the end of its layout, as writers commit, and it is re-encoded when it fills or its source ends ("Ingest
-  and schema evolution"). When late rows have to go between its rows it is replaced, under a new id. Ids come from one process-wide counter, and within a topic they ascend in commit order:
+- **Chunks** hold a topic's rows sorted by timestamp, at most `max_chunk_rows` each, in one column layout. A row never
+  changes under its chunk's id: its values and its position stay. Only a topic's last chunk changes: it gains rows at
+  its end as writers commit, and it is re-encoded when it fills or its source ends ("Ingest and schema evolution").
+  When late rows have to go between its rows it is replaced, under a new id. Ids come from one process-wide counter, and within a topic they ascend in commit order:
   derived-series watermarks and gap detection rely on that, together with the count of rows read from the newest
   chunk. A chunk sealed whole can be committed after a newer one; `TopicStorage::appendSealedChunk()` then gives it a
   fresh id.
@@ -44,8 +44,9 @@ rows in one chunk builder per topic and commits them with `DataWriter::commitRow
 `commitRows()` returns the topics that changed, which is what `IncrementalEngine::onSourceCommitted()` takes.
 
 - **A commit does not cut a chunk.** The committed rows extend the topic's last chunk (`TopicStorage::appendRows`)
-  while it has room, so a topic's chunks are cut by its rows, `max_chunk_rows` at a time, and not by how often its
-  writer commits: the same rows in the same order give the same chunks at any commit rate. A row is copied into the
+  while it has room and their layout, so a topic's chunks are cut by its rows, `max_chunk_rows` at a time, and by its
+  layout, and not by how often its writer commits: the same rows in the same order give the same chunks at any commit
+  rate. A row is copied into the
   last chunk, which stays unencoded while it grows. `DataWriter` sizes each builder to end where the last chunk fills,
   so the builders after it hold whole chunks: those are sealed when they fill, in the writer, and committed as they
   are. The writer keeps its open builder across commits, emptied, unless the topic gained columns it lacks. `commitChunks(flushAll())` is the other path: it seals the rows as they
@@ -55,10 +56,10 @@ rows in one chunk builder per topic and commits them with `DataWriter::commitRow
   `arrow_import` into the batch path. The two forms must not mix within a row.
 - **Columns appear at any time.** This is the normal case: variable-length sequences flatten to `data[0]`, `data[1]`,
   … and grow with the message, and dynamic-schema formats (JSON) add keys per message. A new column goes at the end
-  of the layout, and the topic's last chunk gains it, null for the rows it already holds. Chunks that filled before
-  have fewer columns: readers bounds-check the column index and treat a missing column as null. A variable-length
-  array grows its element columns up to the topic's expansion limit; past it the extra elements are dropped and
-  counted.
+  of the layout and starts a new chunk: a chunk has one layout, so earlier chunks have fewer columns. Readers
+  bounds-check the column index, and tell a column a chunk lacks (the field did not exist when its rows were written:
+  they are not rows of it) from a null in a chunk that has it. A variable-length array grows its element columns up
+  to the topic's expansion limit; past it the extra elements are dropped and counted.
 - **A column keeps its first type.** The write host stores a value of another type when the conversion is exact;
   otherwise that field is null for the row, the rest of the row is written, and the field is reported once through the
   ingest-warning handler. Registering an existing field with another type is an error.
@@ -66,9 +67,9 @@ rows in one chunk builder per topic and commits them with `DataWriter::commitRow
   ascending. Rows older than the last chunk's newest (a topic of several publishers, stamped by each) cannot be
   appended: they are merged into the last chunk in timestamp order, after the rows of equal timestamp already there,
   and the chunk takes a new id, because rows moved. Readers and derived nodes take that as a late chunk: the series
-  generation changes, and a node replays. When the merge does not fit in the chunk, or would rewrite more cells than
-  `appendRows()` allows, the rows start a chunk of their own, so a topic's chunks can overlap in time; the reads merge
-  them ("Reading").
+  generation changes, and a node replays. When the merge does not fit in the chunk, the rows have another layout, or
+  it would rewrite more cells than `appendRows()` allows, the rows start a chunk of their own, so a topic's chunks can
+  overlap in time; the reads merge them ("Reading").
 - Pre-registering fields is optional. It enables the bound-record write path.
 
 ## Storage, encoding and retention
@@ -346,6 +347,8 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
 - A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
 - A merge of late rows rewrites the whole last chunk, not only the rows behind the first late one, so it is bounded:
   a wide topic that is late past the bound gets a chunk per late commit.
+- A new column cuts the topic's last chunk, however few rows it holds: a topic whose arrays keep growing gets a chunk
+  per growth (TECHNICAL_NOTES "Chunks cut by rows, not by commits" has what letting the chunk gain the column broke).
 - `finish()` encodes on its caller's thread, which is the GUI thread for a file load's last flush. Nothing calls it
   for a toolbox's own writes or for a derived series, whose last chunk stays unencoded until another follows it.
 - A chunk dropped whole by retention does not say how many rows it held: the rows it gained after a node last read

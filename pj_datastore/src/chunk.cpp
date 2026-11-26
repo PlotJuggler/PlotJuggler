@@ -813,120 +813,74 @@ void TopicChunkBuilder::sortRows() {
   sortRowsByTimestamp();
 }
 
-bool TopicChunkBuilder::fitsLayoutOf(const TopicChunk& chunk) const {
-  if (chunk.schema_version != schema_id_) {
+bool TopicChunkBuilder::hasLayoutOf(const TopicChunk& chunk) const {
+  if (chunk.schema_version != schema_id_ || chunk.columns.size() != column_descriptors_.size()) {
     return false;
   }
-  for (const TopicChunk::Column& column : chunk.columns) {
-    if (column.descriptor == nullptr) {
-      return false;
-    }
-  }
-  const std::size_t shared = std::min(chunk.columns.size(), column_descriptors_.size());
-  for (std::size_t i = 0; i < shared; ++i) {
-    if (chunk.columns[i].descriptor->logical_type != column_descriptors_[i].logical_type) {
+  for (std::size_t i = 0; i < column_descriptors_.size(); ++i) {
+    const auto& descriptor = chunk.columns[i].descriptor;
+    if (descriptor == nullptr || descriptor->logical_type != column_descriptors_[i].logical_type) {
       return false;
     }
   }
   return true;
 }
 
-namespace {
-
-// A growable column of `rows` nulls: what a column holds for the rows written before it existed.
-TopicChunk::Column makeNullColumn(const ColumnDescriptor& descriptor, std::size_t rows) {
-  TopicChunk::Column column;
-  column.descriptor = std::make_shared<const ColumnDescriptor>(descriptor);
-  const StorageKind kind = storageKindOf(descriptor.logical_type);
-  if (kind == StorageKind::kString) {
-    encoding::DictionaryEncoded dict;  // 4-byte indices
-    if (rows > 0) {
-      dict.dictionary.emplace_back();
-      dict.indices.resize(rows * sizeof(uint32_t));  // zero: the empty string, a null's slot
-      dict.count = rows;
-    }
-    column.data = std::move(dict);
-  } else if (kind == StorageKind::kBool) {
-    encoding::PackedBools packed;
-    packed.bits.resize(BitVector::bytesForBits(rows));
-    packed.count = rows;
-    column.data = std::move(packed);
-  } else {
-    RawBuffer raw;
-    raw.resize(rows * storageKindSize(kind));
-    column.data = std::move(raw);
-  }
-  if (rows > 0) {
-    column.validity_bitmap.emplace();
-    column.validity_bitmap->ensureSize(rows);  // new bytes are zero: every row null
-  }
-  return column;
-}
-
-[[nodiscard]] ColumnStats nullColumnStats(const ColumnDescriptor& descriptor, std::size_t rows) {
-  const StorageKind kind = storageKindOf(descriptor.logical_type);
-  ColumnStats stats;
-  stats.null_count = static_cast<uint32_t>(rows);
-  stats.all_integral = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;  // of no value yet
-  return stats;
-}
-
-}  // namespace
-
 TopicChunk TopicChunkBuilder::makeGrowableChunk() const {
   TopicChunk chunk;
   chunk.id = nextChunkId();
   chunk.topic_id = topic_id_;
   chunk.schema_version = schema_id_;
-  chunk.columns.reserve(column_descriptors_.size());
-  chunk.stats.column_stats.reserve(column_descriptors_.size());
-  for (const ColumnDescriptor& descriptor : column_descriptors_) {
-    chunk.columns.push_back(makeNullColumn(descriptor, 0));
-    chunk.stats.column_stats.push_back(nullColumnStats(descriptor, 0));
+  chunk.columns.resize(column_descriptors_.size());
+  chunk.stats.column_stats.resize(column_descriptors_.size());
+  for (std::size_t i = 0; i < column_descriptors_.size(); ++i) {
+    chunk.columns[i].descriptor = std::make_shared<const ColumnDescriptor>(column_descriptors_[i]);
+    switch (storageKindOf(column_descriptors_[i].logical_type)) {
+      case StorageKind::kString:
+        chunk.columns[i].data = encoding::DictionaryEncoded{};  // 4-byte indices
+        break;
+      case StorageKind::kBool:
+        chunk.columns[i].data = encoding::PackedBools{};
+        break;
+      case StorageKind::kFloat32:
+      case StorageKind::kFloat64:
+        chunk.stats.column_stats[i].all_integral = true;  // of no value yet; appendRowsTo() narrows it
+        chunk.columns[i].data = RawBuffer{};
+        break;
+      default:
+        chunk.columns[i].data = RawBuffer{};
+        break;
+    }
   }
   return chunk;
-}
-
-void TopicChunkBuilder::addColumnsTo(TopicChunk& chunk) const {
-  // Columns the topic gained since the chunk was started.
-  const std::size_t rows = chunk.stats.row_count;
-  for (std::size_t c = chunk.columns.size(); c < column_descriptors_.size(); ++c) {
-    chunk.columns.push_back(makeNullColumn(column_descriptors_[c], rows));
-    chunk.stats.column_stats.push_back(nullColumnStats(column_descriptors_[c], rows));
-  }
 }
 
 void TopicChunkBuilder::appendRowsTo(TopicChunk& chunk, std::size_t first, std::size_t count) const {
   PJ_ASSERT(!row_in_progress_ && sorted_, "appendRowsTo: call sortRows() first");
   PJ_ASSERT(first + count <= timestamps_.size(), "appendRowsTo: row range out of bounds");
-  PJ_ASSERT(fitsLayoutOf(chunk) && chunk.isGrowable(), "appendRowsTo: chunk cannot take these rows");
+  PJ_ASSERT(hasLayoutOf(chunk) && chunk.isGrowable(), "appendRowsTo: chunk cannot take these rows");
   if (count == 0) {
     return;
   }
   const std::size_t old_rows = chunk.stats.row_count;
   PJ_ASSERT(old_rows == 0 || timestamps_[first] >= chunk.stats.t_max, "appendRowsTo: rows older than the chunk's");
-  addColumnsTo(chunk);
   // The usual case, and the cheap one: this builder's own stats cover exactly the rows appended, so no value is read
   // to compute them. Only a batch cut at a chunk boundary is appended in parts.
   const bool whole_batch = first == 0 && count == timestamps_.size();
 
-  // A column of the chunk this builder does not have (its layout is the older one) takes nulls, through the same path
-  // as a column none of these rows set. Never read past these checks.
-  const TypedColumnBuffer no_column{ColumnDescriptor{}};
-  for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
-    const bool missing = c >= columns_.size();
-    const TypedColumnBuffer& col = missing ? no_column : columns_[c];
-    PJ_ASSERT(missing || col.rowCount() == timestamps_.size(), "appendRowsTo: column not padded");
+  for (std::size_t c = 0; c < columns_.size(); ++c) {
+    const TypedColumnBuffer& col = columns_[c];
+    PJ_ASSERT(col.rowCount() == timestamps_.size(), "appendRowsTo: column not padded");
     TopicChunk::Column& out = chunk.columns[c];
     ColumnStats& cs = chunk.stats.column_stats[c];
-    const StorageKind kind = storageKindOf(out.descriptor->logical_type);
+    const StorageKind kind = storageKindOf(column_descriptors_[c].logical_type);
     const std::size_t esize = storageKindSize(kind);
 
     // Validity first. A column no row of the batch set, the usual case of a wide sparse topic, and one every row
     // set, take no pass over their rows. The chunk has a bitmap only once it holds a null, as a sealed chunk does.
     const uint8_t* validity = col.validityBuffer().data();
     std::size_t nulls = 0;
-    if (missing || col.nullCount() == col.rowCount()) {
+    if (col.nullCount() == col.rowCount()) {
       nulls = count;
     } else if (whole_batch) {
       nulls = col.nullCount();
@@ -1185,7 +1139,7 @@ void TopicChunkBuilder::appendRowsOf(const TopicChunkBuilder& other) {
 
 TopicChunk TopicChunkBuilder::mergedWith(const TopicChunk& chunk) const {
   PJ_ASSERT(!row_in_progress_ && sorted_, "mergedWith: call sortRows() first");
-  PJ_ASSERT(chunk.columns.size() == columns_.size() && fitsLayoutOf(chunk), "mergedWith: layouts differ");
+  PJ_ASSERT(hasLayoutOf(chunk), "mergedWith: layouts differ");
   PJ_ASSERT(chunk.isGrowable(), "mergedWith: chunk is not in growable form");
   const std::size_t rows = chunk.stats.row_count + timestamps_.size();
   TopicChunkBuilder merged(topic_id_, schema_id_, column_descriptors_, static_cast<uint32_t>(rows));

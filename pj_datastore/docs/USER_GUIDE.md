@@ -294,8 +294,8 @@ if (col_index < row.chunk->columns.size()) {
 ### Fields may appear at any time
 
 When `appendRecord()` encounters a new field after rows have been written,
-the datastore adds the column. Earlier rows have no value for it: readers see
-them as null.
+the datastore adds the column. Earlier rows have no value for it: they are not
+samples of the new field.
 
 You do NOT need to pre-register all fields before writing. Pre-registration
 with `ensureField()` is still recommended when the schema is known upfront, as
