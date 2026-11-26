@@ -36,9 +36,15 @@ struct DataWriter::Impl {
   // any other is kept as it is, for TopicStorage::appendRows() to put in the topic's last chunk.
   struct Pending {
     std::vector<std::variant<TopicChunkBuilder, TopicChunk>> batches;
-    uint64_t rows = 0;
+    // The chunk the last batch ends in, once committed: the rows it will hold, and the column count of its layout.
+    // builderRows() sizes the next builder from them.
+    uint32_t tail_fill = 0;
+    std::size_t tail_columns = 0;
   };
   tsl::robin_map<PJ::TopicId, Pending> pending_batches;
+  // Each topic's max_chunk_rows, noted when one of its builders is fitted under the engine lock: setBuilderAside()
+  // runs where a caller may hold no lock, and must not read the engine there.
+  tsl::robin_map<PJ::TopicId, uint32_t> max_chunk_rows;
   tsl::robin_map<PJ::TopicId, std::vector<ColumnDescriptor>> topic_columns;
   // topic_columns as the chunks hold them: one descriptor per column for every chunk this writer makes of the topic,
   // where each chunk would otherwise allocate its own copy, name included.
@@ -780,11 +786,12 @@ TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id, const TopicS
     storage = impl_->engine.getTopicStorage(topic_id);
   }
   PJ_ASSERT(storage != nullptr, "get_or_create_builder: topic storage not found");
+  impl_->max_chunk_rows[topic_id] = storage->descriptor().max_chunk_rows;
   if (it != impl_->builders.end()) {
     // Kept across a commit, the builder can be older than a column another writer added since: ensureColumn() and
     // resolveField() hand that column's id out, and a write to it would run past this builder's columns.
     if (storage->columnDescriptors().size() <= it->second.columnCount()) {
-      it.value().setMaxRows(builderRows(topic_id, *storage));
+      it.value().setMaxRows(builderRows(topic_id, *storage, it->second.columnCount()));
       return it.value();
     }
     impl_->builders.erase(it);
@@ -812,28 +819,33 @@ TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id, const TopicS
   }
 
   auto [insert_it, inserted] = impl_->builders.emplace(
-      topic_id,
-      TopicChunkBuilder::withSharedColumns(topic_id, desc.schema_id, shared, builderRows(topic_id, *storage)));
+      topic_id, TopicChunkBuilder::withSharedColumns(
+                    topic_id, desc.schema_id, shared, builderRows(topic_id, *storage, shared.size())));
 
   return insert_it.value();
 }
 
-uint32_t DataWriter::builderRows(TopicId topic_id, const TopicStorage& storage) const {
-  // Sized to end where the topic's last chunk fills, counting the rows already set aside for it: the rows committed
-  // then complete that chunk, and the builders after it are whole chunks, which TopicStorage::appendRows() encodes
-  // straight from the builder. A wrong guess (the rows start a chunk of their own) only costs a copy.
+uint32_t DataWriter::builderRows(TopicId topic_id, const TopicStorage& storage, std::size_t columns) const {
+  // Sized to end where the chunk its rows will land in fills: the one the rows set aside end in, else the topic's
+  // last. The rows committed then complete that chunk, and the builders after it are whole chunks, which
+  // TopicStorage::appendRows() encodes straight from the builder. Rows of another layout start a chunk
+  // (TopicChunkBuilder::hasLayoutOf), so they get a whole one. A wrong guess (another writer's rows landed first) only
+  // costs a copy.
   const uint32_t max_rows = storage.descriptor().max_chunk_rows;
   if (max_rows <= 1) {
     return max_rows;
   }
-  uint64_t rows_ahead = 0;
-  if (const auto& chunks = storage.sealedChunks(); !chunks.empty()) {
-    rows_ahead = chunks.back().stats.row_count;
+  uint32_t fill = 0;
+  std::size_t tail_columns = columns;
+  if (const auto pending = impl_->pending_batches.find(topic_id);
+      pending != impl_->pending_batches.end() && !pending->second.batches.empty()) {
+    fill = pending->second.tail_fill;
+    tail_columns = pending->second.tail_columns;
+  } else if (const auto& chunks = storage.sealedChunks(); !chunks.empty()) {
+    fill = chunks.back().stats.row_count % max_rows;
+    tail_columns = chunks.back().columns.size();
   }
-  if (const auto pending = impl_->pending_batches.find(topic_id); pending != impl_->pending_batches.end()) {
-    rows_ahead += pending->second.rows;
-  }
-  return max_rows - static_cast<uint32_t>(rows_ahead % max_rows);
+  return tail_columns == columns ? max_rows - fill : max_rows;
 }
 
 std::vector<ColumnDescriptor> DataWriter::buildColumnDescriptors(const TypeTreeNode& root) {
@@ -862,13 +874,17 @@ void DataWriter::setBuilderAside(TopicId topic_id) {
   }
   if (const uint32_t rows = it->second.rowCount(); rows > 0) {
     Impl::Pending& pending = impl_->pending_batches[topic_id];
-    const TopicStorage* storage = impl_->engine.getTopicStorage(topic_id);
-    if (storage != nullptr && rows >= storage->descriptor().max_chunk_rows) {
+    const auto noted = impl_->max_chunk_rows.find(topic_id);
+    const uint32_t max_rows = noted != impl_->max_chunk_rows.end() ? noted->second : 0;
+    // The builder was sized to end where its chunk fills (builderRows), so its size says where it started.
+    const uint32_t sized_for = std::min(rows + it->second.remainingCapacity(), max_rows);
+    pending.tail_fill = max_rows > 1 ? (max_rows - sized_for + rows) % max_rows : 0;
+    pending.tail_columns = it->second.columnCount();
+    if (max_rows > 0 && rows >= max_rows) {
       pending.batches.emplace_back(it.value().seal());
     } else {
       pending.batches.emplace_back(std::move(it.value()));
     }
-    pending.rows += rows;
   }
   impl_->builders.erase(it);
 }

@@ -176,7 +176,7 @@ class DataWriter {
   TopicChunkBuilder& getOrCreateBuilder(PJ::TopicId topic_id, const TopicStorage* storage = nullptr);
 
   // The rows a new or emptied builder of the topic takes before it is set aside.
-  [[nodiscard]] uint32_t builderRows(PJ::TopicId topic_id, const TopicStorage& storage) const;
+  [[nodiscard]] uint32_t builderRows(PJ::TopicId topic_id, const TopicStorage& storage, std::size_t columns) const;
 
   void ensureColsLoaded(PJ::TopicId topic_id, const TopicStorage& storage);
 

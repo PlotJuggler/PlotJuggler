@@ -845,6 +845,62 @@ TEST(ChunkGrowthTest, AChunkRestoredUnderNewerIdsTakesANewIdBeforeItGrows) {
   EXPECT_GT(chunks[0].id, newer_id) << "under the old id the new row would sit below a watermark already past it";
 }
 
+// The rows written after a column appears start a chunk and fill it whole, whether each is committed alone or
+// several chunks of them at once.
+TEST(ChunkGrowthTest, RowsAfterANewColumnFillWholeChunksHoweverFarApartTheCommits) {
+  constexpr uint32_t kBefore = kMaxRows / 4;
+  const auto chunk_rows = [](bool commit_each_row) {
+    Fixture fixture(1);
+    Timestamp t = 0;
+    const auto write = [&](std::size_t columns) {
+      fixture.write(Row{.timestamp = t += 10, .cells = std::vector<Cell>(columns, Cell{1.5})});
+      if (commit_each_row) {
+        fixture.commitGrowing();
+      }
+    };
+    for (uint32_t i = 0; i < kBefore; ++i) {
+      write(1);
+    }
+    fixture.commitGrowing();
+    EXPECT_TRUE(fixture.writer.ensureColumn(fixture.topic, "later", PrimitiveType::kFloat64).has_value());
+    for (uint32_t i = 0; i < 2 * kMaxRows + 5; ++i) {
+      write(2);
+    }
+    fixture.commitGrowing();
+    std::vector<uint32_t> counts;
+    for (const TopicChunk& chunk : fixture.storage().sealedChunks()) {
+      counts.push_back(chunk.stats.row_count);
+    }
+    return counts;
+  };
+  const std::vector<uint32_t> expected = {kBefore, kMaxRows, kMaxRows, 5};
+  EXPECT_EQ(chunk_rows(true), expected);
+  EXPECT_EQ(chunk_rows(false), expected);
+}
+
+// The same when the column appears with rows of the old layout still in the writer.
+TEST(ChunkGrowthTest, RowsBeforeANewColumnCompleteTheirChunkWhenCommittedWithTheRowsAfterIt) {
+  Fixture fixture(1);
+  Timestamp t = 0;
+  const auto write = [&](std::size_t columns, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+      fixture.write(Row{.timestamp = t += 10, .cells = std::vector<Cell>(columns, Cell{1.5})});
+    }
+  };
+  write(1, 10);
+  fixture.commitGrowing();
+  write(1, 7);  // not committed when the column appears
+  ASSERT_TRUE(fixture.writer.ensureColumn(fixture.topic, "later", PrimitiveType::kFloat64).has_value());
+  write(2, kMaxRows + 3);
+  fixture.commitGrowing();
+
+  std::vector<uint32_t> counts;
+  for (const TopicChunk& chunk : fixture.storage().sealedChunks()) {
+    counts.push_back(chunk.stats.row_count);
+  }
+  EXPECT_EQ(counts, (std::vector<uint32_t>{17, kMaxRows, 3}));
+}
+
 TEST(ChunkGrowthTest, ACommitInsideARowLeavesThatTopicForTheNextOne) {
   Fixture fixture(2);
   fixture.write(Row{.timestamp = 10, .cells = {Cell{1.0}, Cell{1.5F}}});

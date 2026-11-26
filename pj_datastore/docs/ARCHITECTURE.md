@@ -45,12 +45,14 @@ rows in one chunk builder per topic and commits them with `DataWriter::commitRow
 
 - **A commit does not cut a chunk.** The committed rows extend the topic's last chunk (`TopicStorage::appendRows`)
   while it has room and their layout, so a topic's chunks are cut by its rows, `max_chunk_rows` at a time, and by its
-  layout, and not by how often its writer commits: the same rows in the same order give the same chunks at any commit
-  rate. A row is copied into the
-  last chunk, which stays unencoded while it grows. `DataWriter` sizes each builder to end where the last chunk fills,
-  so the builders after it hold whole chunks: those are sealed when they fill, in the writer, and committed as they
-  are. The writer keeps its open builder across commits, emptied, unless the topic gained columns it lacks. `commitChunks(flushAll())` is the other path: it seals the rows as they
-  are, one chunk per builder, and those chunks are stored as given.
+  layout, and not by how often its writer commits: rows written in timestamp order give the same chunks at any commit
+  rate. Rows out of order do not (one commit sorts its own rows, and the rows of a later one are merged in or start
+  an overlapping chunk: "Out-of-order timestamps are kept"), though every read gives the same rows. A row is copied
+  into the last chunk, which stays unencoded while it grows. `DataWriter` sizes each builder to end where the chunk
+  its rows will land in fills (a whole chunk for the rows after a new column, which start one), so the builders after
+  it hold whole chunks: those are sealed when they fill, in the writer, and committed as they are. The writer keeps
+  its open builder across commits, emptied, unless the topic gained columns it lacks. `commitChunks(flushAll())` is
+  the other path: it seals the rows as they are, one chunk per builder, and those chunks are stored as given.
 
 - Rows arrive one at a time (columns not set become null) or as column batches; Arrow C streams go through
   `arrow_import` into the batch path. The two forms must not mix within a row.
@@ -357,3 +359,5 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
   for a toolbox's own writes or for a derived series, whose last chunk stays unencoded until another follows it.
 - A chunk dropped whole by retention does not say how many rows it held: the rows it gained after a node last read
   it are not reported as a gap.
+- A row begun and never finished (an exception between `beginRow()` and `finishRow()`) keeps its topic's uncommitted
+  rows out of every later commit, `finish()` included.
