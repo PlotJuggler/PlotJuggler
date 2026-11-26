@@ -305,12 +305,12 @@ void DataSourceRuntimeHost::flushAll() {
     return;
   }
   flushed_ = true;
-  source_write_host_.flushPending();
+  source_write_host_.finish();
   // Each parser binding has its own writer with independent open chunks: unflushed, the catalog sees the columns but
   // every curve is empty.
   for (auto& [binding_id, binding] : parser_bindings_) {
     if (binding.write_host != nullptr) {
-      binding.write_host->flushPending();
+      binding.write_host->finish();
     }
   }
 }

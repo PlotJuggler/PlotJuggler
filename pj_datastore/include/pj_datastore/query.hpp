@@ -60,8 +60,8 @@ struct MaterializedSample {
   std::vector<double> values;
 };
 
-/// One string cell, its row's time and its row (`DataReader::latestStringAt`). A sealed chunk never changes and its id
-/// is never reused, so `chunk_id` and `row_index` name the cell's content for as long as it is retained.
+/// One string cell, its row's time and its row (`DataReader::latestStringAt`). `chunk_id` and `row_index` name the
+/// cell's content for as long as it is retained (TopicChunk).
 struct StringSample {
   PJ::Timestamp timestamp = 0;
   std::optional<std::string> value;  ///< nullopt: the cell is null

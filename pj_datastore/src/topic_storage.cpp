@@ -44,6 +44,28 @@ uint64_t encodedChunkByteSize(const PJ::TopicChunk& chunk) {
   return bytes;
 }
 
+// What a chunk says about one float column: nothing (not a float column, or no value of it), whole numbers only, or
+// some fraction.
+constexpr uint8_t kNoWholeEvidence = 0;
+constexpr uint8_t kWholeEvidence = 1;
+constexpr uint8_t kFractionalEvidence = 2;
+
+[[nodiscard]] uint8_t wholeEvidence(const PJ::TopicChunk& chunk, std::size_t c) {
+  const auto& descriptor = chunk.columns[c].descriptor;
+  if (descriptor == nullptr) {
+    return kNoWholeEvidence;
+  }
+  const PJ::StorageKind kind = PJ::storageKindOf(descriptor->logical_type);
+  if (!PJ::isFloatKind(kind)) {
+    return kNoWholeEvidence;
+  }
+  if (c < chunk.stats.column_stats.size() && chunk.stats.column_stats[c].null_count >= chunk.stats.row_count) {
+    return kNoWholeEvidence;  // an all-null chunk holds no value of the field: no evidence either way
+  }
+  const bool fractional = c >= chunk.stats.column_stats.size() || !chunk.stats.column_stats[c].all_integral;
+  return fractional ? kFractionalEvidence : kWholeEvidence;
+}
+
 }  // namespace
 
 namespace PJ {
@@ -57,13 +79,18 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   if (chunk.stats.encoded_byte_size == 0) {
     chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
   }
+  // The chunk that stops being the last will not gain rows again: if appendRows() left it unencoded, it is encoded
+  // now, or it would stay stored raw.
+  compactLastChunk();
   // Derived nodes skip chunks whose id is at or below what they consumed, so ids must ascend in commit order. A chunk
-  // sealed before one already here (another writer held it, or a flush moved it) gets a fresh id.
-  const ChunkId newest = sealed_chunks_.empty() ? evicted_through_chunk_id_
-                                                : std::max(sealed_chunks_.back().id, evicted_through_chunk_id_);
-  if (chunk.id <= newest) {
+  // sealed before one this topic held (another writer held it, or a flush moved it) gets a fresh id.
+  if (chunk.id <= newest_chunk_id_ever_ || chunk.id <= evicted_through_chunk_id_ ||
+      (!sealed_chunks_.empty() && chunk.id <= sealed_chunks_.back().id)) {
     chunk.id = TopicChunkBuilder::nextChunkId();
   }
+  newest_chunk_id_ever_ = chunk.id;
+  // New to this topic, whatever it replaced where it came from (another engine's topic, on a flush or a reload).
+  chunk.replaced_id = 0;
 
   // Only a chunk strictly after every existing sample keeps the series generation: incremental consumers absorb it,
   // any overlap makes their caches rebuild.
@@ -72,12 +99,7 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   }
 
   // An append only widens the extrema, so the cached aggregate absorbs it without a rescan.
-  if (chunk_agg_valid_) {
-    chunk_agg_t_min_ = std::min(chunk_agg_t_min_, chunk.stats.t_min);
-    chunk_agg_t_max_ = std::max(chunk_agg_t_max_, chunk.stats.t_max);
-    chunk_agg_row_count_ += chunk.stats.row_count;
-    chunk_agg_byte_size_ += chunk.stats.encoded_byte_size;
-  }
+  foldChunkAggregate(chunk.stats, 0, 0);
   if (whole_agg_valid_) {
     foldWholeNumbers(chunk, +1);
   }
@@ -85,6 +107,138 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   unretireColumnsWithValues(chunk);
   sealed_chunks_.push_back(std::move(chunk));
   return PJ::okStatus();
+}
+
+void TopicStorage::foldChunkAggregate(const ChunkStats& stats, uint32_t rows_before, uint64_t bytes_before) {
+  if (chunk_agg_valid_) {
+    chunk_agg_t_min_ = std::min(chunk_agg_t_min_, stats.t_min);
+    chunk_agg_t_max_ = std::max(chunk_agg_t_max_, stats.t_max);
+    chunk_agg_row_count_ += stats.row_count - rows_before;
+    chunk_agg_byte_size_ += stats.encoded_byte_size - bytes_before;
+  }
+}
+
+template <typename Change>
+void TopicStorage::changeStoredChunk(TopicChunk& chunk, Change&& change) {
+  // The whole-number aggregate counts chunks per field: a column whose evidence the change moves is taken out as it
+  // was and put back as it is.
+  std::vector<uint8_t> evidence_before;
+  if (whole_agg_valid_) {
+    evidence_before.reserve(chunk.columns.size());
+    for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
+      evidence_before.push_back(wholeEvidence(chunk, c));
+    }
+  }
+  const uint64_t bytes_before = chunk.stats.encoded_byte_size;
+  const uint32_t rows_before = chunk.stats.row_count;
+
+  std::forward<Change>(change)();
+  chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
+
+  foldChunkAggregate(chunk.stats, rows_before, bytes_before);
+  if (whole_agg_valid_) {
+    for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
+      const uint8_t evidence = wholeEvidence(chunk, c);
+      if (evidence != evidence_before[c]) {
+        const FieldId field_id = chunk.columns[c].descriptor->field_id;
+        foldWholeEvidence(field_id, evidence_before[c], -1);
+        foldWholeEvidence(field_id, evidence, +1);
+      }
+    }
+  }
+}
+
+void TopicStorage::extendLastChunk(
+    TopicChunk& chunk, const TopicChunkBuilder& batch, std::size_t first, std::size_t count) {
+  // As for a new chunk: only rows strictly after every existing sample keep the series generation.
+  if (batch.timestampAt(first) <= timeMax()) {
+    ++series_generation_;
+  }
+  changeStoredChunk(chunk, [&] {
+    chunk.makeGrowable();
+    // A chunk put back by a restore after newer ones were read: under its old id its new rows would not be seen.
+    if (chunk.id < newest_chunk_id_ever_) {
+      chunk.replaced_id = chunk.firstId();
+      chunk.id = TopicChunkBuilder::nextChunkId();
+    }
+    newest_chunk_id_ever_ = chunk.id;
+    batch.appendRowsTo(chunk, first, count);
+  });
+  unretireColumnsWithValues(chunk);
+}
+
+void TopicStorage::compactChunk(TopicChunk& chunk) {
+  changeStoredChunk(chunk, [&chunk] { chunk.compact(); });
+}
+
+void TopicStorage::mergeIntoLastChunk(TopicChunk& chunk, const TopicChunkBuilder& batch) {
+  ++series_generation_;  // rows land behind rows readers hold
+  changeStoredChunk(chunk, [&] {
+    chunk.makeGrowable();
+    const ChunkId first_id = chunk.firstId();
+    chunk = batch.mergedWith(chunk);  // a new id: rows moved
+    chunk.replaced_id = first_id;
+    newest_chunk_id_ever_ = chunk.id;
+  });
+  unretireColumnsWithValues(chunk);
+}
+
+void TopicStorage::appendRows(TopicChunkBuilder& batch) {
+  // ponytail: a late merge rewrites the whole last chunk, so it is bounded: past this many cells the late rows start a
+  // chunk of their own, as they always did. Merge only the rows behind the first late one if wide topics with late
+  // rows show up.
+  constexpr std::size_t kLateMergeCells = 4'000'000;
+  batch.sortRows();
+  const std::size_t total = batch.rowCount();
+  const std::size_t max_rows = std::max<uint32_t>(descriptor_.max_chunk_rows, 1);
+  const auto compact_if_full = [&](TopicChunk& chunk) {
+    if (chunk.stats.row_count >= max_rows) {
+      compactChunk(chunk);
+    }
+  };
+  std::size_t first = 0;
+  while (first < total) {
+    TopicChunk* last = sealed_chunks_.empty() ? nullptr : &sealed_chunks_.back();
+    // Rows of another layout never join a chunk: a reader tells a column a chunk lacks from a null in it.
+    const bool has_room = last != nullptr && last->stats.row_count < max_rows && batch.hasLayoutOf(*last);
+    if (has_room && batch.timestampAt(first) >= last->stats.t_max) {
+      const std::size_t count = std::min(total - first, max_rows - last->stats.row_count);
+      extendLastChunk(*last, batch, first, count);
+      compact_if_full(*last);
+      first += count;
+      continue;
+    }
+    // Rows older than the last chunk's newest would leave it unsorted: merge them in under a new id (`replaced_id`
+    // keeps the old). Too large or another layout: they start a chunk that overlaps it.
+    if (has_room && first == 0 && last->stats.row_count + total <= max_rows &&
+        (last->stats.row_count + total) * batch.columnCount() <= kLateMergeCells) {
+      mergeIntoLastChunk(*last, batch);
+      compact_if_full(*last);
+      return;
+    }
+    const std::size_t count = std::min(total - first, max_rows);
+    if (first == 0 && count == total && count >= max_rows) {
+      (void)appendSealedChunk(batch.seal());  // a whole chunk already: encoded straight from the builder
+      return;
+    }
+    TopicChunk chunk = batch.makeGrowableChunk();
+    batch.appendRowsTo(chunk, first, count);
+    if (count >= max_rows) {
+      chunk.compact();
+    }
+    (void)appendSealedChunk(std::move(chunk));
+    first += count;
+  }
+}
+
+void TopicStorage::compactLastChunk() {
+  if (sealed_chunks_.empty()) {
+    return;
+  }
+  TopicChunk& last = sealed_chunks_.back();
+  if (last.stats.row_count < descriptor_.max_chunk_rows && last.isGrowable()) {
+    compactChunk(last);
+  }
 }
 
 void TopicStorage::evictBefore(Timestamp t_keep_min) {
@@ -195,30 +349,27 @@ namespace {
 }
 }  // namespace
 
+void TopicStorage::foldWholeEvidence(FieldId field_id, uint8_t evidence, int direction) const {
+  if (evidence == kNoWholeEvidence) {
+    return;
+  }
+  auto& counts = whole_agg_[field_id];
+  if (counts.chunks > 0) {
+    whole_agg_signature_ -= wholeNumberEntryHash(field_id, counts.fractional_chunks == 0);
+  }
+  counts.chunks += static_cast<uint32_t>(direction);
+  counts.fractional_chunks += evidence == kFractionalEvidence ? static_cast<uint32_t>(direction) : 0U;
+  if (counts.chunks > 0) {
+    whole_agg_signature_ += wholeNumberEntryHash(field_id, counts.fractional_chunks == 0);
+  } else {
+    whole_agg_.erase(field_id);
+  }
+}
+
 void TopicStorage::foldWholeNumbers(const TopicChunk& chunk, int direction) const {
   for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
-    const auto& descriptor = chunk.columns[c].descriptor;
-    if (descriptor == nullptr) {
-      continue;
-    }
-    const StorageKind kind = storageKindOf(descriptor->logical_type);
-    if (kind != StorageKind::kFloat32 && kind != StorageKind::kFloat64) {
-      continue;
-    }
-    if (c < chunk.stats.column_stats.size() && chunk.stats.column_stats[c].null_count >= chunk.stats.row_count) {
-      continue;  // an all-null chunk holds no value of the field: no evidence either way
-    }
-    const bool fractional = c >= chunk.stats.column_stats.size() || !chunk.stats.column_stats[c].all_integral;
-    auto& counts = whole_agg_[descriptor->field_id];
-    if (counts.chunks > 0) {
-      whole_agg_signature_ -= wholeNumberEntryHash(descriptor->field_id, counts.fractional_chunks == 0);
-    }
-    counts.chunks += static_cast<uint32_t>(direction);
-    counts.fractional_chunks += fractional ? static_cast<uint32_t>(direction) : 0U;
-    if (counts.chunks > 0) {
-      whole_agg_signature_ += wholeNumberEntryHash(descriptor->field_id, counts.fractional_chunks == 0);
-    } else {
-      whole_agg_.erase(descriptor->field_id);
+    if (const uint8_t evidence = wholeEvidence(chunk, c); evidence != kNoWholeEvidence) {
+      foldWholeEvidence(chunk.columns[c].descriptor->field_id, evidence, direction);
     }
   }
 }

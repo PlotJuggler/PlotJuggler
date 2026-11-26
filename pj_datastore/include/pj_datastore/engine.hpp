@@ -137,6 +137,11 @@ class DataEngine {
   /// IncrementalEngine::onSourceCommitted(): `derived.onSourceCommitted(engine.commitChunks(writer.flushAll()))`.
   std::vector<PJ::TopicId> commitChunks(std::vector<std::pair<PJ::TopicId, TopicChunk>> chunks);
 
+  /// Commits a builder's rows without sealing them into a chunk of their own (TopicStorage::appendRows); false when
+  /// the topic is gone. For DataWriter::commitRows(); the caller holds lockEngine() wherever another thread can see
+  /// the engine.
+  bool commitRows(PJ::TopicId topic_id, TopicChunkBuilder& rows);
+
   /// Evicts, in every dataset, what is older than each topic's newest row minus the window.
   void enforceRetention(PJ::Timestamp retention_window_ns);
 

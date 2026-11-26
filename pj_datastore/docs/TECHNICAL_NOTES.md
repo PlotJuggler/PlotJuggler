@@ -22,17 +22,18 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **What the code does:** order does not matter for a min and max, so `bounds` skips the cursor; a chunk wholly inside
   the window answers from its `ColumnStats`, any other is scanned. The same undo takes 0.46 s.
   `SeriesReaderBounds.MatchesAFullScan` pins the result against the full scan.
-- **Why some chunks are still scanned:** the statistics keep infinities, a NaN first value poisons them (the scalar
-  path's first comparison), an all-NaN chunk leaves min > max, and `t_min`/`t_max` count null rows.
-- **Re-test:** when the builder's statistics change (excluding non-finite values would let every whole chunk skip the
-  scan).
+- **Why some chunks are still scanned:** the statistics keep infinities, a chunk of nothing but NaNs has no extremes,
+  and `t_min`/`t_max` count null rows. A NaN is in neither extreme, so a chunk that holds some answers from its
+  statistics.
+- **Re-test:** when the builder's statistics change (excluding infinities too would let every whole chunk without
+  nulls skip the scan).
 
 ## Out-of-order ingest
 
 - **Observed:** ROS recordings interleave publishers whose message stamps disagree; on `/tf` about 1% of messages
   arrive out of order, and a localizer can future-date its transforms. When the store rejected timestamp regressions,
   those rows were lost.
-- **What the code does:** every row is kept. Scalar rows sort within a chunk at seal and the reads merge overlapping
+- **What the code does:** every row is kept. Scalar rows sort within a commit and the reads merge overlapping
   chunks; ObjectStore entries are inserted at their sorted position.
 - **Cost:** an ObjectStore out-of-order insert shifts the topic's entries, O(n) under the topic's exclusive lock: about
   1.1 ms per push at 200k entries (machine not recorded). A stream that is mostly unsorted degrades toward O(n²).
@@ -48,6 +49,61 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **What the code does:** `TopicChunkBuilder` pads a column lazily (`padColumn`, `padAllColumns`), writing its owed
   nulls in one step (`TypedColumnBuffer::appendNulls`, `BitVector::setNullRange`).
 - **Re-test:** if rows become dense (most columns set per row), where the lazy path saves nothing.
+
+## Chunks cut by rows, not by commits
+
+- **Observed:** when every commit sealed a chunk per topic, a topic's chunk count followed how often its writer
+  committed, and each chunk costs about 330 bytes per column whatever its rows (the column entry, its stats, a
+  descriptor and its path). Loading a 30-minute ROS 1 MCAP with 117k series and topics of up to 13k columns (Linux
+  x86_64, i7-13700H, runs alternated in one session):
+
+  | Commit every | Stored | Chunks | Chunk-columns | Undersized | Load | CPU | RSS |
+  |---|---|---|---|---|---|---|---|
+  | 250 ms | a chunk per commit | 7,615 | 4.75 M | 6,804 | 18.6 s | 26.1 s | 3.68 GB |
+  | 50 ms | a chunk per commit | 25,712 | 11.48 M | 25,458 | 20.7 s | 30.2 s | 5.72 GB |
+  | 250 ms | last chunk grows | 2,105 | 1.19 M | 193 | 19.4 s | 27.0 s | 2.64 GB |
+  | 50 ms | last chunk grows | 2,105 | 1.19 M | 193 | 21.5 s | 30.8 s | 2.64 GB |
+
+  The 193 chunks that are not full are each cut by a new column (a growing array); 1,920 would be the fewest.
+
+- **What was tried, in order:** the first version re-encoded a full chunk by rebuilding it through a builder,
+  recomputed the stats of every appended row and destroyed each builder at commit: 26.4 s (a profile gave 4.0 s to the
+  row copy and 4.8 s to the re-encoding). Encoding in place with the function `seal()` uses, one step for a column no
+  row or every row of the batch set, the builder's own stats for a batch appended whole, and builders kept across
+  commits brought it to about 19 s. Giving back the spare capacity of the buffers a full chunk keeps saved about
+  0.1 GB, and so did one descriptor per topic column for all the chunks a writer makes of it, where every chunk
+  allocated its own, name included (2.76 to 2.64 GB): a chunk-column now costs the column entry and its stats.
+- **Letting the last chunk gain a new column, tried and taken out:** it left no chunk short of full (1,920 chunks,
+  0.66 M chunk-columns, 0.13 GB less), but the rows written before the column existed became nulls of it, back to the
+  start of the chunk. A reader tells "this chunk lacks the column" from "this cell is null" by the chunk's column
+  count, in about a dozen places, and the read tools report the difference: for an array that grows at message 1,550
+  of 3,000, `read_series` gave 1,976 samples with 526 invalid where the file holds 1,450, and `export_series` wrote the
+  526 NaN rows. Plots, the tracker and filters skip nulls, so only the read tools show it;
+  `scripts/qa/regressions/growing_array_field_has_no_rows_before_it.pjqa` covers it. A chunk keeps one layout.
+- **Late rows:** with header timestamps, a `/tf` of several publishers had 97 chunks for 89,995 rows (88 is the
+  minimum), 17 of them cut by rows older than the last chunk's newest; a live stream would cut such a topic about one
+  commit in five. Merging those rows into the last chunk under a new id left 90 chunks. With the loader's default,
+  log time, no chunk of four recordings was cut by a late row.
+- **A chunk given a new id in place says which id it replaces.** A SISO node reads a chunk it has not seen from its
+  first row, and replays only when the chunk starts before its last fed timestamp. A last chunk merged with a late
+  row starts where it did, so a node that had fed nothing after the chunk's first timestamp fed those rows twice (a
+  topic of two publishers: x at 100, y at 110, then x at 105). The chunk now keeps the id it replaced
+  (`TopicChunk::replaced_id`) and such a node replays, so every late merge replays the nodes that read the topic,
+  where a late chunk of its own replayed only those that had fed past it. Re-test when derived series over topics
+  with late rows are slow: the rows before the first late one keep their positions, so a node that fed nothing after
+  it could resume there (reasoning, not tried).
+- **Not tried (reasoning):** sealing a snapshot of the growing rows at every commit costs their whole count times the
+  columns each time, about 13 M cells a commit for a 13k-column topic near a full chunk. Merging small chunks in tiers
+  leaves about ten trailing chunks a topic and renumbers chunks derived nodes have read.
+- **Re-test:**
+  - When topics with growing arrays matter more than these 193 chunks: the last chunk could gain a column if each
+    column of a chunk recorded the row it starts at and every read path took the rows before it as rows the chunk
+    lacks.
+  - When a wide topic is late often (count the chunks that are not full and whose successor starts earlier): a late
+    merge rewrites the whole last chunk, and past `kLateMergeCells` the rows start a chunk of their own; merging only
+    the rows behind the first late one would lift that.
+  - When the per-commit cost matters: it is one visit per column of every topic with new rows, which a list of the
+    columns a batch set would cut for sparse topics.
 
 ## ObjectStore costs
 

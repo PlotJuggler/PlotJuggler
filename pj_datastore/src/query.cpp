@@ -529,7 +529,7 @@ std::optional<SeriesBounds> SeriesReader::bounds(Range<Timestamp> time_range) co
   // Min and max ignore order, so no cursor merge: a chunk wholly inside the window answers from its statistics, any
   // other chunk is scanned over its rows in the window. The statistics stand in only when they equal that scan: no
   // nulls (a null row is no sample, and t_min/t_max count it) and a finite min <= max (the statistics keep infinities,
-  // a NaN first value poisons them, and an all-NaN chunk leaves min > max).
+  // and a chunk of nothing but NaNs has no extremes).
   Range<Timestamp> window = normalized(time_range);
   window.min = std::max(window.min, retention_floor_);
   SeriesBounds result{

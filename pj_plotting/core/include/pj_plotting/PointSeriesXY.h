@@ -46,11 +46,11 @@ class PointSeriesXY final : public QwtSeriesData<QPointF>, public RevisionedSeri
   [[nodiscard]] std::optional<QPointF> sampleFromTime(double display_time_sec) const;
 
  private:
+  // Values, not rows of the store: the index is built under the engine lock, and sample() runs at paint time without
+  // it, where a writer thread may be changing the topic's chunks.
   struct PairSlot {
-    const TopicChunk* x_chunk = nullptr;
-    std::size_t x_row = 0;
-    const TopicChunk* y_chunk = nullptr;
-    std::size_t y_row = 0;
+    Timestamp time = 0;  // raw, of the Y sample
+    QPointF point;
   };
 
   struct RowRef {
@@ -61,8 +61,8 @@ class PointSeriesXY final : public QwtSeriesData<QPointF>, public RevisionedSeri
   void ensureAlignmentIndex() const;
   void buildSameTopicIndex() const;
   void buildDifferentTopicIndex() const;
+  // Valid only while the caller holds the engine lock.
   [[nodiscard]] std::vector<RowRef> rowsFor(TopicId topic_id) const;
-  [[nodiscard]] QPointF readPoint(const PairSlot& slot) const;
 
   SessionManager* session_ = nullptr;
   CurveDescriptor x_source_;

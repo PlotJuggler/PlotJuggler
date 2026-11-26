@@ -7,8 +7,9 @@
 
 namespace PJ {
 
-// Least time between two flushes of a file load's worker (TECHNICAL_NOTES "File-load flush interval"). Header-only and
-// Qt-free, so test plugins can wait past it.
+// How often a file load's worker flushes, so loaded rows reach the views. A flush visits every column of the topics
+// with new rows (TECHNICAL_NOTES "File-load flush interval"). Header-only and Qt-free, so test plugins can wait past
+// it.
 inline constexpr std::chrono::milliseconds kFileLoadFlushInterval{250};
 
 }  // namespace PJ

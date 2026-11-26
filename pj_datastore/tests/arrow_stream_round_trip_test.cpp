@@ -161,7 +161,7 @@ void roundTripThroughArrow(
   // have a null release pointer (it was zeroed by the release callback).
   EXPECT_EQ(stream.release, nullptr);
 
-  write_host.flushPending();
+  write_host.finish();
   {
     const auto lock = engine.lockEngine();
     const auto& chunks = engine.getTopicStorage(topic.id)->sealedChunks();

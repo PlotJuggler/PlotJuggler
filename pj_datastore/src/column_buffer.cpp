@@ -60,6 +60,15 @@ const RawBuffer& TypedColumnBuffer::offsetsBuffer() const noexcept {
 // Validity (lazy initialization)
 // ---------------------------------------------------------------------------
 
+void TypedColumnBuffer::clear() {
+  values_.clear();
+  validity_.clear();
+  offsets_.clear();
+  row_count_ = 0;
+  null_count_ = 0;
+  validity_initialized_ = false;
+}
+
 void TypedColumnBuffer::ensureValidityInitialized() {
   if (validity_initialized_) {
     return;

@@ -29,31 +29,43 @@ from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time
 - **Columns are append-only.** Field ids are dense from 0 and never change once given, so adding a column never
   invalidates a `FieldId` or a column index. The app keys curves by (topic id, column index); reload and merge keep
   both (see "Reload, merge and removal").
-- **Chunks** are immutable once sealed, except for their id. Ids come from one process-wide counter, and within a
-  topic they ascend in commit order: derived-series watermarks and gap detection rely on that. A writer holds sealed
-  chunks until it flushes, so another writer's newer chunk can land first; `TopicStorage::appendSealedChunk()` then
-  gives the late one a fresh id.
+- **Chunks** hold a topic's rows sorted by timestamp, at most `max_chunk_rows` each, in one column layout. A row never
+  changes under its chunk's id: its values and its position stay. Only a topic's last chunk changes: it gains rows at
+  its end as writers commit, and it is re-encoded when it fills or its source ends ("Ingest and schema evolution").
+  When late rows have to go between its rows it is replaced, under a new id. Ids come from one process-wide counter,
+  and within a topic they ascend in commit order: derived-series watermarks and gap detection rely on that, together
+  with the count of rows read from the newest chunk. A chunk sealed whole can be committed after a newer one;
+  `TopicStorage::appendSealedChunk()` then gives it a fresh id.
 
 ## Ingest and schema evolution
 
 A plugin's write call reaches a write host ("Plugin host bridges"), which drives a `DataWriter`. The writer accumulates
-rows in one chunk builder per topic, seals full builders, and hands the sealed chunks to `DataEngine::commitChunks()`.
-Only then do readers see them. `commitChunks()` returns the topics that changed, which is what
-`IncrementalEngine::onSourceCommitted()` takes.
+rows in one chunk builder per topic and commits them with `DataWriter::commitRows()`. Only then do readers see them.
+`commitRows()` returns the topics that changed, which is what `IncrementalEngine::onSourceCommitted()` takes.
+
+- **A commit does not cut a chunk.** The committed rows extend the topic's last chunk (`TopicStorage::appendRows`)
+  while it has room and their layout, so rows written in timestamp order give the same chunks at any commit rate.
+  The last chunk stays unencoded while it grows. `DataWriter` sizes each builder to end where that chunk fills, so
+  the builders after it hold whole chunks, sealed in the writer and committed as they are. `commitChunks(flushAll())`
+  is the other path: one chunk per builder, stored as given.
 
 - Rows arrive one at a time (columns not set become null) or as column batches; Arrow C streams go through
   `arrow_import` into the batch path. The two forms must not mix within a row.
 - **Columns appear at any time.** This is the normal case: variable-length sequences flatten to `data[0]`, `data[1]`,
-  … and grow with the message, and dynamic-schema formats (JSON) add keys per message. A new column seals the pending
-  builder, so earlier chunks have fewer columns: readers bounds-check the column index and treat a missing column as
-  null. A variable-length array grows its element columns up to the topic's expansion limit; past it the extra
-  elements are dropped and counted.
+  … and grow with the message, and dynamic-schema formats (JSON) add keys per message. A new column goes at the end
+  of the layout and starts a new chunk: a chunk has one layout, so earlier chunks have fewer columns. Readers
+  bounds-check the column index, and tell a column a chunk lacks (the field did not exist when its rows were written:
+  they are not rows of it) from a null in a chunk that has it. A variable-length array grows its element columns up
+  to the topic's expansion limit; past it the extra elements are dropped and counted.
 - **A column keeps its first type.** The write host stores a value of another type when the conversion is exact;
   otherwise that field is null for the row, the rest of the row is written, and the field is reported once through the
   ingest-warning handler. Registering an existing field with another type is an error.
-- **Out-of-order timestamps are kept.** Rows are stable-sorted within a chunk at seal, so every sealed chunk is
-  ascending, but a topic's chunks can overlap in time; the reads merge them ("Reading").
-- Pre-registering fields is optional. It enables the bound-record write path and avoids sealing mid-stream.
+- **Out-of-order timestamps are kept.** The rows of one commit are stable-sorted, so every chunk is ascending. Rows
+  older than the last chunk's newest (a topic of several publishers) are merged into it in timestamp order, under a
+  new id (`TopicChunk::replaced_id` keeps the first); readers rebuild and a derived node that read it replays ("Late
+  input"). When the merge does not fit, is too large or has another layout, the rows start a chunk that overlaps the
+  last one; the reads merge them ("Reading").
+- Pre-registering fields is optional. It enables the bound-record write path.
 
 ## Storage, encoding and retention
 
@@ -61,10 +73,15 @@ Each topic's `TopicStorage` holds its committed chunks in commit order, its colu
 state. The engine owns each `TopicStorage` through a `unique_ptr`, so its address never changes while the topic
 exists.
 
-**Encoding** is chosen per column at seal from the builder's statistics: constant when every value is equal,
-frame-of-reference for signed integer columns and for float columns that hold only whole numbers, when the offsets fit
-in fewer bytes than the values (decoding reproduces those floats exactly), dictionary for strings, packed bits for
-bools, raw otherwise. A column has a validity bitmap (Arrow layout, LSB first) only when it holds a null.
+**Encoding** is chosen per column when a chunk fills, or is sealed whole, from its statistics: constant when every
+value is equal, frame-of-reference for signed integer columns and for float columns that hold only whole numbers, when
+the offsets fit in fewer bytes than the values (decoding reproduces those floats exactly), dictionary for strings,
+packed bits for bools, raw otherwise. A column has a validity bitmap (Arrow layout, LSB first) only when it holds a
+null. The last chunk, while it grows, stores raw numbers, packed bools and a dictionary with one entry per run of
+equal strings; `TopicChunk::compact()` gives it the encodings above with the function `seal()` uses, so a chunk that
+grew is stored as one sealed with the same rows. A last chunk that will not fill is encoded when another chunk
+follows it, and when its source ends: the write hosts' `finish()` (`TopicStorage::compactLastChunk()`). Skipping that
+costs memory only, and rows committed later still extend the chunk.
 
 **Nulls on read.** The per-cell accessors do not check: `readNumericAsDouble()` returns 0.0 at a null. The batch
 `readColumnAsDoubles()` writes NaN, and series views skip null rows.
@@ -106,10 +123,12 @@ frees chunks) and the ingest worker threads (the plugin write hosts).
   they read chunks lazily; a `SeriesCursor` relies on its parent's.
 - **Recursive**, so a thread may lock again: a held cursor that reads more, one mutator calling another, a write host's
   append creating a field. Mutating from inside a `forEach` callback is still unsafe.
-- **Appends never move anything.** `commitChunks()` only appends, so a worker commit leaves every GUI cursor and cached
-  `TopicChunk*` valid. Everything that frees or moves chunks (retention, clearing, retiring, detach and reattach,
-  `flushTo()`, `replaceDatasetFrom()`, `mergeDatasets()`, `removeDataset()`) runs on the GUI thread, after the
-  consumers bound to that data dropped their cached chunk pointers.
+- **A commit changes only a topic's last chunk**, under the engine lock, on the writer's thread, reallocating its
+  column buffers. A `TopicChunk*` survives that (the chunks live in a deque); a value's address, a `readString()` view
+  or a column pointer lasts only as long as the lock it was read under. Everything that frees or moves chunks
+  (retention, clearing, retiring, detach and reattach, `flushTo()`, `replaceDatasetFrom()`, `mergeDatasets()`,
+  `removeDataset()`) runs on the GUI thread, after the consumers bound to that data dropped their cached chunk
+  pointers.
 - **Two engines are locked together.** While a stream is paused a second engine exists ("Streaming pause and resume").
   Code that holds both locks takes them in one `std::lock()` (`lockEnginePair()`); holding one engine's lock while
   plain-locking the other can deadlock against `flushTo()`.
@@ -191,21 +210,26 @@ into a text column leaves the cell empty).
   and only `reset()` clears it. Anything that would break the order (late input, input lost to retention, a failed
   replay) therefore resets the node and replays its retained input in time order, never an incremental step.
 - **Scheduling.** `onSourceCommitted()` marks the nodes that read the changed topics dirty; `scheduleAll()` runs the
-  dirty ones, `scheduleActive()` only the given nodes and what they depend on. A SISO node reads the input chunks
-  newer than the newest it consumed; a MIMO node gathers the rows after its last joined timestamp. A dirty node with no
-  input chunk newer than its watermarks returns at once, in time linear in its inputs, and leaves its downstream alone,
-  so a streaming tick that dirties every node costs little for idle ones.
-- **Late input.** An unread chunk that lands at or before the node's last fed timestamp makes the node recompute. A
-  MIMO node tracks the newest chunk id it consumed per input, because a chunk sealed before another input's can be
-  committed after it.
+  dirty ones, `scheduleActive()` only the given nodes and what they depend on. A SISO node reads the rows after its
+  watermark: the input chunks newer than the newest it consumed, and the rows that chunk gained since. A MIMO node
+  gathers the rows after its last joined timestamp. A dirty node whose inputs hold no newer chunk and no new row in
+  the newest one returns at once, in time linear in its inputs, and leaves its downstream alone, so a streaming tick
+  that dirties every node costs little for idle ones.
+- **Late input.** An unread chunk that starts before a SISO node's last fed timestamp makes the node recompute (for a
+  MIMO node: at or before its last joined one), and so do rows its newest chunk gained behind that timestamp (the
+  chunk can sit behind an overlapping one). A chunk that took the place of one the SISO node read
+  (`TopicChunk::replaced_id` at or below the node's watermark id) also does when it starts exactly at that timestamp:
+  it holds rows the node fed, under an id the node has not seen. A MIMO node tracks the newest chunk id it consumed per
+  input, and its rows, because a chunk sealed before another input's can be committed after it.
 - **Recompute is transactional.** The node's current output is set aside, not cleared, and the graph below it is
   replayed. A successful replay drops the old output; an error or an exception restores it, so a failed recompute never
   leaves an output emptier than before. A node whose replay failed is fully recomputed on its next run, because its
   watermarks no longer describe its output and an incremental step would duplicate rows; restoring saved input
   bindings does the same. A failed node runs again only when new input arrives.
 - **Retention gaps.** A node has a gap when retention dropped, or cut into, an input chunk newer than the newest chunk
-  the node consumed. Detection compares chunk ids, not timestamps, because feed timestamps advance only on non-null
-  rows and exact joins, so an all-null or sparse input would look permanently behind. A MIMO node compares each input
+  the node consumed, or hid rows that chunk gained before the node read them. Detection compares chunk ids, not
+  timestamps, because feed timestamps advance only on non-null rows and exact joins, so an all-null or sparse input
+  would look permanently behind. A MIMO node compares each input
   with the newest chunk it consumed from that input. The node then replays what is retained and records the gap (a
   bounded recent list, `gaps()`); `pj_runtime` shows it in the transform's configuration.
 - **Time-sliced replay.** `materializeStep()` advances one node for about a given wall-time budget and commits what it
@@ -286,8 +310,9 @@ Plugins never link this module. They reach it through the C-ABI tables in the SD
 parser write (bound to one topic the host chose), toolbox (scalar reads and writes, object writes, the catalog), source
 and parser object write, and toolbox object read.
 
-- Each host turns ABI calls into `DataWriter`, `DataEngine` and `ObjectStore` operations. The host seals and commits
-  (`flushPending()`); plugins never do.
+- Each host turns ABI calls into `DataWriter`, `DataEngine` and `ObjectStore` operations. The host commits
+  (`flushPending()`) and, when its source ends, encodes the last chunks of the topics it wrote (`finish()`); plugins
+  never do.
 - An exception must not cross the ABI: entry points catch it and return an error status.
 - The catalog snapshot names each data source by its label, not by the name it was created with: the handle is the
   identity, `PJ_data_source_info_t.name` a session label unique within one snapshot.
@@ -316,3 +341,13 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
 - `SeriesReader`'s index-based lookups (`sampleAt()`, `indexAtOrBeforeTime()`, `indexAtOrAfterTime()`) assume
   time-ordered chunks and are wrong when chunks overlap. The plots use them only to size buffers.
 - A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
+- A merge of late rows rewrites the whole last chunk, not only the rows behind the first late one, so it is bounded:
+  a wide topic that is late past the bound gets a chunk per late commit.
+- A new column cuts the topic's last chunk, however few rows it holds: a topic whose arrays keep growing gets a chunk
+  per growth (TECHNICAL_NOTES "Chunks cut by rows, not by commits" has what letting the chunk gain the column broke).
+- `finish()` encodes on its caller's thread, which is the GUI thread for a file load's last flush. A toolbox's own
+  writes and a derived series have no `finish()`: their last chunk stays unencoded until another follows it.
+- A chunk dropped whole by retention does not say how many rows it held: the rows it gained after a node last read
+  it are not reported as a gap.
+- A row begun and never finished (an exception between `beginRow()` and `finishRow()`) keeps its topic's uncommitted
+  rows out of every later commit, `finish()` included.

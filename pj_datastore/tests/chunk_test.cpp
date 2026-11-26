@@ -1558,5 +1558,28 @@ TEST(ChunkTest, BulkAppendAfterSparseRowsStaysAligned) {
   EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(1, 4), 101.0);
 }
 
+// A bulk batch's min and max are its values', infinities included, as for rows appended one by one.
+TEST(ChunkTest, BulkStatsKeepInfiniteBounds) {
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  std::vector<ColumnDescriptor> cols = {
+      makeCol(0, PrimitiveType::kFloat64, "pos_inf"),
+      makeCol(1, PrimitiveType::kFloat64, "neg_inf"),
+  };
+  TopicChunkBuilder builder(/*topic_id=*/72, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  const Timestamp ts[] = {1, 2};
+  const double pos[] = {kInf, kInf};
+  const double neg[] = {-kInf, -kInf};
+  builder.appendTimestamps(Span<const Timestamp>(ts, 2));
+  builder.appendColumn(0, Span<const double>(pos, 2));
+  builder.appendColumn(1, Span<const double>(neg, 2));
+  builder.finishBulkAppend();
+
+  const TopicChunk chunk = builder.seal();
+  EXPECT_EQ(*chunk.stats.column_stats[0].min_value, kInf);
+  EXPECT_EQ(*chunk.stats.column_stats[0].max_value, kInf);
+  EXPECT_EQ(*chunk.stats.column_stats[1].min_value, -kInf);
+  EXPECT_EQ(*chunk.stats.column_stats[1].max_value, -kInf);
+}
+
 }  // namespace
 }  // namespace PJ

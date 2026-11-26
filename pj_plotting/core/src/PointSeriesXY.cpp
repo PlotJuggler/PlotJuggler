@@ -69,7 +69,7 @@ QPointF PointSeriesXY::sample(std::size_t index) const {
   if (index >= pairs_.size()) {
     return invalidPoint();
   }
-  return readPoint(pairs_[index]);
+  return pairs_[index].point;
 }
 
 std::optional<QPointF> PointSeriesXY::sampleFromTime(double display_time_sec) const {
@@ -79,19 +79,18 @@ std::optional<QPointF> PointSeriesXY::sampleFromTime(double display_time_sec) co
   }
 
   // The tracker speaks display seconds and pairs_ carries raw timestamps: map back through the Y source's offset (X and
-  // Y share a time base) so the key is in the chunks' domain.
+  // Y share a time base) so the key is in the stored timestamps' domain.
   const DisplayOffset offset = session_->displayOffset(y_source_.dataset_id);
   const Timestamp raw_time = displaySecondsToRaw(fromAxisDouble(display_time_sec), offset);
 
   // pairs_ is time-ordered: the last pair at or before raw_time, as the time-series tracker does (the marker holds the
   // latest sample, it does not interpolate).
-  const auto after = std::upper_bound(pairs_.begin(), pairs_.end(), raw_time, [](Timestamp time, const PairSlot& slot) {
-    return time < slot.y_chunk->readTimestamp(slot.y_row);
-  });
+  const auto after = std::upper_bound(
+      pairs_.begin(), pairs_.end(), raw_time, [](Timestamp time, const PairSlot& slot) { return time < slot.time; });
   if (after == pairs_.begin()) {
     return std::nullopt;  // cursor is before the first sample
   }
-  return readPoint(*std::prev(after));
+  return std::prev(after)->point;
 }
 
 QRectF PointSeriesXY::boundingRect() const {
@@ -108,9 +107,8 @@ QRectF PointSeriesXY::boundingRect() const {
   bool found_y = false;
 
   for (const PairSlot& slot : pairs_) {
-    const QPointF point = readPoint(slot);
-    updateFiniteRange(point.x(), x_min, x_max, found_x);
-    updateFiniteRange(point.y(), y_min, y_max, found_y);
+    updateFiniteRange(slot.point.x(), x_min, x_max, found_x);
+    updateFiniteRange(slot.point.y(), y_min, y_max, found_y);
   }
 
   cached_bounding_rect_ =
@@ -148,9 +146,8 @@ void PointSeriesXY::ensureAlignmentIndex() const {
     return;
   }
 
-  // Hold the engine lock across the build: the index builders read chunk deques through the raw getTopicStorage
-  // accessor, which must stay stable. The TopicChunk* cached into pairs_ outlives this lock and stays valid through the
-  // drop-cache-before-mutate drain that clear, reload and eviction honor.
+  // Hold the engine lock across the build: the index builders read chunks through the raw getTopicStorage accessor.
+  // pairs_ keeps values, so nothing of the store is read once the lock is released.
   const auto lock = session_->dataEngine().lockEngine();
 
   if (x_source_.topic_id == y_source_.topic_id) {
@@ -180,7 +177,7 @@ void PointSeriesXY::buildSameTopicIndex() const {
       if (!std::isfinite(x_value) || !std::isfinite(y_value)) {
         continue;
       }
-      pairs_.push_back(PairSlot{.x_chunk = &chunk, .x_row = row, .y_chunk = &chunk, .y_row = row});
+      pairs_.push_back(PairSlot{.time = chunk.readTimestamp(row), .point = QPointF(x_value, y_value)});
     }
   }
 }
@@ -206,13 +203,7 @@ void PointSeriesXY::buildDifferentTopicIndex() const {
     const double x_value = readY(*x_rows[x_index].chunk, x_source_.column_index, x_rows[x_index].row);
     const double y_value = readY(*y_rows[y_index].chunk, y_source_.column_index, y_rows[y_index].row);
     if (std::isfinite(x_value) && std::isfinite(y_value)) {
-      pairs_.push_back(
-          PairSlot{
-              .x_chunk = x_rows[x_index].chunk,
-              .x_row = x_rows[x_index].row,
-              .y_chunk = y_rows[y_index].chunk,
-              .y_row = y_rows[y_index].row,
-          });
+      pairs_.push_back(PairSlot{.time = y_time, .point = QPointF(x_value, y_value)});
     }
     ++x_index;
     ++y_index;
@@ -243,19 +234,6 @@ std::vector<PointSeriesXY::RowRef> PointSeriesXY::rowsFor(TopicId topic_id) cons
     }
   }
   return rows;
-}
-
-QPointF PointSeriesXY::readPoint(const PairSlot& slot) const {
-  if (slot.x_chunk == nullptr || slot.y_chunk == nullptr) {
-    return invalidPoint();
-  }
-  if (slot.x_row >= slot.x_chunk->stats.row_count || slot.y_row >= slot.y_chunk->stats.row_count) {
-    return invalidPoint();
-  }
-  return {
-      readY(*slot.x_chunk, x_source_.column_index, slot.x_row),
-      readY(*slot.y_chunk, y_source_.column_index, slot.y_row),
-  };
 }
 
 }  // namespace PJ

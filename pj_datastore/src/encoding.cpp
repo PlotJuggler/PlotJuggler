@@ -287,50 +287,53 @@ void forDecodeRangeAsDoubles(const FrameOfReferenceEncoded& enc, Span<double> ou
 // Dictionary encoding for strings
 // ---------------------------------------------------------------------------
 
-DictionaryEncoded dictionaryEncodeStrings(
-    Span<const uint8_t> offsets_data, Span<const uint8_t> values_data, std::size_t row_count) {
+namespace {
+
+// Each distinct string once, in first-seen order, and the narrowest indices. The views `value_at(row)` returns stay
+// valid for the whole call: they are the lookup's keys.
+template <typename ValueAt>
+DictionaryEncoded dictionaryEncode(std::size_t row_count, ValueAt&& value_at) {
   DictionaryEncoded result;
   result.count = row_count;
-
   if (row_count == 0) {
     result.index_bytes = 1;
     return result;
   }
-
-  tsl::robin_map<std::string, uint32_t> lookup;
+  tsl::robin_map<std::string_view, uint32_t> lookup;
   std::vector<uint32_t> temp_indices;
   temp_indices.reserve(row_count);
-
   for (std::size_t row = 0; row < row_count; ++row) {
+    const std::string_view value = value_at(row);
+    const auto [it, inserted] = lookup.try_emplace(value, static_cast<uint32_t>(result.dictionary.size()));
+    if (inserted) {
+      result.dictionary.emplace_back(value);
+    }
+    temp_indices.push_back(it->second);
+  }
+  result.index_bytes = indexBytesFor(result.dictionary.size());
+  result.indices.reserve(row_count * result.index_bytes);
+  for (const uint32_t index : temp_indices) {
+    writeIndex(result.indices, index, result.index_bytes);
+  }
+  return result;
+}
+
+}  // namespace
+
+DictionaryEncoded dictionaryEncodeStrings(
+    Span<const uint8_t> offsets_data, Span<const uint8_t> values_data, std::size_t row_count) {
+  return dictionaryEncode(row_count, [&](std::size_t row) {
     uint32_t start_offset = 0;
     uint32_t end_offset = 0;
     std::memcpy(&start_offset, offsets_data.data() + row * sizeof(uint32_t), sizeof(uint32_t));
     std::memcpy(&end_offset, offsets_data.data() + (row + 1) * sizeof(uint32_t), sizeof(uint32_t));
-
-    std::string_view str_view(
+    return std::string_view(
         reinterpret_cast<const char*>(values_data.data() + start_offset), end_offset - start_offset);
+  });
+}
 
-    std::string key_str(str_view);
-    auto it = lookup.find(key_str);
-    uint32_t index = 0;
-    if (it != lookup.end()) {
-      index = it->second;
-    } else {
-      index = static_cast<uint32_t>(result.dictionary.size());
-      result.dictionary.push_back(key_str);
-      lookup[std::move(key_str)] = index;
-    }
-    temp_indices.push_back(index);
-  }
-
-  result.index_bytes = indexBytesFor(result.dictionary.size());
-  result.indices.reserve(row_count * result.index_bytes);
-
-  for (uint32_t idx : temp_indices) {
-    writeIndex(result.indices, idx, result.index_bytes);
-  }
-
-  return result;
+DictionaryEncoded dictionaryRecode(const DictionaryEncoded& encoded) {
+  return dictionaryEncode(encoded.count, [&](std::size_t row) { return dictionaryLookup(encoded, row); });
 }
 
 std::string_view dictionaryLookup(const DictionaryEncoded& encoded, std::size_t row) {

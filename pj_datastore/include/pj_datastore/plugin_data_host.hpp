@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Host side of the pj_plugins C-ABI data surfaces: each class turns one surface's calls into DataWriter, DataEngine
-// or ObjectStore operations. raw() is the vtable handed to the plugin; flushPending() seals and commits. Design:
+// or ObjectStore operations. raw() is the vtable handed to the plugin; flushPending() commits. Design:
 // docs/ARCHITECTURE.md "Plugin host bridges".
 
 #include <functional>
@@ -51,7 +51,12 @@ class DatastoreSourceWriteHost {
   DatastoreSourceWriteHost& operator=(DatastoreSourceWriteHost&&) noexcept;
 
   [[nodiscard]] PJ_source_write_host_t raw() noexcept;
+  /// Commits the rows written so far: readers see them, and no chunk is cut (DataWriter::commitRows). The other hosts'
+  /// flushPending() does the same.
   void flushPending();
+  /// flushPending(), then re-encodes the last chunk of every topic this host wrote (TopicStorage::compactLastChunk):
+  /// for when the source ends. The same on DatastoreParserWriteHost.
+  void finish();
 
   // Flushes pending rows into the current engine, then routes later writes to `target` (the streaming pause/resume
   // swap). Not owning. Takes both engine locks, so it waits for a worker call in progress (an Arrow import holds them
@@ -101,6 +106,7 @@ class DatastoreParserWriteHost {
 
   [[nodiscard]] PJ_parser_write_host_t raw() noexcept;
   void flushPending();
+  void finish();
 
   // As DatastoreSourceWriteHost::setTarget(); the bound topic must exist in `target` with the same TopicId (the
   // streaming manager registers it on both engines).

@@ -3185,5 +3185,436 @@ TEST(IncrementalEngineTest, StickyFailedNodeStillReportsItsErrorOnAnIdlePass) {
   EXPECT_EQ(derived.nodeError(siso), "FailAfterNTransform: boom");
 }
 
+// ---------------------------------------------------------------------------
+// Input committed unsealed: a topic's last chunk gains rows under its id
+// ---------------------------------------------------------------------------
+
+// As appendLinearRows(), committed as a source does: the rows extend the topic's last chunk.
+static void appendLinearRowsGrowing(
+    DataEngine& engine, PJ::TopicId topic, double slope, int n, int start_i, PJ::Timestamp step_ns = 1'000'000'000LL) {
+  DataWriter writer = engine.createWriter();
+  for (int i = start_i; i < start_i + n; ++i) {
+    const PJ::Timestamp ts = static_cast<PJ::Timestamp>(i) * step_ns;
+    ASSERT_TRUE(writer.beginRow(topic, ts).has_value());
+    writer.set(topic, 0, slope * (static_cast<double>(i) * static_cast<double>(step_ns) * 1e-9));
+    ASSERT_TRUE(writer.finishRow(topic).has_value());
+  }
+  (void)writer.commitRows();
+}
+
+static PJ::TopicId makeEmptyTopic(DataEngine& engine, PJ::DatasetId dataset, const std::string& name) {
+  DataWriter writer = engine.createWriter();
+  return writer.registerScalarSeries(dataset, name, PJ::NumericType::kFloat64)->topic_id;
+}
+
+TEST(IncrementalEngineGrowingChunkTest, SisoFeedsEachRowAChunkGainsOnce) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyTopic(engine, ds, "src");
+  const PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  // One row a commit, as a slow topic of a stream: the source stays one chunk.
+  constexpr int kRows = 40;
+  for (int i = 0; i < kRows; ++i) {
+    appendLinearRowsGrowing(engine, src, 2.0, 1, i);
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+    ASSERT_EQ(collectValues(engine, out).size(), static_cast<std::size_t>(i)) << "after row " << i;
+  }
+  ASSERT_EQ(engine.getTopicStorage(src)->sealedChunks().size(), 1U);
+
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), static_cast<std::size_t>(kRows - 1));
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(rows[i].first, static_cast<PJ::Timestamp>(i + 1) * 1'000'000'000LL);
+    EXPECT_NEAR(rows[i].second, 2.0, 1e-6);
+  }
+  // The output is committed the same way, so it is one chunk too.
+  EXPECT_EQ(engine.getTopicStorage(out)->sealedChunks().size(), 1U);
+}
+
+TEST(IncrementalEngineGrowingChunkTest, AnIdleNodeRunsWhenItsInputChunkGainsRows) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyTopic(engine, ds, "src");
+  const PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  appendLinearRowsGrowing(engine, src, 1.0, 5, 0);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  ASSERT_EQ(collectValues(engine, out).size(), 4U);
+
+  // No new chunk id: only the rows of the chunk the node already read.
+  appendLinearRowsGrowing(engine, src, 1.0, 3, 5);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectValues(engine, out).size(), 7U);
+
+  // And nothing more when nothing was added.
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectValues(engine, out).size(), 7U);
+}
+
+TEST(IncrementalEngineGrowingChunkTest, ChainedNodesFollowAGrowingOutput) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyTopic(engine, ds, "src");
+  const PJ::NodeId first = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
+  const PJ::NodeId second =
+      *derived.addSisoTransform(derived.outputTopics(first)[0], "d2", ds, std::make_unique<DerivativeTransform>());
+
+  for (int i = 0; i < 30; ++i) {
+    appendLinearRowsGrowing(engine, src, 3.0, 1, i);
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+  // The second derivative of a line: 28 zeros, each once.
+  const auto values = collectValues(engine, derived.outputTopics(second)[0]);
+  ASSERT_EQ(values.size(), 28U);
+  for (const double v : values) {
+    EXPECT_NEAR(v, 0.0, 1e-6);
+  }
+}
+
+TEST(IncrementalEngineGrowingChunkTest, MimoJoinsTheRowsItsInputChunksGain) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId a = makeEmptyTopic(engine, ds, "a");
+  const PJ::TopicId b = makeEmptyTopic(engine, ds, "b");
+  const PJ::NodeId node = *derived.addMimoTransform({a, b}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  for (int i = 0; i < 20; ++i) {
+    // The inputs advance in separate commits: a row joins only once both hold its timestamp.
+    appendLinearRowsGrowing(engine, a, 1.0, 1, i);
+    notify(derived, {a});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+    ASSERT_EQ(collectValues(engine, out).size(), static_cast<std::size_t>(i));
+    appendLinearRowsGrowing(engine, b, 2.0, 1, i);
+    notify(derived, {b});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+    ASSERT_EQ(collectValues(engine, out).size(), static_cast<std::size_t>(i + 1));
+  }
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), 20U);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(rows[i].first, static_cast<PJ::Timestamp>(i) * 1'000'000'000LL);
+    EXPECT_NEAR(rows[i].second, 3.0 * static_cast<double>(i), 1e-6);
+  }
+}
+
+TEST(IncrementalEngineGrowingChunkTest, ALateRowReplaysTheNode) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyTopic(engine, ds, "src");
+  const PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  // Rows 0, 2, 4 seconds, then the one at 3 seconds arrives.
+  for (const int i : {0, 2, 4}) {
+    appendLinearRowsGrowing(engine, src, 1.0, 1, i);
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+  ASSERT_EQ(collectValues(engine, out).size(), 2U);
+  appendLinearRowsGrowing(engine, src, 1.0, 1, 3);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  // As if the rows had come in order: one derivative per row after the first, each 1.0.
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), 3U);
+  EXPECT_EQ(rows[0].first, 2'000'000'000LL);
+  EXPECT_EQ(rows[1].first, 3'000'000'000LL);
+  EXPECT_EQ(rows[2].first, 4'000'000'000LL);
+  for (const auto& row : rows) {
+    EXPECT_NEAR(row.second, 1.0, 1e-6);
+  }
+
+  // The late row's chunk is the last now; rows after it extend that chunk and are fed once.
+  appendLinearRowsGrowing(engine, src, 1.0, 1, 5);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectValues(engine, out).size(), 4U);
+}
+
+// Topic "xy" with float64 x, y and no row.
+static PJ::TopicId makeEmptyXyTopic(DataEngine& engine, PJ::DatasetId ds) {
+  DataWriter writer = engine.createWriter();
+  const PJ::SchemaId schema_id = *writer.registerSchema(
+      "xy",
+      makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
+  TopicDescriptor td;
+  td.name = "xy_topic";
+  td.schema_id = schema_id;
+  td.dataset_id = ds;
+  return *writer.registerTopic(ds, td);
+}
+
+// A topic of two publishers, each stamping its own rows: x at 100, y at 110, then x at 105. The late row is merged
+// into the chunk, which takes a new id; the node on x has fed that chunk's first row and nothing after it, so the
+// chunk starts exactly at the node's watermark. Read from its first row it would feed x at 100 again.
+TEST(IncrementalEngineGrowingChunkTest, AChunkMergedWithALateRowDoesNotRepeatTheRowsTheNodeFed) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyXyTopic(engine, ds);
+  const PJ::NodeId node = *derived.addSisoTransform(src, "x_id", ds, std::make_unique<IdentityTransform>(), 0);
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+  DataWriter writer = engine.createWriter();
+  const auto commit_cell = [&](PJ::Timestamp ts, std::size_t column, double value) {
+    ASSERT_TRUE(writer.beginRow(src, ts).has_value());
+    writer.set(src, column, value);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+    (void)writer.commitRows();
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  };
+
+  commit_cell(100, 0, 1.0);
+  commit_cell(110, 1, 7.0);
+  const auto& chunks = engine.getTopicStorage(src)->sealedChunks();
+  ASSERT_EQ(chunks.size(), 1U);
+  const PJ::ChunkId before = chunks.back().id;
+
+  commit_cell(105, 0, 2.0);
+  ASSERT_EQ(chunks.size(), 1U);
+  ASSERT_NE(chunks.back().id, before) << "the late row is merged in, under a new id";
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {{100, 1.0}, {105, 2.0}};
+  EXPECT_EQ(collectRows(engine, out), expected);
+
+  // A second late row, into the chunk that already replaced one.
+  commit_cell(102, 0, 1.5);
+  const std::vector<std::pair<PJ::Timestamp, double>> after_second = {{100, 1.0}, {102, 1.5}, {105, 2.0}};
+  EXPECT_EQ(collectRows(engine, out), after_second);
+}
+
+// The same for a node a time-sliced step left inside the chunk: the rows it fed so far all carry the chunk's first
+// timestamp.
+TEST(IncrementalEngineGrowingChunkTest, AChunkMergedWhileAStepWasInsideItDoesNotRepeatTheRowsTheNodeFed) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyXyTopic(engine, ds);
+  DataWriter writer = engine.createWriter();
+  const auto add_row = [&](PJ::Timestamp ts, double x) {
+    ASSERT_TRUE(writer.beginRow(src, ts).has_value());
+    writer.set(src, 0, x);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  };
+  constexpr int kSameStamp = 600;  // more rows than a step feeds between two looks at its deadline
+  for (int i = 0; i < kSameStamp; ++i) {
+    add_row(100, static_cast<double>(i));
+  }
+  add_row(200, 1000.0);
+  (void)writer.commitRows();
+  const PJ::NodeId node = *derived.addSisoTransform(src, "x_id", ds, std::make_unique<IdentityTransform>(), 0);
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  // A step too short to finish: it stops inside the chunk, among the rows stamped 100.
+  const auto done = derived.materializeStep(node, std::chrono::nanoseconds(1));
+  ASSERT_TRUE(done.has_value()) << done.error();
+  ASSERT_FALSE(*done);
+  const std::size_t fed = collectRows(engine, out).size();
+  ASSERT_GT(fed, 0U);
+  ASSERT_LT(fed, static_cast<std::size_t>(kSameStamp));
+
+  const PJ::ChunkId before = engine.getTopicStorage(src)->sealedChunks().back().id;
+  add_row(150, 500.0);  // late: merged into the chunk, which takes a new id
+  (void)writer.commitRows();
+  ASSERT_NE(engine.getTopicStorage(src)->sealedChunks().back().id, before);
+  notify(derived, {src});
+  const auto finished = derived.materializeStep(node, std::chrono::seconds(30));
+  ASSERT_TRUE(finished.has_value()) << finished.error();
+  ASSERT_TRUE(*finished);
+
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), static_cast<std::size_t>(kSameStamp + 2));
+  for (int i = 0; i < kSameStamp; ++i) {
+    ASSERT_EQ(rows[static_cast<std::size_t>(i)], std::make_pair(PJ::Timestamp{100}, static_cast<double>(i)));
+  }
+  EXPECT_EQ(rows[kSameStamp], std::make_pair(PJ::Timestamp{150}, 500.0));
+  EXPECT_EQ(rows[kSameStamp + 1], std::make_pair(PJ::Timestamp{200}, 1000.0));
+}
+
+// A chunk that took a new id long ago is like any other to a node that meets it under that id: a step that stops
+// inside it resumes there, and does not start over.
+TEST(IncrementalEngineGrowingChunkTest, AStepInsideAChunkThatWasMergedEarlierResumesWhereItStopped) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyXyTopic(engine, ds);
+  DataWriter writer = engine.createWriter();
+  const auto add_row = [&](PJ::Timestamp ts, double x) {
+    ASSERT_TRUE(writer.beginRow(src, ts).has_value());
+    writer.set(src, 0, x);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  };
+  constexpr int kRows = 400;
+  for (int i = 0; i < kRows; ++i) {
+    add_row(100 + 2 * i, static_cast<double>(i));
+  }
+  (void)writer.commitRows();
+  add_row(101, 0.5);  // late: the chunk is merged under a new id before any node reads it
+  (void)writer.commitRows();
+  ASSERT_NE(engine.getTopicStorage(src)->sealedChunks().back().replaced_id, 0U);
+
+  std::vector<std::string> resets;
+  const PJ::NodeId node =
+      *derived.addSisoTransform(src, "x_id", ds, std::make_unique<ResetTracingIdentityTransform>("x_id", resets), 0);
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+  const std::size_t resets_at_start = resets.size();
+  std::size_t steps = 0;
+  for (; steps < 10'000; ++steps) {
+    const auto done = derived.materializeStep(node, std::chrono::nanoseconds(1));
+    ASSERT_TRUE(done.has_value()) << done.error();
+    if (*done) {
+      break;
+    }
+  }
+  EXPECT_GT(steps, 5U) << "the replay stayed in slices";
+  EXPECT_EQ(resets.size(), resets_at_start) << "and never started over";
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), static_cast<std::size_t>(kRows + 1));
+  EXPECT_EQ(rows[1], std::make_pair(PJ::Timestamp{101}, 0.5));
+  EXPECT_EQ(rows.back(), std::make_pair(PJ::Timestamp{100 + 2 * (kRows - 1)}, static_cast<double>(kRows - 1)));
+}
+
+// A chunk that is new, and not one that replaced another, may start exactly at the node's last fed timestamp: its
+// rows are fed after it, with no replay.
+TEST(IncrementalEngineGrowingChunkTest, ANewChunkStartingAtTheWatermarkIsFedWithoutAReplay) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyXyTopic(engine, ds);
+  std::vector<std::string> resets;
+  const PJ::NodeId node =
+      *derived.addSisoTransform(src, "x_id", ds, std::make_unique<ResetTracingIdentityTransform>("x_id", resets), 0);
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+  DataWriter writer = engine.createWriter();
+  const auto commit_sealed = [&](PJ::Timestamp ts, double x) {
+    ASSERT_TRUE(writer.beginRow(src, ts).has_value());
+    writer.set(src, 0, x);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+    engine.commitChunks(writer.flushAll());  // a chunk of its own
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  };
+  commit_sealed(100, 1.0);
+  const std::size_t resets_after_first = resets.size();
+  commit_sealed(100, 2.0);
+
+  ASSERT_EQ(engine.getTopicStorage(src)->sealedChunks().size(), 2U);
+  EXPECT_EQ(resets.size(), resets_after_first);
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {{100, 1.0}, {100, 2.0}};
+  EXPECT_EQ(collectRows(engine, out), expected);
+}
+
+// A MIMO node gathers by timestamp, so a merged chunk gives it each row once too.
+TEST(IncrementalEngineGrowingChunkTest, AChunkMergedWithALateRowIsJoinedOnceByAMimoNode) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId a = makeEmptyTopic(engine, ds, "a");
+  const PJ::TopicId b = makeEmptyTopic(engine, ds, "b");
+  const PJ::NodeId node = *derived.addMimoTransform({a, b}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+  DataWriter writer = engine.createWriter();
+  const auto commit_value = [&](PJ::TopicId topic, PJ::Timestamp ts, double value) {
+    ASSERT_TRUE(writer.beginRow(topic, ts).has_value());
+    writer.set(topic, 0, value);
+    ASSERT_TRUE(writer.finishRow(topic).has_value());
+    (void)writer.commitRows();
+    notify(derived, {topic});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  };
+  for (const PJ::Timestamp ts : {100, 110, 105}) {
+    commit_value(b, ts, 10.0);
+  }
+  commit_value(a, 100, 1.0);
+  commit_value(a, 110, 3.0);
+  const PJ::ChunkId before = engine.getTopicStorage(a)->sealedChunks().back().id;
+  commit_value(a, 105, 2.0);  // late: merged into a's chunk under a new id
+  ASSERT_NE(engine.getTopicStorage(a)->sealedChunks().back().id, before);
+
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {{100, 11.0}, {105, 12.0}, {110, 13.0}};
+  EXPECT_EQ(collectRows(engine, out), expected);
+}
+
+TEST(IncrementalEngineGrowingChunkTest, RowsAChunkGainedAndRetentionHidBeforeTheNodeReadThemAreAGap) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyTopic(engine, ds, "src");
+  const PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  appendLinearRowsGrowing(engine, src, 1.0, 5, 0);  // 0..4 s
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  ASSERT_EQ(collectValues(engine, out).size(), 5U);
+
+  // The same chunk gains 5..9 s, and retention hides everything before 8 s before the node runs.
+  appendLinearRowsGrowing(engine, src, 1.0, 5, 5);
+  ASSERT_EQ(engine.getTopicStorage(src)->sealedChunks().size(), 1U);
+  notify(derived, {src});
+  engine.enforceRetention(1'000'000'000LL, ds);  // newest 9 s - 1 s window
+
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  const auto gaps = derived.gaps(node);
+  ASSERT_EQ(gaps.size(), 1U);
+  EXPECT_EQ(gaps[0].from, 4'000'000'000LL);
+  EXPECT_EQ(gaps[0].to, 8'000'000'000LL);
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), 2U);
+  EXPECT_EQ(rows.front().first, 8'000'000'000LL);
+  EXPECT_EQ(rows.back().first, 9'000'000'000LL);
+
+  // Retention reaching rows the node did read is no gap.
+  appendLinearRowsGrowing(engine, src, 1.0, 1, 10);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  engine.enforceRetention(1'000'000'000LL, ds);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(derived.gaps(node).size(), 1U);
+}
+
+TEST(IncrementalEngineGrowingChunkTest, ATimeSlicedReplayResumesInsideAChunkThatKeepsGrowing) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyTopic(engine, ds, "src");
+  appendLinearRowsGrowing(engine, src, 1.0, 200, 0);
+  const PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  // Steps too short to finish, with rows landing in the same chunk between them.
+  int next = 200;
+  for (int step = 0; step < 2000 && collectValues(engine, out).size() < static_cast<std::size_t>(next - 1); ++step) {
+    ASSERT_TRUE(derived.materializeStep(node, std::chrono::microseconds(1)).has_value());
+    if (next < 260) {
+      appendLinearRowsGrowing(engine, src, 1.0, 1, next++);
+      notify(derived, {src});
+    }
+  }
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), static_cast<std::size_t>(next - 1));
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    ASSERT_EQ(rows[i].first, static_cast<PJ::Timestamp>(i + 1) * 1'000'000'000LL) << "row " << i;
+  }
+}
+
 }  // namespace
 }  // namespace PJ
