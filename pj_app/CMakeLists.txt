@@ -158,6 +158,8 @@ target_sources(pj_app_shell PRIVATE
     src/mcp/McpServer.cpp
     src/mcp/McpServer.h
     src/mcp/McpServerTools.cpp
+    src/mcp/McpSkills.cpp
+    src/mcp/McpSkills.h
     src/mcp/McpWidgetState.cpp)
 if(NOT EMSCRIPTEN)
     # The UI tools are desktop only: only a command-line flag turns them on. Qt6::GuiPrivate:
@@ -166,6 +168,11 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(pj_app_shell PRIVATE Qt6::GuiPrivate)
 endif()
 target_link_libraries(pj_app_shell PUBLIC pj_agent_tools)
+# The agent guide the MCP server serves as its `plotjuggler` skill (McpSkills.h): every page of docs/agents/, at
+# the same relative paths, so the pages' links resolve inside the skill. llms.txt, the web index, stays out.
+file(GLOB_RECURSE PJ_MCP_SKILL_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/docs/agents/*.md")
+qt_add_resources(pj_app_shell pj_mcp_skills PREFIX "/pj_mcp_skills/plotjuggler"
+    BASE "${CMAKE_SOURCE_DIR}/docs/agents" FILES ${PJ_MCP_SKILL_FILES})
 
 if(EMSCRIPTEN)
     # Lazily read browser picks; the page side is browser_picked_file.js, linked into pj_app below.
@@ -422,7 +429,10 @@ if(PJ_BUILD_TESTS)
         PJ_BUNDLED_FONT_DIR="${CMAKE_SOURCE_DIR}/resources/fonts/PlotJugglerSans")
     # The MCP server's HTTP and JSON-RPC gates (desktop only, like the server).
     if(NOT EMSCRIPTEN)
-        target_sources(pj_app_unit_tests PRIVATE tests/mcp_protocol_test.cpp src/mcp/McpProtocol.cpp)
+        target_sources(pj_app_unit_tests PRIVATE
+            tests/mcp_protocol_test.cpp tests/mcp_skills_test.cpp src/mcp/McpProtocol.cpp src/mcp/McpSkills.cpp)
+        qt_add_resources(pj_app_unit_tests pj_mcp_skills_for_tests PREFIX "/pj_mcp_skills/plotjuggler"
+            BASE "${CMAKE_SOURCE_DIR}/docs/agents" FILES ${PJ_MCP_SKILL_FILES})
         target_link_libraries(pj_app_unit_tests PRIVATE pj_agent_tools)
     endif()
     # pj_runtime's include tree only for the header-only XmlCdata.h and

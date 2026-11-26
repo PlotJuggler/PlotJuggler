@@ -14,6 +14,7 @@
 #include <set>
 
 #include "SecretKeys.h"
+#include "mcp/McpSkills.h"
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
 using namespace Qt::StringLiterals;
@@ -43,7 +44,11 @@ constexpr auto kAgentToolInstructions =
     "its wait_s returns a job_id and carries on: job_wait for its result, job_kill to stop it, jobs_list for "
     "yours; meanwhile other calls work.";
 #undef PJ_MCP_WHERE
-/// What a client with the app's own tools is told after kAgentToolInstructions.
+/// What a client with the app's own tools is told after kAgentToolInstructions. The skill is served beside those
+/// tools only (lifecycleResult): it teaches them.
+#define PJ_MCP_SKILL_POINTER                                                                               \
+  " The plotjuggler skill (skill://plotjuggler/SKILL.md, also readable as a resource) is the full guide: " \
+  "workflow, scripting languages, which plugin reads which format, and the UI steps for each task."
 #ifdef PJ_TARGET_WASM
 // No export_series nor about in the browser (McpServerTools.cpp).
 constexpr auto kAppToolInstructions =
@@ -52,7 +57,8 @@ constexpr auto kAppToolInstructions =
     "add_script_series (Luau or Python) and add_filter install live derived series too. widget_state reads "
     "the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
     "ranges) with the values each one accepts, and set_widget_state changes them. save_layout and load_layout "
-    "read and replace the whole workspace as layout XML. Take a screenshot to check what the user sees.";
+    "read and replace the whole workspace as layout XML. Take a screenshot to check what the user "
+    "sees." PJ_MCP_SKILL_POINTER;
 #else
 constexpr auto kAppToolInstructions =
     " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
@@ -61,8 +67,9 @@ constexpr auto kAppToolInstructions =
     "reads the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
     "ranges) with the values each one accepts, and set_widget_state changes them. save_layout and load_layout "
     "read and replace the whole workspace as layout XML. Take a screenshot to check what the user sees. Read "
-    "about before explaining how to do something in the PlotJuggler UI.";
+    "about before explaining how to do something in the PlotJuggler UI." PJ_MCP_SKILL_POINTER;
 #endif
+#undef PJ_MCP_SKILL_POINTER
 
 }  // namespace
 
@@ -825,6 +832,12 @@ std::optional<json> lifecycleResult(const std::string& method, const json& param
   const auto describe = [set](json result) {
     static const std::string full_instructions = std::string(kAgentToolInstructions) + kAppToolInstructions;
     result["capabilities"] = {{"tools", json::object()}};
+    if (set == ToolSet::kFull) {
+      // The agent guide (McpSkills.h). Every era sees it: a client without the extension still lists the files as
+      // resources.
+      result["capabilities"]["resources"] = json::object();
+      result["capabilities"]["extensions"] = {{kSkillsExtension, json::object()}};
+    }
     result["serverInfo"] = {
         {"name", "plotjuggler"},
         {"title", "PlotJuggler"},
@@ -842,7 +855,7 @@ std::optional<json> lifecycleResult(const std::string& method, const json& param
     json result = describe({{"supportedVersions", {"2026-07-28", "2025-11-25", "2025-06-18"}}});
     // Offered where a client can take it up: it declares extensions per request, which only the
     // stateless protocol has (nothing here remembers an initialize).
-    result["capabilities"]["extensions"] = {{kTasksExtension, json::object()}};
+    result["capabilities"]["extensions"][kTasksExtension] = json::object();
     return result;
   }
   if (method == "ping") {

@@ -97,10 +97,11 @@ AppImage. A plugin installed or enabled takes effect after a restart.
 - Not in the browser: MP4, LeRobot, ROS 2, MQTT, ZeroMQ, UDP, LSL, WebRTC, Mosaico, the Assistant, Custom Widget
   plugins, Record, the source cache, Python filters.
 - A page on `https://` can open only `wss://` bridges: a robot's `ws://` bridge needs TLS in front of it
-  ([`docs/WASM_HOSTING.md`](../WASM_HOSTING.md)). The browser reports a failed connection without its cause.
+  ([`docs/WASM_HOSTING.md`](https://github.com/PlotJuggler/PlotJuggler/blob/main/docs/WASM_HOSTING.md)). The browser
+  reports a failed connection without its cause.
 - A file picked with Open Data File is read lazily from disk and must stay unchanged while open; a dropped file is
   copied into the page's memory. Opened data lives in the tab: closing or reloading it loses the data.
 - An agent reaches the browser app through the `plotjuggler-agent` relay, which hands files to the page; `open_file`
   there is capped by `kMaxPresetDataBytes` (`pj_runtime/include/pj_runtime/PresetCatalog.h`).
 
-Details: [`docs/WASM_DEPLOYMENT.md`](../WASM_DEPLOYMENT.md).
+Details: [`docs/WASM_DEPLOYMENT.md`](https://github.com/PlotJuggler/PlotJuggler/blob/main/docs/WASM_DEPLOYMENT.md).

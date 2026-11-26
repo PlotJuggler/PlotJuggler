@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "mcp/McpProtocol.h"
+#include "mcp/McpSkills.h"
 #include "pj_runtime/ActiveWidgetsMarker.h"
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
@@ -513,6 +514,10 @@ int runBridge(int argc, char* argv[], const QString& version) {
           reply["result"] = std::move(*called);
         } else if (message.method == "tools/call") {
           reply = errorResponse(message.id, -32602, "tools/call needs a string name");
+        } else if (std::optional<json> skills = skillsResponse(message.id, message.method, params)) {
+          // From this binary, with no instance asked: the guide is there before PlotJuggler runs, and a client
+          // reads it once per session.
+          reply = std::move(*skills);
         } else if (isTasksMethod(message.method)) {
           reply = bridge.passOn(message.method, params, message.id);
         } else {

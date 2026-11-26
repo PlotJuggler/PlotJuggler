@@ -175,11 +175,11 @@ TEST(McpUiTools, ListedOnlyWhenTheRunAskedAndAlwaysAllowedUnderTheUsersDialog) {
 TEST(McpTasks, TheExtensionIsOfferedOnDiscoverAndDeclaredPerRequest) {
   using PJ::mcp::ToolSet;
   const json discovered = *PJ::mcp::lifecycleResult("server/discover", json::object(), ToolSet::kFull);
-  EXPECT_EQ(discovered["capabilities"]["extensions"], json({{PJ::mcp::kTasksExtension, json::object()}}));
+  EXPECT_EQ(discovered["capabilities"]["extensions"][PJ::mcp::kTasksExtension], json::object());
   EXPECT_TRUE(discovered["capabilities"].contains("tools"));
   // Nothing remembers an initialize, so a client of that era cannot declare the extension per request.
   const json initialized = *PJ::mcp::lifecycleResult("initialize", json::object(), ToolSet::kFull);
-  EXPECT_FALSE(initialized["capabilities"].contains("extensions"));
+  EXPECT_FALSE(initialized["capabilities"].value("extensions", json::object()).contains(PJ::mcp::kTasksExtension));
 
   const auto meta = [](const json& capabilities) {
     return json{{"_meta", {{"io.modelcontextprotocol/clientCapabilities", capabilities}}}};

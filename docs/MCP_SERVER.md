@@ -40,6 +40,7 @@ external agent ──stdio──> pj_mcp_relay.py (127.0.0.1:<port>) <──long
 | `McpServer` | `pj_app/src/mcp/` | The loopback endpoint on the GUI thread, the token table, the job table, revocation. The HTTP is hand-written ("Evidence"). Its transport-free half (`dispatch`) also answers what a relay link brings in (`handleRelayed`); in the browser only that half is built |
 | `McpBrowserLink` | `pj_app/src/mcp/` | The page side of the browser relay: long-polls the relay and feeds each message to `handleRelayed`. Plain `QNetworkAccessManager`, so the desktop runs it too (`--mcp-relay`, tests) |
 | `pj_mcp_relay.py` | `plotjuggler-agent/relay/` | The agent side of the browser relay: MCP over stdio, the page protocol over loopback HTTP, standard-library Python |
+| `McpSkills` | `pj_app/src/mcp/` (QtCore only) | The agent guide as an MCP skill (see [Skills](#skills)): the catalog built from the resources, and the answers to `skills/*` and `resources/*` that the server and the bridge both send |
 | `McpServerTools.cpp` | `pj_app/src/mcp/` | The app tools: calls into existing services and the public "agent control" block of `MainWindow.h`, plus `export_series`' file writer, which runs on a worker |
 | `McpEndpointHost` | `pj_app/src/mcp/McpServer.h` | The host side of `pj.mcp_endpoint.v1`, one per toolbox session |
 | `pj_agent_tools` | `pj_runtime/{include,src}/agent_tools/` (static lib, MIT) | The agent tools (`ToolRegistry`) over a `ToolContext` of SDK host views; no Qt Widgets, no app types |
@@ -282,6 +283,27 @@ table:
   the `kMaxEndedJobs` count (its own bound is `kMaxEndedTasks`).
 - **Not built:** `notifications/tasks` and its subscription (optional for a server), and `input_required`.
 - No client is known to implement the extension; only this repository's tests exercise it.
+
+## Skills
+
+PlotJuggler serves its agent guide itself, through the MCP Skills extension (`mcp::kSkillsExtension`,
+`io.modelcontextprotocol/skills`, SEP-2640), so the guide an agent reads always matches the build answering it.
+
+- **Content.** The skill is [`docs/agents/`](./agents/SKILL.md): `SKILL.md` (the workflow, frontmatter `name:
+  plotjuggler`) and every other `.md` page there at the same relative path, so the pages' links resolve inside the
+  skill. `pj_app/CMakeLists.txt` globs them into the Qt resources under `mcp::kSkillsResourceRoot`; `llms.txt`, the
+  web index, stays out. A page added there joins the skill at the next configure. A link from a page to anything
+  outside the folder is an absolute URL: a relative one would not resolve for an agent.
+- **Methods** (`mcp::skillsResponse`): `skills/list` (one page), `skills/get` by the `SKILL.md` URI, and
+  `resources/read` of any file as `skill://plotjuggler/<path>`. Each entry lists its files with their `sha256:` digest
+  and size, as the extension requires. `resources/list` lists the same files, so a client without the extension
+  (Codex, a Claude Code plan without MCP skills) still finds the guide, and the instructions name its URI.
+- **Who gets it.** The public token only (`ToolSet::kFull`, advertised by `lifecycleResult` with the `resources`
+  capability): the guide teaches the app tools, which a plugin token does not have. The bridge answers these methods
+  from its own binary, without asking an instance, so the guide is there before any PlotJuggler runs. The browser page
+  serves the same skill through its relay.
+- **Not built:** `resources/directory/read`, `notifications/resources/list_changed` (the catalog never changes while
+  the process runs) and resource subscriptions.
 
 ### Adding a job-capable tool
 
@@ -721,6 +743,9 @@ dock with no state).
     `ANamedExportNeedsItsExtension…`, `ANamedExportKeepsAFileThatAppearedWhileItRan`: the export guard.
 - `pj_app/tests/mcp_protocol_test.cpp` (runner `pj_app_unit_tests`): the HTTP and JSON-RPC gates, `redactSecrets` and
   `restoreSecrets`, and `McpAnnotations`: every listed tool has a title, the four hints and described parameters.
+- `pj_app/tests/mcp_skills_test.cpp` (runner `pj_app_unit_tests`): the skill's entry (name, sorted files, digests
+  and sizes that match what `resources/read` returns), refused URIs, `resources/list`, that every relative link
+  between the guide's pages resolves inside the skill, and that only the public token's handshake advertises it.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
   test answers by hand (a cancellation forwarded while its call is in flight).
 - `plotjuggler-agent/tests/test_relay.py`: the relay against a fake page (routing, `open_file` serving, origins).
@@ -736,9 +761,9 @@ dock with no state).
 - A plugin token is not bound to the process the plugin spawned (see the trust boundary above).
 - The bridge forwards one call at a time, so two calls of one session overlap only as a background job plus a
   foreground call, and a `tasks/get` or `tasks/cancel` waits behind a call still in its `wait_s`.
-- The browser relay (`pj_mcp_relay.py`, in the `plotjuggler-agent` repository) does not forward notifications or the
-  `tasks/*` methods, nor pass on the page's extensions, so `notifications/cancelled` and MCP Tasks do not reach a page;
-  only the job tools do.
+- The browser relay (`pj_mcp_relay.py`, in the `plotjuggler-agent` repository) learns the page's capabilities only
+  when a page is connected at the handshake: a client that connects before its page does sees neither MCP Tasks nor
+  the skill until it reconnects.
 - The Assistant's Stop ends its agent CLI but not the jobs that turn left running: the plugin
   (`pj-official-plugins/toolbox_assistant_agent`) does not release its endpoint on Stop, which would revoke its token.
 - Protocol 2026-07-28 is spoken only as far as agents have needed: ordinary results carry no

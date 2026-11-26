@@ -1,15 +1,16 @@
 # PlotJuggler 4: guide for AI agents
 
-> PlotJuggler 4 is a desktop and browser application for time series and robotics data: it opens log files (MCAP,
-> ROS 2 bags, ULog, CSV, Parquet, CAN logs...) and live streams (ROS 2, MQTT, ZeroMQ, UDP, Foxglove and PlotJuggler
-> bridges), plots their fields, shows images and 3D scenes in step with one time cursor, and derives new series,
-> objects and markers with Luau or Python scripts. An agent drives it through PlotJuggler's MCP server (tools
-> `get_status`, `open_file`, `read_series`, `plot_tab`, ...; the `plotjuggler` skill of the `plotjuggler-agent`
-> plugin). These pages add what the tool descriptions do not carry: the concepts the tools assume, which plugin each
-> format needs, how to do each task in the UI with its exact labels (and whether an MCP tool does it), and the
-> scripting APIs the tools run. `about` gives each core feature's one-line UI entry point and the known limitations
-> (from `resources/feature_catalog.json`); these pages give the steps, gotchas and MCP routes behind them. They
-> describe the current development version; the MCP tools' own descriptions and `about` win where they differ.
+> PlotJuggler 4 is a desktop and browser application for time series and robotics data: it opens log files (MCAP, ROS 2
+> bags, ULog, CSV, Parquet, CAN logs...) and live streams (ROS 2, MQTT, ZeroMQ, UDP, Foxglove and PlotJuggler bridges),
+> plots their fields, shows images and 3D scenes in step with one time cursor, and derives new series, objects and
+> markers with Luau or Python scripts. An agent drives it through PlotJuggler's MCP server (tools `get_status`,
+> `open_file`, `read_series`, `plot_tab`, ...). The server also serves these pages as its `plotjuggler` skill
+> ([SKILL.md](SKILL.md), the workflow, is its entry point). These pages add what the tool descriptions do not carry: the
+> concepts the tools assume, which plugin each format needs, how to do each task in the UI with its exact labels (and
+> whether an MCP tool does it), and the scripting APIs the tools run. `about` gives each core feature's one-line UI
+> entry point and the known limitations (from `resources/feature_catalog.json`); these pages give the steps, gotchas and
+> MCP routes behind them. They describe the current development version; the MCP tools' own descriptions and `about` win
+> where they differ.
 
 ## When PlotJuggler is the wrong tool
 

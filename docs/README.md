@@ -19,7 +19,7 @@ documentation rules.
 
 | Path | Contents |
 |---|---|
-| [`agents/`](./agents/llms.txt) | For an LLM agent helping a PlotJuggler user, beside the MCP tools: concepts, formats and the plugin each needs, UI tasks with exact labels and the MCP route or "UI only", and the scripting APIs. Start at `llms.txt`. |
+| [`agents/`](./agents/llms.txt) | For an LLM agent helping a PlotJuggler user, beside the MCP tools: concepts, formats and the plugin each needs, UI tasks with exact labels and the MCP route or "UI only", and the scripting APIs. Start at `llms.txt`; the MCP server serves the folder as its `plotjuggler` skill (`SKILL.md`). |
 | [`DEVELOPER_GUIDE.md`](./DEVELOPER_GUIDE.md) | Entry point for contributors: which doc answers what, and the CI checks a pull request runs (every PR, per area, nightly). |
 | [`BUILDING.md`](./BUILDING.md) | Prerequisites, Linux and Windows builds, tests, build internals, versions, portability, third-party dependencies. Packaging formats: [`packaging/README.md`](../packaging/README.md). |
 | [`SANITIZERS.md`](./SANITIZERS.md) | The `none` / `asan` / `tsan` / `msan` lanes: selectors, build trees, coverage, runtime defaults and the suppression policy. |
