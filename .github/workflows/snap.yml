@@ -1,22 +1,22 @@
 # SPDX-License-Identifier: MPL-2.0
 name: Snap CI
 
+# Manual only: one run builds the app from source for two architectures.
 on:
-  pull_request:
-    branches: [main]
-    paths-ignore: ['docs/**', '**/*.md']
-  push:
-    branches: [main]
-    paths-ignore: ['docs/**', '**/*.md']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the snaps to the Snap Store, latest/beta (main or a tag only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Never interrupt a trusted run while it may be publishing to the Store.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A run may be publishing to the Store.
+  cancel-in-progress: false
 
 jobs:
   build-and-test:
@@ -87,8 +87,8 @@ jobs:
   publish:
     needs: build-and-test
     if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      inputs.publish &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     # Pinned by commit: it receives the Store credential.
     uses: canonical/robotics-actions-workflows/.github/workflows/publish.yaml@36d487a3a49f3bf94a7e00a38869967a68bac87a
     with:

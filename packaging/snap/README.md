@@ -75,5 +75,7 @@ bash packaging/snap/tests/smoke.sh
 
 The smoke test checks Python, X11 startup, first-launch extension directory
 creation and native Wayland rendering with software graphics.
-CI runs it on amd64 and arm64.
+The `Snap CI` workflow, started by hand, builds the snap and runs this test on
+amd64 and arm64; its `publish` input uploads the result to the Store's
+`latest/beta` channel.
 ROS integration, file dialogs and hardware graphics require separate testing.
