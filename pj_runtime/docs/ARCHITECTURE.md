@@ -194,6 +194,13 @@ does not link it.
 
 ### Catalog and demand
 
+- **`CatalogModel` rebuild timing**: a rebuild walks the whole engine and runs only when the content fingerprint
+  moved; `rebuildIfChanged` and `rebuildFromDatastore` are synchronous. A commit (`samplesIngested`) rebuilds at once,
+  except while a progressive ingest is open (`SessionManager::hasActiveIngests`): then a non-live commit, from any
+  producer, inside the gap after the last rebuild arms a single-shot timer for the one rebuild left waiting. The gap
+  scales with the last rebuild's cost, capped (`Impl::recordRebuildCost`). Load completion rebuilds synchronously, so
+  the final catalog never waits on the timer. The playback range covers only listed items, so `MainWindow` also
+  recomputes it when items are added.
 - **`CatalogModel` demand surface**: advertised-but-unsubscribed placeholders
   (`setAdvertisedTopics`, data-less rows real data supersedes) and the per-dataset
   `setPerTopicPauseCapable` / `isPerTopicPauseCapable` flag, set by `pj_app`'s

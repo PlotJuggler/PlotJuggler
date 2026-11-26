@@ -143,7 +143,8 @@ class TopicChunkBuilder {
   /// Between beginRow() and finishRow().
   [[nodiscard]] bool isRowInProgress() const noexcept;
 
-  [[nodiscard]] const ChunkStats& stats() const noexcept;
+  /// Writes the nulls the columns still owe first (see padColumn), so the null counts are whole.
+  [[nodiscard]] const ChunkStats& stats();
 
   /// Last appended timestamp.
   [[nodiscard]] Timestamp lastTimestamp() const noexcept;
@@ -175,6 +176,11 @@ class TopicChunkBuilder {
   std::size_t bulk_pending_rows_ = 0;  // rows added via bulk but not yet finished
 
   void updateColumnStats(std::size_t col_index, double value);
+
+  // A column a row does not set owes it a null, written when the column is next set or before the columns are read
+  // (bulk append, stats(), seal()). Every path touching columns_ pads first, or its rows misalign.
+  TypedColumnBuffer& padColumn(std::size_t col_index);
+  void padAllColumns();
 
   // Stable, so equal timestamps keep arrival order; a no-op when already sorted.
   void sortRowsByTimestamp();

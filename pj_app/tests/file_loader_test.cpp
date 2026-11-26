@@ -42,6 +42,7 @@
 #include <utility>
 #include <vector>
 
+#include "FileLoadFlushInterval.h"
 #include "FileLoader.h"
 #include "LayoutReplayHints.h"
 #include "pj_base/diagnostic_sink.hpp"
@@ -78,6 +79,9 @@ using namespace Qt::StringLiterals;
 #endif
 
 namespace {
+
+// Long enough for FileLoader's throttled flush to run.
+constexpr auto kPastFlushInterval = PJ::kFileLoadFlushInterval + std::chrono::milliseconds(50);
 
 // Reads a probe file's newline-separated markers (see dialog_probe_source.cpp / msgbox_mock_source.cpp), skipping
 // blank lines; empty when the file is missing.
@@ -613,9 +617,9 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
         return fail(status.error());
       }
       if (park_ && index == rows_) {
-        // FileLoader throttles worker-side flushes (50 ms): sleep past it so the progressUpdate below commits these
-        // rows into the live engine, the partial replacement the shutdown then has to undo.
-        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        // FileLoader throttles worker-side flushes: sleep past it so the progressUpdate below commits these rows into
+        // the live engine, the partial replacement the shutdown then has to undo.
+        std::this_thread::sleep_for(kPastFlushInterval);
       }
       if (!runtimeHost().progressUpdate(static_cast<uint64_t>(index))) {
         return fail("cancelled via progress");
@@ -2061,11 +2065,12 @@ TEST_F(FileLoaderTest, ProgressTickWithoutABeginStillPublishesTheDatasetRows) {
           ++notifications;
         }
       });
-  // Space the records past the 50 ms flush throttle so the ticks really reach the GUI, as the progressive test paces
-  // its flushes.
-  QTimer::singleShot(100, []() { releaseFanoutProbeProgressStep(1); });
-  QTimer::singleShot(200, []() { releaseFanoutProbeProgressStep(2); });
-  QTimer::singleShot(300, []() { releaseFanoutProbeProgressStep(3); });
+  // Space the records past the flush throttle so the ticks really reach the GUI, as the progressive test paces its
+  // flushes.
+  const auto step = kPastFlushInterval;
+  QTimer::singleShot(step, []() { releaseFanoutProbeProgressStep(1); });
+  QTimer::singleShot(2 * step, []() { releaseFanoutProbeProgressStep(2); });
+  QTimer::singleShot(3 * step, []() { releaseFanoutProbeProgressStep(3); });
 
   const bool loaded = loadAndWait(path, hints);
   QObject::disconnect(ingest_connection);
@@ -2103,7 +2108,7 @@ TEST_F(FileLoaderTest, ProgressiveFlushNotifiesStableTopicAndRefreshesRangeEachT
   const auto start_connection = QObject::connect(
       loader_.get(), &PJ::FileLoader::ingestStarted, loader_.get(), [](const QString& title, int, int, bool) {
         if (title == u"fanout-probe:progressive"_s) {
-          QTimer::singleShot(100, []() { releaseFanoutProbeProgressStep(1); });
+          QTimer::singleShot(kPastFlushInterval, []() { releaseFanoutProbeProgressStep(1); });
         }
       });
   const auto progress_connection = QObject::connect(
@@ -2116,7 +2121,7 @@ TEST_F(FileLoaderTest, ProgressiveFlushNotifiesStableTopicAndRefreshesRangeEachT
         notifications_at_step.push_back(notification_count);
         playback_max_at_step.push_back(app_session_->playbackEngine().rangeMax().value);
         if (current < 3) {
-          QTimer::singleShot(100, [current]() { releaseFanoutProbeProgressStep(current + 1); });
+          QTimer::singleShot(kPastFlushInterval, [current]() { releaseFanoutProbeProgressStep(current + 1); });
         }
       });
 
@@ -3403,7 +3408,7 @@ TEST_F(FileLoaderTest, LoadCommittingFiresWithSourceInstalledBeforeCatalogAndTer
   EXPECT_EQ(commits[0].plugin_id, u"Mock File Source"_s);
   EXPECT_TRUE(commits[0].dataset_in_engine) << "the produced dataset must exist by commit time";
   EXPECT_EQ(commits[0].source_path_at_commit, mock_path_) << "the source path must be installed by commit time";
-  // The fast mock never flushes mid-load (50 ms worker throttle), so no samplesIngested-gate rebuild precedes the
+  // The fast mock never flushes mid-load (PJ::kFileLoadFlushInterval), so no samplesIngested-gate rebuild precedes the
   // commit: the catalog must still be unpublished at the seam and published right after.
   EXPECT_EQ(commits[0].catalog_items_at_commit, 0u)
       << "loadCommitting must fire BEFORE the catalog rebuild publishes the load";

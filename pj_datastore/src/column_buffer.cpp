@@ -146,10 +146,16 @@ void TypedColumnBuffer::appendString(std::string_view value) {
 }
 
 void TypedColumnBuffer::appendNull() {
-  ensureValidityInitialized();
+  appendNulls(1);
+}
 
-  validity_.ensureSize(row_count_ + 1);
-  validity_.setNull(row_count_);
+void TypedColumnBuffer::appendNulls(std::size_t count) {
+  if (count == 0) {
+    return;
+  }
+  ensureValidityInitialized();
+  validity_.ensureSize(row_count_ + count);
+  validity_.setNullRange(row_count_, row_count_ + count);
 
   // A null still takes a value slot, so values stay row-aligned.
   const StorageKind kind = storageKindOf(descriptor_.logical_type);
@@ -158,16 +164,19 @@ void TypedColumnBuffer::appendNull() {
       const uint32_t zero = 0;
       offsets_.append(&zero, sizeof(zero));
     }
+    // An empty string: each null's end offset is where the bytes end now.
     const auto current_offset = static_cast<uint32_t>(values_.size());
-    offsets_.append(&current_offset, sizeof(current_offset));
+    const std::size_t first = offsets_.size();
+    offsets_.resize(first + count * sizeof(uint32_t));
+    for (std::size_t i = 0; i < count; ++i) {
+      std::memcpy(offsets_.mutableData() + first + i * sizeof(uint32_t), &current_offset, sizeof(uint32_t));
+    }
   } else {
-    const std::size_t type_size = storageKindSize(kind);
-    const uint64_t zero = 0;  // 8 bytes, enough for any fixed type
-    values_.append(&zero, type_size);
+    values_.resize(values_.size() + count * storageKindSize(kind));  // zero-filled
   }
 
-  ++row_count_;
-  ++null_count_;
+  row_count_ += count;
+  null_count_ += count;
 }
 
 // ---------------------------------------------------------------------------

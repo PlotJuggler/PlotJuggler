@@ -929,7 +929,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       const std::vector<int>& colmap = *rr.colmap;
       for (std::size_t lc = 0; lc < colmap.size(); ++lc) {
         if (colmap[lc] < 0 || chunk.isNull(lc, rr.row)) {
-          continue;  // finishRow() nulls the columns not set
+          continue;  // a column a row does not set reads null
         }
         const auto uc = static_cast<std::size_t>(colmap[lc]);
         switch (storageKindOf(union_cols[uc].logical_type)) {

@@ -356,7 +356,8 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
   });
   // A reloading dataset is empty until its refill closes: without its held extent the range would shrink to the other
   // datasets and clamp the playhead there for good. One removed or merged away meanwhile no longer counts.
-  const std::vector<DatasetId> shown = catalog_model_->datasetIds();
+  const std::vector<DatasetId> shown =
+      refill_held_raw_ranges_.empty() ? std::vector<DatasetId>{} : catalog_model_->datasetIds();
   for (const auto& [dataset_id, raw] : refill_held_raw_ranges_) {
     if (!session_manager_->refillOpen(dataset_id) || std::find(shown.begin(), shown.end(), dataset_id) == shown.end()) {
       continue;

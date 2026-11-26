@@ -3,6 +3,18 @@
 Measurements and incidents behind choices in [ARCHITECTURE.md](./ARCHITECTURE.md) and the code. Each entry says what was
 observed, under which conditions, what the code does about it and when to measure again.
 
+## File-load flush interval
+
+- **Observed:** loading a 30-minute ROS 1 MCAP with 117k series (topics flattening variable-length arrays into up to
+  13k columns), flushing every 50 ms sealed a chunk per topic per flush: 20.3 s, 29.8 CPU-s, 5.5 GB RSS. At 250 ms:
+  18.7 s, 26.3 CPU-s, 3.6 GB (Linux x86_64, i7-13700H, two runs each). The memory is the per-column cost of the many
+  small chunks; data shows during a load four times a second instead of twenty.
+- **What the code does:** `PJ::kFileLoadFlushInterval` (`FileLoadFlushInterval.h`) sets the interval for file loads and
+  fan-out entries; streams and toolbox imports do not use it. The flush runs on the load's worker thread on desktop and
+  in the browser. Tests that need a mid-load flush wait longer than this constant.
+- **Re-test:** if a chunk's fixed cost per column drops (descriptors shared across chunks, say), or if data appearing
+  during a load feels late.
+
 ## Browser preferences flush on a timer
 
 - **Observed:** with `syncPreferences()` connected only to `QAbstractEventDispatcher::aboutToBlock` and

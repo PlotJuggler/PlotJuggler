@@ -529,6 +529,37 @@ TEST_F(MainWindowHistoryFixture, AutomaticGlobalRebasePreservesAbsolutePlayheadA
   EXPECT_DOUBLE_EQ(playback.rangeMax().value, 60.0);
 }
 
+// During a load the catalog may list a commit's topic only later, from its timer: the playback range still grows to
+// cover it, with no further commit.
+TEST_F(MainWindowHistoryFixture, ATopicTheCatalogListsLaterDuringALoadExtendsTheRange) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::AppSession& app_session = PJ::MainWindowHistoryTestPeer::appSession(mainWindow());
+  PJ::SessionManager& session = app_session.sessionManager();
+  const PJ::PlaybackEngine& playback = app_session.playbackEngine();
+  app_session.catalogModel().setMinIngestRebuildGap(std::chrono::milliseconds(300));
+  const PJ::DatasetId dataset = pj_test::createDataset(app_session, "growing.mcap");
+  ASSERT_NE(dataset, 0U);
+  const PJ::IngestToken token = session.beginIngest(dataset, u"growing.mcap"_s, 0, /*cancellable=*/false, {});
+  const auto commit_topic = [&](std::string_view name, PJ::Timestamp first, PJ::Timestamp last) {
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    auto handle = writer.registerScalarSeries(dataset, name, PJ::NumericType::kFloat64);
+    ASSERT_TRUE(handle.has_value());
+    writer.appendScalar(*handle, first, 1.0);
+    writer.appendScalar(*handle, last, 2.0);
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  };
+
+  commit_topic("/first", 10 * kSecond, 20 * kSecond);
+  const double first_max = playback.rangeMax().value;
+  ASSERT_GT(first_max, playback.rangeMin().value) << "the first commit of a load is listed at once";
+
+  commit_topic("/second", 10 * kSecond, 40 * kSecond);
+  ASSERT_DOUBLE_EQ(playback.rangeMax().value, first_max) << "a commit inside the rebuild gap waits for the timer";
+  EXPECT_TRUE(QTest::qWaitFor([&] { return playback.rangeMax().value > first_max; }, 3000))
+      << "the range follows the topic the timer's rebuild listed";
+  session.endIngest(token, PJ::IngestOutcome::kCompleted);
+}
+
 TEST_F(MainWindowHistoryFixture, AdditiveAndTopologyPreservingLoadsKeepWorkspaceHistory) {
   PJ::MainWindow& window = mainWindow();
   PJ::PlotWidget* plot = ensureCurrentPlot(window);

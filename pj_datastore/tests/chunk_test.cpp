@@ -1469,5 +1469,94 @@ TEST(ChunkTest, FreshBulkBatchOmittingAColumnDoesNotReadOutOfBounds) {
   }
 }
 
+// A row pays only for the columns it sets: the others hold their nulls back until their next value or the seal. Every
+// read must still see one null per row a column was not set, whatever its kind, wherever the gaps fall.
+TEST(ChunkTest, SparseRowsReadOneNullPerUnsetRow) {
+  std::vector<ColumnDescriptor> cols = {
+      makeCol(0, PrimitiveType::kFloat64, "every_third"), makeCol(1, PrimitiveType::kString, "name"),
+      makeCol(2, PrimitiveType::kBool, "flag"),           makeCol(3, PrimitiveType::kInt32, "never"),
+      makeCol(4, PrimitiveType::kUint64, "last_only"),
+  };
+  TopicChunkBuilder builder(/*topic_id=*/70, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+
+  // 21 rows (more than a validity byte, gaps crossing byte edges), timestamps descending so the seal sorts them.
+  constexpr std::size_t kRows = 21;
+  for (std::size_t row = 0; row < kRows; ++row) {
+    builder.beginRow(static_cast<Timestamp>(1000 - row));
+    if (row % 3 == 0) {
+      builder.set(0, static_cast<double>(row));
+    }
+    if (row == 9 || row == 10) {
+      builder.set(1, std::string_view(row == 9 ? "nine" : "ten"));
+    }
+    if (row == 4) {
+      builder.setNull(2);  // an explicit null between implicit ones
+    } else if (row == 5) {
+      builder.set(2, true);
+    }
+    if (row == kRows - 1) {
+      builder.set(4, uint64_t{7});
+    }
+    builder.finishRow();
+  }
+  // The stats read before the seal count the nulls not yet written.
+  EXPECT_EQ(builder.stats().column_stats[0].null_count, kRows - 7);
+  EXPECT_EQ(builder.stats().column_stats[3].null_count, kRows);
+
+  TopicChunk chunk = builder.seal();
+  ASSERT_EQ(chunk.stats.row_count, kRows);
+  EXPECT_EQ(chunk.stats.column_stats[0].null_count, kRows - 7);
+  EXPECT_EQ(chunk.stats.column_stats[1].null_count, kRows - 2);
+  EXPECT_EQ(chunk.stats.column_stats[2].null_count, kRows - 1);
+  EXPECT_EQ(chunk.stats.column_stats[3].null_count, kRows);
+  EXPECT_EQ(chunk.stats.column_stats[4].null_count, kRows - 1);
+  // Sorted ascending: sorted row i is the row written as kRows - 1 - i.
+  for (std::size_t i = 0; i < kRows; ++i) {
+    const std::size_t row = kRows - 1 - i;
+    EXPECT_EQ(chunk.isNull(0, i), row % 3 != 0) << "row " << row;
+    if (row % 3 == 0) {
+      EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, i), static_cast<double>(row));
+    }
+    EXPECT_EQ(chunk.isNull(1, i), row != 9 && row != 10) << "row " << row;
+    EXPECT_EQ(chunk.isNull(2, i), row != 5) << "row " << row;
+    EXPECT_TRUE(chunk.isNull(3, i)) << "row " << row;
+    EXPECT_EQ(chunk.isNull(4, i), row != kRows - 1) << "row " << row;
+  }
+  EXPECT_EQ(chunk.readString(1, kRows - 1 - 9), "nine");
+  EXPECT_EQ(chunk.readString(1, kRows - 1 - 10), "ten");
+  EXPECT_TRUE(chunk.readBool(2, kRows - 1 - 5));
+  EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(4, 0), 7.0);
+}
+
+// A bulk batch after rows that left columns behind lands at the right rows.
+TEST(ChunkTest, BulkAppendAfterSparseRowsStaysAligned) {
+  std::vector<ColumnDescriptor> cols = {
+      makeCol(0, PrimitiveType::kFloat64, "a"),
+      makeCol(1, PrimitiveType::kFloat64, "b"),
+  };
+  TopicChunkBuilder builder(/*topic_id=*/71, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  for (Timestamp t = 0; t < 3; ++t) {
+    builder.beginRow(t);
+    builder.set(0, static_cast<double>(t));
+    builder.finishRow();
+  }
+  const Timestamp ts[] = {10, 11};
+  const double b[] = {100.0, 101.0};
+  builder.appendTimestamps(Span<const Timestamp>(ts, 2));
+  builder.appendColumn(1, Span<const double>(b, 2));
+  builder.finishBulkAppend();
+
+  TopicChunk chunk = builder.seal();
+  ASSERT_EQ(chunk.stats.row_count, 5U);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, i), static_cast<double>(i));
+    EXPECT_TRUE(chunk.isNull(1, i)) << "row " << i;
+  }
+  EXPECT_TRUE(chunk.isNull(0, 3));
+  EXPECT_TRUE(chunk.isNull(0, 4));
+  EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(1, 3), 100.0);
+  EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(1, 4), 101.0);
+}
+
 }  // namespace
 }  // namespace PJ

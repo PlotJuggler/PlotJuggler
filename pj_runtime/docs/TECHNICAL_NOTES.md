@@ -3,6 +3,18 @@
 What was observed, measured or tried behind the current code, with the conditions and when to look again. How the
 code works is in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
+## Catalog rebuilds during a load
+
+- **Observed:** loading a 30-minute ROS 1 MCAP with 117k series, `CatalogModel` rebuilt the whole catalog on most
+  flushes (every 50 ms), and the rebuilds took most of the GUI thread. Deferring a rebuild that a commit triggers during
+  an open ingest until four times the last rebuild's cost had passed cut GUI-thread CPU from 14.8 to 8.0 s, process CPU
+  from 37.5 to 29.8 s and the load from 21.6 to 20.3 s (Linux x86_64, i7-13700H, two runs each).
+- **What the code does:** see ARCHITECTURE "`CatalogModel` rebuild timing". The factor of four (rebuilds take at most a
+  fifth of the GUI thread, while one costs under 250 ms) and the one-second cap (a new topic shows within a second)
+  are reasoning; no other values were measured.
+- **Re-test:** if a rebuild becomes incremental (cost proportional to the change, not the catalog), which would make the
+  gap unnecessary.
+
 ## Qt's browser network backend keeps every response body
 
 - **Observed (Qt 6.12.0, WebAssembly build):** `QNetworkAccessManager` runs each request through `emscripten_fetch()`

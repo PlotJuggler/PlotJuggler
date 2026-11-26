@@ -455,8 +455,6 @@ class FileLoader : public QObject {
   // read by the worker. It stops the fan-out entry in flight and every one after it; a fan-out row's stop uses a
   // per-entry slot instead.
   std::atomic<int> cancel_mode_{0};
-  // Minimum time between worker-side flush+notify cycles (test seam).
-  int flush_throttle_ms_ = 50;
   // Keeps finishPrologue from advancing the queue while joinForShutdown destroys a suspended prologue.
   bool shutting_down_ = false;
   // Set by the destructor: its final terminal flush runs loadFinished slots, and a load accepted then could never be

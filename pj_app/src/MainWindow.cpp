@@ -1570,6 +1570,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // new file's start in a multi-file load. The cursor is set on completion by seedPlaybackFromSession.
         session_->recomputeRange();
       });
+  // The range covers only listed items, and during a load the catalog may list a commit's topics later, from a timer.
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, [this](const std::vector<CatalogItem>&) {
+    if (active_streaming_dataset_id_ == 0) {
+      session_->recomputeRange();
+    }
+  });
 
   refreshStreamingCombo();
   connect(

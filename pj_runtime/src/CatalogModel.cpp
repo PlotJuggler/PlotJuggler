@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QLoggingCategory>
+#include <QTimer>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -18,7 +19,6 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <set>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -264,9 +264,16 @@ struct CatalogModel::Impl {
 
   SessionManager* session = nullptr;
   ItemMap items;
-  // findScalarForMarkerKey's answers found so far, by dataset, then `strings_too`, then key; cleared with every change
-  // of `items`, before any notification of it, so no slot reads a stale one.
+  // Caches derived from `items`: dropCaches() runs on every change of `items`, before any signal, or a slot reads a
+  // stale one. findScalarForMarkerKey's answers by dataset, then `strings_too`, then key:
   tsl::robin_map<DatasetId, std::array<tsl::robin_map<std::string, ScalarFieldPayload>, 2>> scalar_lookups;
+  // datasets(), filled on first read.
+  std::optional<std::vector<std::pair<DatasetId, QString>>> datasets;
+
+  void dropCaches() {
+    scalar_lookups.clear();
+    datasets.reset();
+  }
   // Datasets hidden by clearAll: rebuildFromDatastore skips them entirely.
   // A reload of the same file creates a fresh DatasetId not in this set, so
   // the curves come back.
@@ -286,17 +293,42 @@ struct CatalogModel::Impl {
   // setPerTopicPauseCapable). Membership only, no payload.
   tsl::robin_set<DatasetId> per_topic_pause_capable_datasets;
 
-  // Content fingerprint as of the last completed rebuildFromDatastore(), used by
-  // the samplesIngested gate (rebuildIfChanged) to skip redundant full rebuilds.
-  // Unset until the first rebuild, so the first ingest always rebuilds.
+  // Taken before the last rebuild, for rebuildIfChanged; unset until the first, so the first ingest always rebuilds.
   std::optional<std::uint64_t> last_fingerprint;
+
+  // During an open ingest, a commit's rebuild waits until `next_ingest_rebuild`; the timer runs the one left waiting.
+  std::chrono::steady_clock::time_point next_ingest_rebuild{};
+  std::chrono::nanoseconds min_ingest_rebuild_gap{0};
+  QTimer ingest_rebuild_timer;
+
+  // The gap is four rebuild costs (rebuilds take at most a fifth of the GUI thread while one costs under 250 ms),
+  // capped, the floor included, so a new topic shows within a second.
+  void recordRebuildCost(std::chrono::steady_clock::time_point started) {
+    using namespace std::chrono;
+    const auto ended = steady_clock::now();
+    next_ingest_rebuild =
+        ended + std::min<nanoseconds>(std::max<nanoseconds>(4 * (ended - started), min_ingest_rebuild_gap), 1s);
+  }
   std::atomic<std::size_t> whole_catalog_walks{0};  ///< `items()` and `forEachItem()` calls, for `wholeCatalogWalks()`
 };
 
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>(session)) {
+  impl_->ingest_rebuild_timer.setSingleShot(true);
+  connect(&impl_->ingest_rebuild_timer, &QTimer::timeout, this, &CatalogModel::rebuildIfChanged);
   if (impl_->session != nullptr) {
-    connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildIfChanged);
+    // While an ingest is open, a non-live commit inside the gap after the last rebuild waits for the timer (see
+    // ARCHITECTURE "CatalogModel rebuild timing"); streams and other commits rebuild at once.
+    connect(impl_->session, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& /*ids*/, bool live) {
+      const auto wait = impl_->next_ingest_rebuild - std::chrono::steady_clock::now();
+      if (!live && wait.count() > 0 && impl_->session->hasActiveIngests()) {
+        if (!impl_->ingest_rebuild_timer.isActive()) {
+          impl_->ingest_rebuild_timer.start(std::chrono::ceil<std::chrono::milliseconds>(wait));
+        }
+        return;
+      }
+      rebuildIfChanged();
+    });
     // An on-demand install registers its output topics, a removal retires them; neither is an ingest.
     connect(impl_->session, &SessionManager::objectTopicsChanged, this, &CatalogModel::rebuildIfChanged);
     connect(impl_->session, &SessionManager::onDemandRecipeInstalled, this, &CatalogModel::rebuildIfChanged);
@@ -626,25 +658,30 @@ std::optional<CurveDescriptor> CatalogModel::curveDescriptor(const QString& key,
 }
 
 std::vector<std::pair<DatasetId, QString>> CatalogModel::datasets() const {
-  std::vector<std::pair<DatasetId, QString>> result;
-  tsl::robin_set<DatasetId> seen;
-  for (const auto& [key, item] : impl_->items) {
-    (void)key;
-    if (seen.insert(item.dataset_id).second) {
-      result.emplace_back(item.dataset_id, item.dataset_name);
+  if (!impl_->datasets) {
+    std::vector<std::pair<DatasetId, QString>> result;
+    tsl::robin_set<DatasetId> seen;
+    for (const auto& [key, item] : impl_->items) {
+      (void)key;
+      if (seen.insert(item.dataset_id).second) {
+        result.emplace_back(item.dataset_id, item.dataset_name);
+      }
     }
+    std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    impl_->datasets = std::move(result);
   }
-  std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
-  return result;
+  return *impl_->datasets;
 }
 
 std::vector<DatasetId> CatalogModel::datasetIds() const {
-  std::set<DatasetId> ids;
-  for (const auto& [key, item] : impl_->items) {
-    (void)key;
-    ids.insert(item.dataset_id);
+  const auto listed = datasets();
+  std::vector<DatasetId> ids;
+  ids.reserve(listed.size());
+  for (const auto& [dataset_id, label] : listed) {
+    (void)label;
+    ids.push_back(dataset_id);
   }
-  return {ids.begin(), ids.end()};
+  return ids;
 }
 
 std::optional<QString> CatalogModel::datasetLabel(DatasetId dataset_id) const {
@@ -776,25 +813,29 @@ std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
 }
 
 void CatalogModel::rebuildFromDatastore() {
-  // Keep the samplesIngested gate's cache in sync after EVERY rebuild (gate-triggered or an explicit caller: load
-  // completion, dataset removal, display-name change) so the next ingest can skip correctly. The fingerprint is taken
-  // BEFORE the rebuild: a worker commit landing while the rebuild reads the datastore then differs from the saved
-  // value, so the next ingest rebuilds again instead of skipping past a change the rebuild missed.
+  // The fingerprint is taken before the rebuild: a worker commit landing during it then moves the fingerprint, and the
+  // next ingest rebuilds instead of skipping the change.
   const std::uint64_t fingerprint = catalogFingerprint();
+  const auto started = std::chrono::steady_clock::now();
   rebuildNow();
+  impl_->recordRebuildCost(started);
   impl_->last_fingerprint = fingerprint;
 }
 
 void CatalogModel::rebuildIfChanged() {
-  // Gate for the high-frequency samplesIngested path: a full rebuild re-scans and re-allocates every curve key/label,
-  // but most ingest batches only append rows, so skip when nothing affecting catalog contents changed since the last
-  // rebuild. Synchronous (no timer), so callers reading the catalog right after a structural commit see it updated.
+  // Most ingest batches only append rows: skip when nothing the catalog lists changed.
   const std::uint64_t fp = catalogFingerprint();
   if (impl_->last_fingerprint == fp) {
     return;
   }
+  const auto started = std::chrono::steady_clock::now();
   rebuildNow();
+  impl_->recordRebuildCost(started);
   impl_->last_fingerprint = fp;  // taken before the rebuild — see rebuildFromDatastore
+}
+
+void CatalogModel::setMinIngestRebuildGap(std::chrono::milliseconds gap) {
+  impl_->min_ingest_rebuild_gap = gap;
 }
 
 std::uint64_t CatalogModel::catalogFingerprint() const {
@@ -882,7 +923,7 @@ void CatalogModel::rebuildNow() {
   if (impl_->session == nullptr) {
     if (!impl_->items.empty()) {
       impl_->items.clear();
-      impl_->scalar_lookups.clear();
+      impl_->dropCaches();
       emit cleared();
     }
     return;
@@ -1053,7 +1094,7 @@ void CatalogModel::rebuildNow() {
 
   const Impl::ItemMap previous_items = std::move(impl_->items);
   impl_->items = std::move(next_items);
-  impl_->scalar_lookups.clear();
+  impl_->dropCaches();
 
   if (!previous_items.empty() && impl_->items.empty()) {
     emit cleared();
@@ -1104,7 +1145,7 @@ void CatalogModel::clearAll(bool tombstone) {
     }
   }
   impl_->items.clear();
-  impl_->scalar_lookups.clear();
+  impl_->dropCaches();
   impl_->removed_names_per_dataset.clear();
   impl_->advertised.clear();
   impl_->per_topic_pause_capable_datasets.clear();
@@ -1208,7 +1249,7 @@ void CatalogModel::removeItems(const std::vector<QString>& keys) {
     impl_->items.erase(it);
     removed.push_back(key);
   }
-  impl_->scalar_lookups.clear();
+  impl_->dropCaches();
   if (removed.isEmpty()) {
     return;
   }
@@ -1251,7 +1292,7 @@ bool CatalogModel::removeDataset(DatasetId dataset_id, bool tombstone) {
   for (const QString& key : keys) {
     impl_->items.erase(key);
   }
-  impl_->scalar_lookups.clear();
+  impl_->dropCaches();
   // Empty catalog: one cleared() (views reset in O(1)); otherwise one batched
   // itemsRemoved so consumers react once, not per key.
   if (impl_->items.empty()) {

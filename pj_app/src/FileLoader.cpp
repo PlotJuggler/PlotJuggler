@@ -28,6 +28,8 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include "FileLoadFlushInterval.h"
 #if defined(PJ_WASM_ENABLE_INGRESS_PROBE) && defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #endif
@@ -1659,7 +1661,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       if (ctx_ == nullptr || cancel_mode_.load() != 0) {
         return false;
       }
-      if (ctx_->flush_clock.elapsed() < flush_throttle_ms_) {
+      if (ctx_->flush_clock.elapsed() < kFileLoadFlushInterval.count()) {
         return true;
       }
       ctx_->bound.host->flushPending();
@@ -1819,7 +1821,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
           iter_ingest.requestStop();
           return false;
         }
-        if (flush_clock.elapsed() < flush_throttle_ms_) {
+        if (flush_clock.elapsed() < kFileLoadFlushInterval.count()) {
           return true;
         }
         iter_ingest.flushPending();

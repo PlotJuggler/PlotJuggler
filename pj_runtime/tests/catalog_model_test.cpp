@@ -6,6 +6,7 @@
 #include <QSignalSpy>
 #include <QString>
 #include <QStringList>
+#include <QTest>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -955,6 +956,68 @@ TEST(CatalogModelPathResolve, DatasetsEnumeratesLoadedDatasetsInLoadOrder) {
   EXPECT_EQ(ds[0].second, u"a.mcap"_s);
   EXPECT_EQ(ds[1].first, *b);
   EXPECT_EQ(ds[1].second, u"b.mcap"_s);
+}
+
+TEST(CatalogModelPathResolve, DatasetsFollowEveryChangeOfTheItems) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto ids = [&catalog] { return catalog.datasetIds(); };
+  auto a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(a.has_value());
+  ASSERT_NE(addScalarTopic(session, *a, "/imu/accel/sample"), 0U);
+  ASSERT_EQ(ids(), std::vector<PJ::DatasetId>{*a});
+
+  // A dataset added after the list was read.
+  auto b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(b.has_value());
+  ASSERT_NE(addScalarTopic(session, *b, "/gps/fix"), 0U);
+  EXPECT_EQ(ids(), (std::vector<PJ::DatasetId>{*a, *b}));
+
+  // A relabel keeps the ids and changes the label.
+  catalog.setDatasetDisplayName(*b, u"Pretty"_s);
+  ASSERT_EQ(catalog.datasets().size(), 2U);
+  EXPECT_EQ(catalog.datasets()[1].second, u"Pretty"_s);
+
+  // Removing every item of a dataset removes the dataset.
+  std::vector<QString> keys_of_a;
+  catalog.forEachItem([&](const PJ::CatalogItem& item) {
+    if (item.dataset_id == *a) {
+      keys_of_a.push_back(item.key);
+    }
+  });
+  catalog.removeItems(keys_of_a);
+  EXPECT_EQ(ids(), std::vector<PJ::DatasetId>{*b});
+
+  catalog.removeDataset(*b);
+  EXPECT_TRUE(ids().empty());
+  catalog.restoreDataset(*b);
+  EXPECT_EQ(ids(), std::vector<PJ::DatasetId>{*b});
+
+  catalog.clearAll();
+  EXPECT_TRUE(ids().empty());
+  EXPECT_TRUE(catalog.datasets().empty());
+}
+
+// While a file ingest is open its commits may wait for the rebuild gap, and the catalog still catches up with no
+// further commit. Without an open ingest a commit rebuilds at once, whatever the gap.
+TEST(CatalogModelTest, IngestRebuildsWaitForTheGapAndCatchUp) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  catalog.setMinIngestRebuildGap(std::chrono::milliseconds(300));
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "load.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  const auto has = [&catalog](const char* topic) { return catalog.datasetForTopic(QString::fromUtf8(topic)) != 0; };
+
+  const PJ::IngestToken token = session.beginIngest(*dataset, u"load"_s, 0, /*cancellable=*/false, {});
+  ASSERT_NE(addScalarTopic(session, *dataset, "/first"), 0U);
+  EXPECT_TRUE(has("/first")) << "the first commit after a quiet period rebuilds at once";
+  ASSERT_NE(addScalarTopic(session, *dataset, "/second"), 0U);
+  EXPECT_FALSE(has("/second")) << "a commit inside the gap waits";
+  EXPECT_TRUE(QTest::qWaitFor([&] { return has("/second"); }, 3000)) << "the waiting rebuild runs on its own";
+  session.endIngest(token, PJ::IngestOutcome::kCompleted);
+
+  ASSERT_NE(addScalarTopic(session, *dataset, "/after"), 0U);
+  EXPECT_TRUE(has("/after")) << "with no open ingest a commit rebuilds at once";
 }
 
 TEST(CatalogModelPathResolve, SameTopicFieldResolvesPerDatasetToDistinctKeys) {
