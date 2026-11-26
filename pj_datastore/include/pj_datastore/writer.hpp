@@ -90,8 +90,9 @@ struct ColumnData {
 };
 
 /// Builds rows into per-topic chunk builders; nothing is visible to readers until
-/// commitRows() or `engine.commitChunks(writer.flushAll())`. Never takes the engine lock, though it reads and changes
-/// TopicStorage: when another thread can see the engine, call it under lockEngine() (the C-ABI write hosts do).
+/// commitRows() or `engine.commitChunks(writer.flushAll())`. It takes the engine lock only to commit and to fit a
+/// builder to its topic when its first row begins; the rest reads and changes TopicStorage without it: when another
+/// thread can see the engine, call it under lockEngine() (the C-ABI write hosts do).
 class DataWriter {
  public:
   explicit DataWriter(DataEngine& engine);
@@ -163,7 +164,8 @@ class DataWriter {
 
   /// Commits every finished row to the engine and returns the sorted ids of the topics that took some, as
   /// DataEngine::commitChunks() does. Unlike `commitChunks(flushAll())`, the rows extend each topic's last chunk
-  /// (TopicStorage::appendRows), so how often this is called does not decide where chunks end. Not inside a row.
+  /// (TopicStorage::appendRows), so how often this is called does not decide where chunks end. Takes the engine lock.
+  /// Not inside a row.
   std::vector<PJ::TopicId> commitRows();
 
  private:

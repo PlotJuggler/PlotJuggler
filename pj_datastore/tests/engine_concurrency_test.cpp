@@ -147,14 +147,12 @@ TEST(EngineConcurrencyTest, ConcurrentCommitRowsAndReadSeeAGrowingChunkWhole) {
     const ScalarSeriesHandle wh{topic, 0};
     Timestamp t = 0;
     for (int commit = 0; commit < kCommits; ++commit) {
-      {
-        // As the write hosts do: the writer reads the topic's last chunk to size its builders.
-        const auto lock = engine.lockEngine();
-        for (int i = 0; i < kRowsPerCommit; ++i, ++t) {
-          w.appendScalar(wh, t, static_cast<double>(t));
-        }
-        (void)w.commitRows();
+      // No lock of the test's own: the writer takes the engine lock where it reads the topic's last chunk, to size
+      // its builder, and where it commits.
+      for (int i = 0; i < kRowsPerCommit; ++i, ++t) {
+        w.appendScalar(wh, t, static_cast<double>(t));
       }
+      (void)w.commitRows();
       if (commit == 0) {
         first_read_done.wait();
       }

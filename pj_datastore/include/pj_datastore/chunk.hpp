@@ -202,6 +202,11 @@ class TopicChunkBuilder {
     return columns_.size();
   }
 
+  /// The rows the builder takes before isFull(); for a builder with no row yet.
+  void setMaxRows(uint32_t max_rows) noexcept {
+    max_rows_ = max_rows;
+  }
+
   /// Appends rows [first, first + count) to the end of `chunk` and updates its stats (not encoded_byte_size). Needs
   /// sortRows(), fitsLayoutOf(chunk), chunk.isGrowable() and no row older than the chunk's newest: a chunk stays sorted
   /// and its earlier rows keep their positions. The chunk gains the columns only this builder has, null for the rows it

@@ -507,6 +507,7 @@ std::vector<std::pair<TopicId, TopicChunk>> DataWriter::flushAll() {
 }
 
 std::vector<TopicId> DataWriter::commitRows() {
+  const auto lock = impl_->engine.lockEngine();
   std::vector<TopicId> changed;
   // A topic's batches set aside come before its open builder: they hold its earlier rows.
   for (auto it = impl_->pending_batches.begin(); it != impl_->pending_batches.end(); ++it) {
@@ -546,7 +547,7 @@ std::vector<TopicId> DataWriter::commitRows() {
         storage->columnDescriptors().size() > builder.columnCount()) {
       stale.push_back(topic_id);
     } else {
-      builder.clearRows(builderRows(topic_id, *storage));
+      builder.clearRows(storage->descriptor().max_chunk_rows);  // sized when its next row begins
     }
   }
   for (const TopicId topic_id : stale) {
@@ -761,20 +762,27 @@ void DataWriter::ensureColsLoaded(TopicId topic_id, const TopicStorage& storage)
 }
 
 TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id, const TopicStorage* storage) {
+  auto it = impl_->builders.find(topic_id);
+  if (it != impl_->builders.end() && (it->second.rowCount() > 0 || it->second.isRowInProgress())) {
+    return it.value();
+  }
+
+  // An empty builder, new or kept from the last commit, is fitted to the topic as it is now. That reads the topic's
+  // chunks and layout, which other threads change under the engine lock: it is taken here, so a caller that locks only
+  // its commits is safe too (the write hosts hold it already).
+  const auto lock = impl_->engine.lockEngine();
   if (storage == nullptr) {
     storage = impl_->engine.getTopicStorage(topic_id);
   }
   PJ_ASSERT(storage != nullptr, "get_or_create_builder: topic storage not found");
-
-  auto it = impl_->builders.find(topic_id);
   if (it != impl_->builders.end()) {
-    // A builder outlives a commit, so it can be older than a column another writer added since: ensureColumn() and
-    // resolveField() hand that column's id out, and a write to it would run past this builder's columns. Its rows are
-    // set aside and a builder with the topic's layout takes its place.
-    if (storage->columnDescriptors().size() <= it->second.columnCount() || it->second.isRowInProgress()) {
+    // Kept across a commit, the builder can be older than a column another writer added since: ensureColumn() and
+    // resolveField() hand that column's id out, and a write to it would run past this builder's columns.
+    if (storage->columnDescriptors().size() <= it->second.columnCount()) {
+      it.value().setMaxRows(builderRows(topic_id, *storage));
       return it.value();
     }
-    setBuilderAside(topic_id);
+    impl_->builders.erase(it);
   }
 
   const auto& desc = storage->descriptor();
