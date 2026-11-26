@@ -292,6 +292,59 @@ TEST(CurveTreeViewTest, BatchedCatalogInsertSortsTopLevelGroupsAndChildren) {
   EXPECT_EQ(childNames(alpha), (std::vector<std::string>{"bravo", "charlie", "delta"}));
 }
 
+// The whole tree as indented "name #key" lines, children in view order.
+void dumpTree(const QTreeWidgetItem* item, int depth, QStringList& out) {
+  for (int i = 0; i < item->childCount(); ++i) {
+    const QTreeWidgetItem* child = item->child(i);
+    out << QString(depth * 2, u' ') + child->text(0) + u" #" + child->data(0, Qt::UserRole).toString();
+    dumpTree(child, depth + 1, out);
+  }
+}
+
+// A topic that flattens an array has thousands of sibling groups, and a batch finds a group among them through an
+// index instead of a scan: it must build the tree that adding the rows one by one builds.
+TEST(CurveTreeViewTest, BatchedCatalogInsertBuildsTheTreeThatSingleInsertsBuild) {
+  std::vector<PJ::CurveTreeView::CurvePath> paths;
+  const auto add = [&paths](const QString& topic, const QString& field) {
+    paths.push_back(
+        PJ::CurveTreeView::CurvePath{
+            .key = u"key%1"_s.arg(paths.size()),
+            .dataset = u"bag"_s,
+            .topic = topic,
+            .field = field,
+        });
+  };
+  for (int i = 0; i < 40; ++i) {  // sibling groups under one topic, more than a scan is kept for
+    for (const QString& leaf : {u"x"_s, u"y"_s, u"z"_s}) {
+      add(u"/poses"_s, u"pose[%1]/position/%2"_s.arg(i).arg(leaf));
+    }
+  }
+  add(u"/poses"_s, u"count"_s);
+  add(u"/poses"_s, u"stamp"_s);  // a leaf, then a group of its name
+  add(u"/poses"_s, u"stamp/sec"_s);
+  add(u"/poses"_s, u"pose[7]/position/w"_s);  // back into a group made long before
+  for (int i = 0; i < 30; ++i) {              // many topics under the dataset
+    add(u"/topic%1"_s.arg(i), u"value"_s);
+  }
+
+  PJ::CurveTreeView one_by_one;
+  for (const auto& path : paths) {
+    one_by_one.addCatalogItem(path);
+  }
+  // Two batches: the second finds the rows the first made.
+  PJ::CurveTreeView batched;
+  const auto half = paths.begin() + static_cast<std::ptrdiff_t>(paths.size() / 2);
+  batched.addCatalogItems({paths.begin(), half});
+  batched.addCatalogItems({half, paths.end()});
+
+  QStringList expected;
+  QStringList actual;
+  dumpTree(one_by_one.invisibleRootItem(), 0, expected);
+  dumpTree(batched.invisibleRootItem(), 0, actual);
+  ASSERT_GT(expected.size(), static_cast<qsizetype>(paths.size())) << "the leaves and their groups";
+  EXPECT_EQ(actual.join(u'\n').toStdString(), expected.join(u'\n').toStdString());
+}
+
 // A filter typed BEFORE data is loaded must apply to the rows that arrive later
 // (the catalog-insert path), not just to rows already in the tree.
 TEST(CurveTreeViewTest, FilterAppliesToRowsInsertedAfterItWasSet) {
