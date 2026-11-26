@@ -1013,6 +1013,9 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     }
     dest->clearChunks();
     dest->setColumnDescriptors(union_cols);
+    // The rebuilt rows come from several sources, whose documents may describe them differently: none is kept.
+    dest->field_metadata_.clear();
+    dest->setTopicMetadata({});
     for (TopicChunk& chunk : built) {
       chunk.topic_id = dest_tid;
       (void)dest->appendSealedChunk(std::move(chunk));

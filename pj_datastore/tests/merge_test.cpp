@@ -452,5 +452,34 @@ TEST(MergeDatasets, SourceRetiredColumnOfAnotherTypeDoesNotSkipTheTopic) {
   EXPECT_EQ(readColumn(engine, data, 1).size(), 4U);
 }
 
+TEST(MergeDatasets, RebuiltTopicsLoseTheirMetadataOthersKeepIt) {
+  DataEngine engine;
+  const DatasetId anchor = makeDataset(engine, "anchor");
+  const DatasetId source = makeDataset(engine, "source");
+  const TopicId shared = writeScalar(engine, anchor, "shared", {0}, {0.0});
+  const TopicId anchor_only = writeScalar(engine, anchor, "anchor_only", {0}, {1.0});
+  const TopicId source_shared = writeScalar(engine, source, "shared", {0}, {2.0});
+  const TopicId source_only = writeScalar(engine, source, "source_only", {0}, {3.0});
+  {
+    auto lock = engine.lockEngine();
+    for (const TopicId tid : {shared, anchor_only, source_shared, source_only}) {
+      engine.getTopicStorage(tid)->setTopicMetadata(R"({"description":"topic"})");
+      engine.getTopicStorage(tid)->setFieldMetadata(0, R"({"description":"field"})");
+    }
+  }
+
+  ASSERT_TRUE(engine.mergeDatasets(anchor, {{source, 1000}}).has_value());
+
+  const TopicId merged_source_only = topicIdByName(engine, anchor, "source_only");
+  ASSERT_NE(merged_source_only, 0U);
+  auto lock = engine.lockEngine();
+  for (const TopicId tid : {shared, merged_source_only}) {
+    EXPECT_TRUE(engine.getTopicStorage(tid)->topicMetadata().empty()) << tid;
+    EXPECT_TRUE(engine.getTopicStorage(tid)->fieldMetadata(0).empty()) << tid;
+  }
+  EXPECT_EQ(engine.getTopicStorage(anchor_only)->topicMetadata(), R"({"description":"topic"})");
+  EXPECT_EQ(engine.getTopicStorage(anchor_only)->fieldMetadata(0), R"({"description":"field"})");
+}
+
 }  // namespace
 }  // namespace PJ

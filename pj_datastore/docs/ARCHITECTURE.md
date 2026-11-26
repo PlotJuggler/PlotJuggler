@@ -195,13 +195,14 @@ between.
     slot, same bounds and replace-or-clear rules). `TopicStorage` keeps it as one string on the topic, untouched by
     clearing and detaching; `replaceDatasetFrom()` carries it over and the write core sets it on the live and the
     staging engine alike. `CatalogModel::topicMetadata()` reads it for a scalar topic and the topic tooltip shows its
-    `description` key. `mergeDatasets()` does not carry a source-only topic's document across.
+    `description` key.
 - **Merge.** `DataEngine::mergeDatasets()` and `ObjectStore::mergeDatasets()` fold source datasets into an anchor, each
   shifted by a raw delta the caller supplies; `pj_runtime` computes the deltas and owns the type-conflict policy.
   Scalar topics unite by name and columns by field path; the anchor keeps its ids and column indices, a conflicting
   field type is skipped and reported, and the rebuilt chunks are ascending and non-overlapping. Object topics with a
   shared name fuse by shifted timestamp with fresh UIDs; source-only ones move under the anchor and keep their id.
-  Sources end empty but registered.
+  Sources end empty but registered. A rebuilt scalar topic has no field or topic metadata afterwards, the anchor's
+  included; a topic no source contributed to keeps its documents.
 - **Merged payload stamps.** A merge moves each entry's store timestamp but never rewrites its payload, so it records
   the delta in the entry's `payload_stamp_shift`. A consumer that reads timestamps embedded in a payload (the TF
   buffer, the scene layers, the marker and script engines) adds it; a consumer of the store timestamp ignores it.
