@@ -34,8 +34,9 @@ and do not build concurrently in the same context.
 - Desktop integration, including the application launcher, icon and native
   GTK file chooser.
 - Raster helper with shareware game data.
-- 20 bundled marketplace extensions covering file loaders, streamers, message
-  parsers and tools, including the ROS 2 subscriber.
+- The marketplace extensions the AppImage bundles (`BUNDLE_IDS` in
+  `local/install_extensions.py`): file loaders, streamers, message parsers and
+  tools, including the ROS 2 subscriber.
   Extensions are deployed into the user's store on first launch while preserving
   compatible newer versions.
 - Classic confinement for access to host ROS installations, custom-message
@@ -56,10 +57,10 @@ shipped alongside the upstream third-party notices.
 ## Install and use
 
 ```bash
-sudo snap install --dangerous --classic packaging/snap/dist/plotjuggler_*.snap
-plotjuggler /path/to/data
+sudo snap install --dangerous --classic packaging/snap/dist/plotjuggler4_*.snap
+plotjuggler4 /path/to/data
 #or
-snap run plotjuggler /path/to/data
+snap run plotjuggler4 /path/to/data
 ```
 
 

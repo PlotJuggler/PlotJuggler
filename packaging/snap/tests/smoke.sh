@@ -18,12 +18,12 @@ if [[ -e "${extensions}" ]]; then
   exit 1
 fi
 
-QT_QPA_PLATFORM=offscreen timeout 30 snap run plotjuggler --version
-timeout 30 snap run plotjuggler --selftest-python
+QT_QPA_PLATFORM=offscreen timeout 30 snap run plotjuggler4 --version
+timeout 30 snap run plotjuggler4 --selftest-python
 
 set +e
 QT_QPA_PLATFORM=xcb timeout 40 xvfb-run -a --server-args='-screen 0 1280x800x24' \
-  snap run plotjuggler --nosplash --test-data
+  snap run plotjuggler4 --nosplash --test-data
 rc=${?}
 set -e
 if [[ "${rc}" -ne 124 ]]; then
@@ -40,5 +40,5 @@ fi
 # on a pipe so its output is captured reliably across the snap launcher boundary.
 # shellcheck disable=SC2016 # Arguments are expanded by the child Bash.
 timeout 120 sh "${repo}/packaging/smoke/wayland_check.sh" \
-  bash -o pipefail -c 'snap run plotjuggler "${@}" 2>&1 | cat' --
+  bash -o pipefail -c 'snap run plotjuggler4 "${@}" 2>&1 | cat' --
 echo 'Snap startup, Python, extension seeding and Wayland rendering passed.'

@@ -53,4 +53,4 @@ if [[ "${clean}" == true ]]; then
   snapcraft clean plotjuggler --use-lxd
 fi
 snapcraft pack --use-lxd
-mv -- plotjuggler_*.snap "${packaging}/dist/"
+mv -- plotjuggler4_*.snap "${packaging}/dist/"

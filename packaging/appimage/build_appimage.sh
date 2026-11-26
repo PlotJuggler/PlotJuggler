@@ -96,7 +96,8 @@ REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/r
 
 # Curated set of registry extension ids bundled by --plugins-registry. The
 # registry lists every official extension; this is the subset that ships in the
-# AppImage. Keep in lockstep with $PluginIds in
+# AppImage. Keep in lockstep with BUNDLE_IDS in
+# packaging/snap/local/install_extensions.py (same set) and with $PluginIds in
 # packaging/installer/build_windows_installer.ps1 (same set, plus the Linux-only
 # ros2-topic-subscriber and toolbox-assistant-agent: the assistant's CLI
 # backends are POSIX-only, so it ships in the AppImage/.deb but not in the

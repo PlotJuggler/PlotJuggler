@@ -39,7 +39,7 @@ PJ4/
 ├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample index
 ├── raster/            # helper/ executable + ipc/ wire contract
 ├── scripts/           # setup, worktrees, pre-commit, windows/ entry points
-├── packaging/         # Nix, conda, AppImage, Debian package, Windows installer, macOS dmg, hosted browser app
+├── packaging/         # Nix, conda, AppImage, Debian package, snap, Windows installer, macOS dmg, hosted browser app
 └── docs/              # cross-cutting designs and guides
 ```
 
@@ -96,8 +96,9 @@ boundaries, ask before proceeding and suggest the closest fit.
 - `scripts/`: setup and maintenance utilities, `pre-commit/` hooks, `windows/` (PowerShell behind the `.bat` shims).
   The everyday `build.sh`, `run.sh`, `test.sh` and their shims stay at the root.
 - `packaging/`: one folder per format: `nix/` (native build behind the root flake), `conda/` (source build for
-  RoboStack users), `appimage/`, `deb/`, `installer/`, `macos/` (repackaging a built tree;
-  [guides](./packaging/README.md)), `web/` (the Worker that hosts the browser build at app.plotjuggler.io).
+  RoboStack users), `snap/` (source build inside Snapcraft), `appimage/`, `deb/`, `installer/`, `macos/`
+  (repackaging a built tree; [guides](./packaging/README.md)), `web/` (the Worker that hosts the browser build at
+  app.plotjuggler.io).
   Format utilities stay with their format; general dev utilities go to `scripts/`.
 
 ## Documentation

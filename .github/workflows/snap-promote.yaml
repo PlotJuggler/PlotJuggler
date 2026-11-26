@@ -9,10 +9,10 @@ permissions:
 
 jobs:
   promote:
-    uses: canonical/robotics-actions-workflows/.github/workflows/promote.yaml@main
+    # Pinned by commit: it receives the Store credential.
+    uses: canonical/robotics-actions-workflows/.github/workflows/promote.yaml@36d487a3a49f3bf94a7e00a38869967a68bac87a
     with:
-      snap: plotjuggler
-      # Future: publish builds to candidate, then promote candidate to stable.
+      snap: plotjuggler4
       from-channel: latest/beta
       to-channel: latest/candidate
     secrets:

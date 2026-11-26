@@ -3,7 +3,7 @@
 Type=Application
 Name=PlotJuggler 4
 GenericName=Timeseries Visualization
-Exec=plotjuggler %F
+Exec=plotjuggler4 %F
 Icon=${SNAP}/usr/share/plotjuggler/plotjuggler4.png
 Comment=Visualize timeseries like a pro
 Terminal=false

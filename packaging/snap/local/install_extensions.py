@@ -3,8 +3,10 @@
 """Bundle checksum-verified marketplace archives for PJ4's per-user startup seed."""
 
 import argparse
+import calendar
 import hashlib
 import json
+import os
 import re
 import shutil
 import stat
@@ -15,6 +17,7 @@ from pathlib import Path, PurePosixPath
 
 
 PLATFORMS = {"amd64": "linux-x86_64", "arm64": "linux-arm64"}
+# The AppImage's set: keep in lockstep with BUNDLE_IDS in packaging/appimage/build_appimage.sh.
 BUNDLE_IDS = (
     "csv-loader",
     "mcap-loader",
@@ -34,20 +37,45 @@ BUNDLE_IDS = (
     "toolbox-transform-editor",
     "toolbox-mosaico",
     "arrow-parser",
+    "toolbox-fft",
+    "toolbox-anomaly-detector",
+    "toolbox-data-exporter",
+    "influx-parser",
+    "navmap-parser",
+    "candump-loader",
+    "blf-loader",
+    "mf4-loader",
     "toolbox-assistant-agent",
     "ros2-topic-subscriber",
 )
 
 
-def check_compatibility(metadata, app_version, sdk_version):
-    """Reject extension floors newer than the app and SDK bundled in this build."""
+def version_key(version):
+    """Order versions; a pre-release (1.0.0-dev.2) sorts below its release (1.0.0)."""
+    release, _, pre = version.partition("-")
+    numbers = tuple(int(part) for part in release.split("."))
+    return numbers, not pre, tuple(int(part) if part.isdigit() else part for part in pre.split("."))
+
+
+def incompatibility(metadata, app_version, sdk_version):
+    """Return why this build cannot load the extension, or None when it can."""
     for key, available in (("min_plotjuggler_version", app_version), ("min_sdk_required", sdk_version)):
         minimum = metadata.get(key)
-        if minimum:
-            required = tuple(map(int, minimum.split(".")))
-            current = tuple(map(int, available.split(".")))
-            if required > current:
-                raise ValueError(f"{metadata['id']} requires {key}={minimum}; build provides {available}")
+        if minimum and version_key(minimum) > version_key(available):
+            return f"{metadata['id']} {metadata['version']} requires {key}={minimum}; build provides {available}"
+    return None
+
+
+def select_release(releases, platform, app_version, sdk_version):
+    """Pick the newest release that ships the platform and that this build can load.
+
+    The registry keeps older releases of an id for older hosts.
+    """
+    usable = [
+        release for release in releases
+        if platform in release.get("platforms", {}) and not incompatibility(release, app_version, sdk_version)
+    ]
+    return max(usable, key=lambda release: version_key(release["version"]), default=None)
 
 
 def install_extension(extension, platform, destination, app_version, sdk_version):
@@ -55,10 +83,7 @@ def install_extension(extension, platform, destination, app_version, sdk_version
     extension_id = extension["id"]
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", extension_id):
         raise ValueError(f"Invalid extension id: {extension_id}")
-    check_compatibility(extension, app_version, sdk_version)
-    artifact = extension.get("platforms", {}).get(platform)
-    if not artifact:
-        raise ValueError(f"No {platform} artifact for {extension_id}")
+    artifact = extension["platforms"][platform]
     checksum = artifact.get("checksum", "")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", checksum):
         raise ValueError(f"Missing or invalid SHA256 for {extension_id}")
@@ -84,15 +109,24 @@ def install_extension(extension, platform, destination, app_version, sdk_version
                     raise ValueError(f"Unsafe archive entry: {member.filename}")
             archive.extractall(unpacked)
             for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                extracted = unpacked / member.filename
                 mode = (member.external_attr >> 16) & 0o777
-                if mode and not member.is_dir():
-                    (unpacked / member.filename).chmod(mode)
+                if mode:
+                    extracted.chmod(mode)
+                # The app recognises an already-seeded bundled plugin by its library's size and
+                # mtime: keep the archive's time, or every snap build looks like a new plugin.
+                stamp = calendar.timegm(member.date_time)
+                os.utime(extracted, (stamp, stamp))
         entries = list(unpacked.iterdir())
         payload = entries[0] if len(entries) == 1 and entries[0].is_dir() else unpacked
         manifest = json.loads((payload / "manifest.json").read_text())
         if manifest.get("id") != extension_id or manifest.get("version") != extension["version"]:
             raise ValueError(f"Manifest id/version mismatch for {extension_id}")
-        check_compatibility(manifest, app_version, sdk_version)
+        reason = incompatibility(manifest, app_version, sdk_version)
+        if reason:
+            raise ValueError(reason)
         target = Path(destination) / extension_id
         if target.exists():
             shutil.rmtree(target)
@@ -100,7 +134,7 @@ def install_extension(extension, platform, destination, app_version, sdk_version
 
 
 def main():
-    """Resolve the curated set from the pinned registry for the build architecture."""
+    """Resolve the curated set from the registry for the build architecture."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("registry", type=Path)
     parser.add_argument("architecture", choices=PLATFORMS)
@@ -109,14 +143,16 @@ def main():
     parser.add_argument("--sdk-version", required=True)
     args = parser.parse_args()
     registry = json.loads(args.registry.read_text())
-    extensions = {extension["id"]: extension for extension in registry["extensions"]}
+    platform = PLATFORMS[args.architecture]
     for extension_id in BUNDLE_IDS:
-        if extension_id not in extensions:
-            raise ValueError(f"Registry has no {extension_id}")
-        install_extension(
-            extensions[extension_id], PLATFORMS[args.architecture], args.destination,
-            args.app_version, args.sdk_version,
-        )
+        releases = [extension for extension in registry["extensions"] if extension["id"] == extension_id]
+        release = select_release(releases, platform, args.app_version, args.sdk_version)
+        if not release:
+            raise ValueError(
+                f"Registry has no {extension_id} for {platform} that PlotJuggler {args.app_version} "
+                f"(SDK {args.sdk_version}) can load"
+            )
+        install_extension(release, platform, args.destination, args.app_version, args.sdk_version)
 
 
 if __name__ == "__main__":

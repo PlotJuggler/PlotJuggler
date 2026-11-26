@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-name: plotjuggler
+name: plotjuggler4
 title: PlotJuggler 4
 base: core26
 adopt-info: plotjuggler
@@ -19,7 +19,7 @@ platforms:
   arm64:
 
 apps:
-  plotjuggler:
+  plotjuggler4:
     command: bin/plotjuggler-launch
     desktop: usr/share/applications/plotjuggler4.desktop
 

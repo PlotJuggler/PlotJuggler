@@ -6,7 +6,7 @@ The Nix flake and Snapcraft build and package the app in one step.
 | Format | Guide | Command |
 | --- | --- | --- |
 | Nix (x86_64 Linux) | [Native Nix build](nix/README.md) | `nix build` |
-| Classic snap (amd64 Linux) | [Snap packaging](snap/README.md) | `packaging/snap/build.sh` |
+| Classic snap (amd64 and arm64 Linux) | [Snap packaging](snap/README.md) | `packaging/snap/build.sh` |
 | Linux AppImage | [AppImage and Docker builds](appimage/README.md) | `packaging/appimage/build_appimage.sh` |
 | Debian / Ubuntu | [Debian package](deb/README.md) | `packaging/deb/build_deb.sh` |
 | Windows installer | [Qt Installer Framework](installer/README.md) | `.\packaging\installer\build_windows_installer.ps1` |
@@ -51,6 +51,7 @@ carries the written source offer.
 | Debian | `/opt/plotjuggler4/share/doc/` (the AppImage's), and `/usr/share/doc/plotjuggler4/copyright` |
 | Windows installer and portable ZIP | `licenses/`, with the MPL-2.0 and LGPL-3.0 texts the installer pages show |
 | macOS | `PlotJuggler.app/Contents/Resources/` |
+| Snap | `usr/share/doc/plotjuggler/`: the notices, the Conan packages' `licenses/` folders under `third-party/`, and under `qt/` the Qt SBOMs and the licence files of the matching Qt sources |
 | Browser bundle (`PlotJuggler4-web-bundle.zip`) | the root, with the browser build's own notices and its source offer in `sources/` |
 
 The browser build writes its own notices (`cmake/PjWasmNotices.cmake`) and source offer
