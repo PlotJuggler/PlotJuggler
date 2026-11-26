@@ -646,10 +646,10 @@ Status scanSeriesValues(
   return lockEnginePair(live, staging);
 }
 
-// Refuses an oversized, too deep or non-object field-metadata document while it parses, before any tree is built.
-// Depth and node limits mirror SessionManager::validateDatasetMetadata (pj_runtime, Qt-based): keep them in step.
-// kMaxBytes is lower: the document only feeds a tooltip, but is stored for every field.
-class FieldMetadataBounds final : public nlohmann::json::json_sax_t {
+// Refuses an oversized, too deep or non-object field or topic metadata document while it parses, before any tree is
+// built. Depth and node limits mirror SessionManager::validateDatasetMetadata (pj_runtime, Qt-based): keep them in
+// step. kMaxBytes is lower: the document only feeds a tooltip, but is stored for every field.
+class MetadataDocumentBounds final : public nlohmann::json::json_sax_t {
  public:
   static constexpr std::size_t kMaxBytes = 64 * 1024;
   static constexpr int kMaxDepth = 32;
@@ -720,15 +720,15 @@ class FieldMetadataBounds final : public nlohmann::json::json_sax_t {
   // Depth is open containers plus one (root = 1).
   bool value(bool is_object) {
     if (nodes_ == 0 && !is_object) {
-      reason_ = "field metadata is not a JSON object";
+      reason_ = "metadata is not a JSON object";
       return false;
     }
     if (++nodes_ > kMaxNodes) {
-      reason_ = fmt::format("field metadata exceeds {} values", kMaxNodes);
+      reason_ = fmt::format("metadata exceeds {} values", kMaxNodes);
       return false;
     }
     if (open_ + 1 > kMaxDepth) {
-      reason_ = fmt::format("field metadata nesting exceeds depth {}", kMaxDepth);
+      reason_ = fmt::format("metadata nesting exceeds depth {}", kMaxDepth);
       return false;
     }
     return true;
@@ -741,17 +741,17 @@ class FieldMetadataBounds final : public nlohmann::json::json_sax_t {
 };
 
 // True if the text is kept as sent; false if it clears the metadata (empty text or an object with no key).
-[[nodiscard]] PJ::Expected<bool> checkFieldMetadata(std::string_view text) {
+[[nodiscard]] PJ::Expected<bool> checkMetadataDocument(std::string_view text) {
   if (text.empty()) {
     return false;
   }
-  if (text.size() > FieldMetadataBounds::kMaxBytes) {
+  if (text.size() > MetadataDocumentBounds::kMaxBytes) {
     return PJ::unexpected(
-        fmt::format("field metadata is {} bytes; the limit is {}", text.size(), FieldMetadataBounds::kMaxBytes));
+        fmt::format("metadata is {} bytes; the limit is {}", text.size(), MetadataDocumentBounds::kMaxBytes));
   }
-  FieldMetadataBounds bounds;
+  MetadataDocumentBounds bounds;
   if (!nlohmann::json::sax_parse(text.begin(), text.end(), &bounds)) {
-    return PJ::unexpected(bounds.reason().empty() ? std::string("field metadata is not valid JSON") : bounds.reason());
+    return PJ::unexpected(bounds.reason().empty() ? std::string("metadata is not valid JSON") : bounds.reason());
   }
   return bounds.hasKeys();
 }
@@ -985,7 +985,7 @@ struct WriteCore {
   // Sets the metadata on the live engine and the staging mirror, so it survives the pause/resume swap.
   // The field must exist on the live engine; a mirror without it is skipped silently.
   [[nodiscard]] bool setFieldMetadata(FieldHandle field, std::string_view metadata_json) {
-    const PJ::Expected<bool> has_keys = checkFieldMetadata(metadata_json);
+    const PJ::Expected<bool> has_keys = checkMetadataDocument(metadata_json);
     if (!has_keys.has_value()) {
       setError(has_keys.error());
       return false;
@@ -1006,7 +1006,7 @@ struct WriteCore {
 
   // Same as setFieldMetadata(), for the topic's own document.
   [[nodiscard]] bool setTopicMetadata(TopicHandle topic, std::string_view metadata_json) {
-    const PJ::Expected<bool> has_keys = checkFieldMetadata(metadata_json);
+    const PJ::Expected<bool> has_keys = checkMetadataDocument(metadata_json);
     if (!has_keys.has_value()) {
       setError(has_keys.error());
       return false;
