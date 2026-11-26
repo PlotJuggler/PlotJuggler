@@ -61,6 +61,10 @@ struct ChunkStats {
 /// readNumericAsDouble() returns 0.0 at a null, so call isNull() first or use readColumnAsDoubles().
 struct TopicChunk {
   ChunkId id = 0;
+  /// 0, or the first id these rows had in their topic: set when TopicStorage gives the chunk a new id in place (late
+  /// rows merged into it, or an id above those already read). A consumer whose watermark id is in [replaced_id, id)
+  /// read some of this chunk's rows under the earlier id, and would read them again from row 0.
+  ChunkId replaced_id = 0;
   TopicId topic_id = 0;
   /// The topic's schema when the chunk was sealed; the topic may have moved on.
   SchemaId schema_version = 0;

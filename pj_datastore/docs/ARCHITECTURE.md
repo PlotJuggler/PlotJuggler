@@ -66,8 +66,9 @@ rows in one chunk builder per topic and commits them with `DataWriter::commitRow
 - **Out-of-order timestamps are kept.** The rows of one commit are stable-sorted before they land, so every chunk is
   ascending. Rows older than the last chunk's newest (a topic of several publishers, stamped by each) cannot be
   appended: they are merged into the last chunk in timestamp order, after the rows of equal timestamp already there,
-  and the chunk takes a new id, because rows moved. Readers and derived nodes take that as a late chunk: the series
-  generation changes, and a node replays. When the merge does not fit in the chunk, the rows have another layout, or
+  and the chunk takes a new id, because rows moved, keeping its first one in `TopicChunk::replaced_id`. Readers take
+  that as a late chunk: the series generation changes. A derived node that read rows under the earlier id replays
+  ("Late input"). When the merge does not fit in the chunk, the rows have another layout, or
   it would rewrite more cells than `appendRows()` allows, the rows start a chunk of their own, so a topic's chunks can
   overlap in time; the reads merge them ("Reading").
 - Pre-registering fields is optional. It enables the bound-record write path.
@@ -222,8 +223,11 @@ into a text column leaves the cell empty).
   gathers the rows after its last joined timestamp. A dirty node whose inputs hold no newer chunk and no new row in
   the newest one returns at once, in time linear in its inputs, and leaves its downstream alone, so a streaming tick
   that dirties every node costs little for idle ones.
-- **Late input.** An unread chunk that lands at or before the node's last fed timestamp makes the node recompute, and
-  so do rows its newest chunk gained behind that timestamp (the chunk can sit behind an overlapping one). A MIMO node
+- **Late input.** An unread chunk that starts before a SISO node's last fed timestamp makes the node recompute (for a
+  MIMO node: at or before its last joined one), and so do rows its newest chunk gained behind that timestamp (the
+  chunk can sit behind an overlapping one). A chunk that took the place of one the SISO node read
+  (`TopicChunk::replaced_id` at or below the node's watermark id) also does when it starts exactly at that timestamp:
+  it holds rows the node fed, under an id the node has not seen. A MIMO node
   tracks the newest chunk id it consumed per input, and its rows, because a chunk sealed before another input's can
   be committed after it.
 - **Recompute is transactional.** The node's current output is set aside, not cleared, and the graph below it is

@@ -164,6 +164,7 @@ void TopicStorage::extendLastChunk(
     }
     // A chunk put back by a restore after newer ones were read: under its old id its new rows would not be seen.
     if (chunk.id < newest_chunk_id_ever_) {
+      chunk.replaced_id = chunk.replaced_id != 0 ? chunk.replaced_id : chunk.id;
       chunk.id = TopicChunkBuilder::nextChunkId();
     }
     newest_chunk_id_ever_ = chunk.id;
@@ -182,7 +183,9 @@ void TopicStorage::mergeIntoLastChunk(TopicChunk& chunk, const TopicChunkBuilder
     if (!chunk.isGrowable()) {
       chunk.makeGrowable();
     }
+    const ChunkId first_id = chunk.replaced_id != 0 ? chunk.replaced_id : chunk.id;
     chunk = batch.mergedWith(chunk);  // a new id: rows moved, and a row never changes under its chunk's id
+    chunk.replaced_id = first_id;
     newest_chunk_id_ever_ = chunk.id;
   });
   unretireColumnsWithValues(chunk);
@@ -212,8 +215,9 @@ void TopicStorage::appendRows(TopicChunkBuilder& batch) {
     }
     // Rows older than the last chunk's newest (a topic of several publishers, stamped by each): appended they would
     // leave the chunk unsorted, so they are merged into it in timestamp order, which moves rows and so gives the chunk
-    // a new id. Readers and derived nodes take that as they take any late chunk: they rebuild or replay. When the
-    // merge does not fit in the chunk, or is too large, the rows start a chunk of their own that overlaps it.
+    // a new id, with the old one kept in TopicChunk::replaced_id. Readers rebuild, as for any late chunk; a derived
+    // node that read rows under the old id replays. When the merge does not fit in the chunk, or is too large, the
+    // rows start a chunk of their own that overlaps it.
     if (has_room && first == 0 && last->stats.row_count + total <= max_rows &&
         (last->stats.row_count + total) * batch.columnCount() <= kLateMergeCells) {
       mergeIntoLastChunk(*last, batch);

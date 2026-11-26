@@ -84,6 +84,14 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   minimum), 17 of them cut by rows older than the last chunk's newest; a live stream would cut such a topic about one
   commit in five. Merging those rows into the last chunk under a new id left 90 chunks. With the loader's default,
   log time, no chunk of four recordings was cut by a late row.
+- **A chunk given a new id in place says which id it replaces.** A SISO node reads a chunk it has not seen from its
+  first row, and replays only when the chunk starts before its last fed timestamp. A last chunk merged with a late
+  row starts where it did, so a node that had fed nothing after the chunk's first timestamp fed those rows twice (a
+  topic of two publishers: x at 100, y at 110, then x at 105; found by review). The chunk now keeps the id it replaced
+  (`TopicChunk::replaced_id`) and such a node replays, so every late merge replays the nodes that read the topic,
+  where a late chunk of its own replayed only those that had fed past it. Re-test when derived series over topics
+  with late rows are slow: the rows before the first late one keep their positions, so a node that fed nothing after
+  it could resume there (reasoning, not tried).
 - **Not tried (reasoning):** sealing a snapshot of the growing rows at every commit costs their whole count times the
   columns each time, about 13 M cells a commit for a 13k-column topic near a full chunk. Merging small chunks in tiers
   leaves about ten trailing chunks a topic and renumbers chunks derived nodes have read.

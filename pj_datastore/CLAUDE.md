@@ -16,7 +16,8 @@ it only through the C ABI. Timestamps are absolute int64 nanoseconds. How it wor
   `readString()` view or a column pointer does not. Copy what must last (`PointSeriesXY` copies its points).
 - A row never changes under its chunk id, and only a topic's last chunk gains rows; rows that must go between its
   rows replace it under a new id. A consumer that remembers a chunk id also remembers how many of its rows it read
-  (`IncrementalEngine` does), or it misses the rows the chunk gains.
+  (`IncrementalEngine` does), or it misses the rows the chunk gains; and it takes a chunk whose `replaced_id` is at
+  or below that id as holding rows it read, or it reads them twice.
 - A chunk has one column layout. Rows written before a column existed are in chunks that lack it, and readers (the
   read tools' sample counts among them) take that as "not a row of this field", unlike a null: putting such rows in
   a chunk that has the column turns them into nulls it never held.

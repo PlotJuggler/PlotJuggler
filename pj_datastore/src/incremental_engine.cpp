@@ -1140,6 +1140,14 @@ static bool nodeInputRegressed(DataEngine& engine, const DerivedNode& node) {
         watermark = std::max(watermark, chunk.stats.t_max);
         continue;
       }
+      // A chunk that took the place of one the node read (TopicChunk::replaced_id) holds rows it has fed, under an id
+      // it has not seen: read from its first row they would be fed twice. Starting at the watermark is then a
+      // regression too; starting after it, none of its rows was fed.
+      const bool replaces_read_chunk =
+          chunk.replaced_id != 0 && chunk.replaced_id <= std::max(node.last_processed_chunk_id, node.resume_chunk_id);
+      if (replaces_read_chunk && chunk.stats.t_min <= watermark) {
+        return true;
+      }
       // A chunk a time-sliced step stopped inside was checked when its first rows were fed;
       // its remaining rows sort after them.
       if (chunk.id != node.resume_chunk_id && chunk.stats.t_min < watermark) {
@@ -1270,7 +1278,8 @@ static bool inputHasNothingNew(
 
 // True when running the node would change nothing, decided from each input's newest chunk id rather than a scan over
 // every retained chunk (a streaming tick marks every node dirty, and most are idle). Input reaches a node only as a
-// committed chunk numbered by one global counter above the node's watermark (a late write, a refill) or as rows added
+// committed chunk numbered by one global counter above the node's watermark (a late write, a refill, a last chunk
+// that took a new id) or as rows added
 // to the topic's last chunk, and retention raises evictedThroughChunkId(), which newestChunkId() includes, so a gap is
 // never hidden. A MIMO node
 // compares each input with that input's own newest id: a chunk sealed before another input's can be committed after

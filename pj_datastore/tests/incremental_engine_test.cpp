@@ -3346,6 +3346,105 @@ TEST(IncrementalEngineGrowingChunkTest, ALateRowReplaysTheNode) {
   EXPECT_EQ(collectValues(engine, out).size(), 4U);
 }
 
+// Topic "xy" with float64 x, y and no row.
+static PJ::TopicId makeEmptyXyTopic(DataEngine& engine, PJ::DatasetId ds) {
+  DataWriter writer = engine.createWriter();
+  const PJ::SchemaId schema_id = *writer.registerSchema(
+      "xy",
+      makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
+  TopicDescriptor td;
+  td.name = "xy_topic";
+  td.schema_id = schema_id;
+  td.dataset_id = ds;
+  return *writer.registerTopic(ds, td);
+}
+
+// A topic of two publishers, each stamping its own rows: x at 100, y at 110, then x at 105. The late row is merged
+// into the chunk, which takes a new id; the node on x has fed that chunk's first row and nothing after it, so the
+// chunk starts exactly at the node's watermark. Read from its first row it would feed x at 100 again.
+TEST(IncrementalEngineGrowingChunkTest, AChunkMergedWithALateRowDoesNotRepeatTheRowsTheNodeFed) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyXyTopic(engine, ds);
+  const PJ::NodeId node = *derived.addSisoTransform(src, "x_id", ds, std::make_unique<IdentityTransform>(), 0);
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+  DataWriter writer = engine.createWriter();
+  const auto commit_cell = [&](PJ::Timestamp ts, std::size_t column, double value) {
+    ASSERT_TRUE(writer.beginRow(src, ts).has_value());
+    writer.set(src, column, value);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+    (void)writer.commitRows();
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  };
+
+  commit_cell(100, 0, 1.0);
+  commit_cell(110, 1, 7.0);
+  const auto& chunks = engine.getTopicStorage(src)->sealedChunks();
+  ASSERT_EQ(chunks.size(), 1U);
+  const PJ::ChunkId before = chunks.back().id;
+
+  commit_cell(105, 0, 2.0);
+  ASSERT_EQ(chunks.size(), 1U);
+  ASSERT_NE(chunks.back().id, before) << "the late row is merged in, under a new id";
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {{100, 1.0}, {105, 2.0}};
+  EXPECT_EQ(collectRows(engine, out), expected);
+
+  // A second late row, into the chunk that already replaced one.
+  commit_cell(102, 0, 1.5);
+  const std::vector<std::pair<PJ::Timestamp, double>> after_second = {{100, 1.0}, {102, 1.5}, {105, 2.0}};
+  EXPECT_EQ(collectRows(engine, out), after_second);
+}
+
+// The same for a node a time-sliced step left inside the chunk: the rows it fed so far all carry the chunk's first
+// timestamp.
+TEST(IncrementalEngineGrowingChunkTest, AChunkMergedWhileAStepWasInsideItDoesNotRepeatTheRowsTheNodeFed) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeEmptyXyTopic(engine, ds);
+  DataWriter writer = engine.createWriter();
+  const auto add_row = [&](PJ::Timestamp ts, double x) {
+    ASSERT_TRUE(writer.beginRow(src, ts).has_value());
+    writer.set(src, 0, x);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  };
+  constexpr int kSameStamp = 600;  // more rows than a step feeds between two looks at its deadline
+  for (int i = 0; i < kSameStamp; ++i) {
+    add_row(100, static_cast<double>(i));
+  }
+  add_row(200, 1000.0);
+  (void)writer.commitRows();
+  const PJ::NodeId node = *derived.addSisoTransform(src, "x_id", ds, std::make_unique<IdentityTransform>(), 0);
+  const PJ::TopicId out = derived.outputTopics(node)[0];
+
+  // A step too short to finish: it stops inside the chunk, among the rows stamped 100.
+  const auto done = derived.materializeStep(node, std::chrono::nanoseconds(1));
+  ASSERT_TRUE(done.has_value()) << done.error();
+  ASSERT_FALSE(*done);
+  const std::size_t fed = collectRows(engine, out).size();
+  ASSERT_GT(fed, 0U);
+  ASSERT_LT(fed, static_cast<std::size_t>(kSameStamp));
+
+  const PJ::ChunkId before = engine.getTopicStorage(src)->sealedChunks().back().id;
+  add_row(150, 500.0);  // late: merged into the chunk, which takes a new id
+  (void)writer.commitRows();
+  ASSERT_NE(engine.getTopicStorage(src)->sealedChunks().back().id, before);
+  notify(derived, {src});
+  const auto finished = derived.materializeStep(node, std::chrono::seconds(30));
+  ASSERT_TRUE(finished.has_value()) << finished.error();
+  ASSERT_TRUE(*finished);
+
+  const auto rows = collectRows(engine, out);
+  ASSERT_EQ(rows.size(), static_cast<std::size_t>(kSameStamp + 2));
+  for (int i = 0; i < kSameStamp; ++i) {
+    ASSERT_EQ(rows[static_cast<std::size_t>(i)], std::make_pair(PJ::Timestamp{100}, static_cast<double>(i)));
+  }
+  EXPECT_EQ(rows[kSameStamp], std::make_pair(PJ::Timestamp{150}, 500.0));
+  EXPECT_EQ(rows[kSameStamp + 1], std::make_pair(PJ::Timestamp{200}, 1000.0));
+}
+
 TEST(IncrementalEngineGrowingChunkTest, RowsAChunkGainedAndRetentionHidBeforeTheNodeReadThemAreAGap) {
   DataEngine engine;
   IncrementalEngine derived(engine);
