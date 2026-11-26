@@ -31,6 +31,7 @@
 #include "MainWindow.h"
 #include "PluginPlotTabsController.h"
 #include "PresetController.h"
+#include "mcp/McpSkills.h"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/toolbox_plugin_base.hpp"
@@ -442,6 +443,9 @@ void McpServer::dispatch(
       result(*lifecycle);
     } else if (message.method == "tools/list") {
       result({{"tools", toolList(tool_set)}});
+    } else if (tool_set == mcp::ToolSet::kFull && mcp::isSkillsMethod(message.method)) {
+      // The guide teaches the app tools, which a plugin token does not have.
+      send(*mcp::skillsResponse(message.id, message.method, params));
     } else if (mcp::isTasksMethod(message.method)) {
       send(taskRequest(message, caller));
     } else if (message.method == "tools/call") {

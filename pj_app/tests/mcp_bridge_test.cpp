@@ -368,6 +368,17 @@ TEST_F(McpBridgeFakeInstanceTest, TheTasksMethodsAndATaskHandlePassThroughWhole)
   EXPECT_EQ(relayed["error"].value("code", 0), -32602) << relayed.dump();
 }
 
+// The agent guide (McpSkills.h) comes from the bridge's own binary: the instance is never asked, so the guide is there
+// before any PlotJuggler runs.
+TEST_F(McpBridgeFakeInstanceTest, TheSkillIsAnsweredByTheBridgeItself) {
+  const json listed = request("skills/list", json::object());
+  ASSERT_EQ(listed["result"]["skills"].size(), 1U) << listed.dump();
+  EXPECT_EQ(listed["result"]["skills"][0]["uri"], "skill://plotjuggler/SKILL.md");
+  const json read = request("resources/read", {{"uri", "skill://plotjuggler/SKILL.md"}});
+  EXPECT_TRUE(read["result"]["contents"][0].value("text", "").starts_with("---")) << read.dump();
+  EXPECT_EQ(fake_->next(300).socket, nullptr) << "a skills method reached the instance";
+}
+
 TEST_F(McpBridgeTest, DirectHttpCannotPickAnOwnerOrSkipTheToken) {
   const auto post = [this](const QByteArray& headers, const json& message) {
     QTcpSocket socket;

@@ -1,7 +1,7 @@
 # Concepts
 
-The model behind the MCP tools and the UI. Exact labels and gestures are in [`ui_tasks/`](./ui_tasks/); the scripting
-languages in [scripting.md](./scripting.md).
+The model behind the MCP tools and the UI. Exact labels and gestures are in the `ui_tasks/` pages
+([index](SKILL.md#reference)); the scripting languages in [scripting.md](./scripting.md).
 
 ## Datasets, topics, fields, series
 

@@ -2,10 +2,12 @@
 
 The languages an agent writes code in for PlotJuggler: per-sample filters, on-demand object scripts and marker rules.
 The MCP tool descriptions give each tool's arguments; this page gives the language each tool runs. The authoritative
-contracts are [`pj_scripting/docs/FILTER_CLASS.md`](../../pj_scripting/docs/FILTER_CLASS.md),
-[`pj_scripting/include/pj_scripting/object_script.h`](../../pj_scripting/include/pj_scripting/object_script.h),
-[`python_object_script.h`](../../pj_scripting/include/pj_scripting/python_object_script.h) and
-[`marker_engine.h`](../../pj_scripting/include/pj_scripting/marker_engine.h).
+contracts are
+[`pj_scripting/docs/FILTER_CLASS.md`](https://github.com/PlotJuggler/PlotJuggler/blob/main/pj_scripting/docs/FILTER_CLASS.md),
+[`pj_scripting/include/pj_scripting/object_script.h`](https://github.com/PlotJuggler/PlotJuggler/blob/main/pj_scripting/include/pj_scripting/object_script.h),
+[`python_object_script.h`](https://github.com/PlotJuggler/PlotJuggler/blob/main/pj_scripting/include/pj_scripting/python_object_script.h)
+and
+[`marker_engine.h`](https://github.com/PlotJuggler/PlotJuggler/blob/main/pj_scripting/include/pj_scripting/marker_engine.h).
 
 ## Which engine runs what
 
