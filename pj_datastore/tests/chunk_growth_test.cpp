@@ -845,6 +845,26 @@ TEST(ChunkGrowthTest, AChunkRestoredUnderNewerIdsTakesANewIdBeforeItGrows) {
   EXPECT_GT(chunks[0].id, newer_id) << "under the old id the new row would sit below a watermark already past it";
 }
 
+TEST(ChunkGrowthTest, ACommitInsideARowLeavesThatTopicForTheNextOne) {
+  Fixture fixture(2);
+  fixture.write(Row{.timestamp = 10, .cells = {Cell{1.0}, Cell{1.5F}}});
+  ASSERT_TRUE(fixture.writer.beginRow(fixture.topic, 20).has_value());
+  fixture.writer.set<double>(fixture.topic, 0, 2.0);
+
+  fixture.commitGrowing();  // the row at 20 has one of its two fields
+  EXPECT_TRUE(fixture.storage().sealedChunks().empty());
+
+  fixture.writer.set<float>(fixture.topic, 1, 2.5F);
+  ASSERT_TRUE(fixture.writer.finishRow(fixture.topic).has_value());
+  fixture.commitGrowing();
+  const auto& chunks = fixture.storage().sealedChunks();
+  ASSERT_EQ(chunks.size(), 1U);
+  ASSERT_EQ(chunks[0].stats.row_count, 2U);
+  EXPECT_EQ(chunks[0].readNumericAsDouble(0, 1), 2.0) << "set before the commit";
+  EXPECT_FALSE(chunks[0].isNull(0, 1));
+  EXPECT_EQ(chunks[0].readNumericAsDouble(1, 1), 2.5);
+}
+
 TEST(ChunkGrowthTest, AWritersChunksOfATopicShareTheirColumnDescriptors) {
   Fixture fixture(2);
   for (Timestamp t = 0; t < 3 * static_cast<Timestamp>(kMaxRows) + 5; ++t) {

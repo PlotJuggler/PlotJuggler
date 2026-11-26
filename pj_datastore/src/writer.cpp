@@ -534,7 +534,9 @@ std::vector<TopicId> DataWriter::commitRows() {
   std::vector<TopicId> stale;
   for (auto it = impl_->builders.begin(); it != impl_->builders.end(); ++it) {
     TopicChunkBuilder& builder = it.value();
-    if (builder.rowCount() == 0) {
+    // A builder with a row half-written keeps its rows for the next commit: emptying it now would drop the fields
+    // that row has set already.
+    if (builder.rowCount() == 0 || builder.isRowInProgress()) {
       continue;
     }
     const TopicId topic_id = it->first;

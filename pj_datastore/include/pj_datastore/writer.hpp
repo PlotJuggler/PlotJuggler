@@ -165,7 +165,7 @@ class DataWriter {
   /// Commits every finished row to the engine and returns the sorted ids of the topics that took some, as
   /// DataEngine::commitChunks() does. Unlike `commitChunks(flushAll())`, the rows extend each topic's last chunk
   /// (TopicStorage::appendRows), so how often this is called does not decide where chunks end. Takes the engine lock.
-  /// Not inside a row.
+  /// A topic with a row begun and not finished keeps its rows for the next call.
   std::vector<PJ::TopicId> commitRows();
 
  private:
