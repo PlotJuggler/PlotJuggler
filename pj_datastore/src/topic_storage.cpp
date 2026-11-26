@@ -94,6 +94,8 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
     chunk.id = TopicChunkBuilder::nextChunkId();
   }
   newest_chunk_id_ever_ = chunk.id;
+  // New to this topic, whatever it replaced where it came from (another engine's topic, on a flush or a reload).
+  chunk.replaced_id = 0;
 
   // Only a chunk strictly after every existing sample keeps the series generation: incremental consumers absorb it,
   // any overlap makes their caches rebuild.

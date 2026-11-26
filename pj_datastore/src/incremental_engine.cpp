@@ -1140,11 +1140,13 @@ static bool nodeInputRegressed(DataEngine& engine, const DerivedNode& node) {
         watermark = std::max(watermark, chunk.stats.t_max);
         continue;
       }
-      // A chunk that took the place of one the node read (TopicChunk::replaced_id) holds rows it has fed, under an id
-      // it has not seen: read from its first row they would be fed twice. Starting at the watermark is then a
-      // regression too; starting after it, none of its rows was fed.
+      // A chunk that took the place of one the node read (TopicChunk::replaced_id) holds rows it may have fed, under
+      // an id it has not seen: read from its first row they would be fed twice. Starting at the watermark is then a
+      // regression too; starting after it, none of its rows was fed. Not the chunk a step stopped inside: the node
+      // knows that one by this id, and resumes at the row it stopped at.
       const bool replaces_read_chunk =
-          chunk.replaced_id != 0 && chunk.replaced_id <= std::max(node.last_processed_chunk_id, node.resume_chunk_id);
+          chunk.id != node.resume_chunk_id && chunk.replaced_id != 0 &&
+          chunk.replaced_id <= std::max(node.last_processed_chunk_id, node.resume_chunk_id);
       if (replaces_read_chunk && chunk.stats.t_min <= watermark) {
         return true;
       }
