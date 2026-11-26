@@ -524,8 +524,8 @@ QTreeWidgetItem* CurveTreeView::newRow(QTreeWidgetItem* parent, const QString& n
   setItemName(item, name);
   if (batch_) {
     batch_->grown.insert(parent);
-    if (const auto index = batch_->children.find(parent); index != batch_->children.end() && !index->contains(name)) {
-      index->insert(name, item);
+    if (const auto index = batch_->children.find(parent); index != batch_->children.end()) {
+      index->tryEmplace(name, item);
     }
   }
   return item;
@@ -593,12 +593,10 @@ void CurveTreeView::addCurves(const std::vector<QString>& names) {
   if (names.empty()) {
     return;
   }
-  mutateStructure([&]() {
-    addRowsInBatch([&] {
-      for (const QString& name : names) {
-        addCurve(name, SortMode::kDeferred);
-      }
-    });
+  addRowsInBatch([&] {
+    for (const QString& name : names) {
+      addCurve(name, SortMode::kDeferred);
+    }
   });
 }
 
@@ -661,12 +659,10 @@ void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
   if (paths.empty()) {
     return;
   }
-  mutateStructure([&]() {
-    addRowsInBatch([&] {
-      for (const CurvePath& path : paths) {
-        addCatalogItem(path, SortMode::kDeferred);
-      }
-    });
+  addRowsInBatch([&] {
+    for (const CurvePath& path : paths) {
+      addCatalogItem(path, SortMode::kDeferred);
+    }
   });
 }
 
@@ -2128,17 +2124,19 @@ void CurveTreeView::setDragSelectionProvider(DragSelectionProvider provider) {
 }
 
 void CurveTreeView::addRowsInBatch(const std::function<void()>& add_rows) {
-  const bool updates_were_enabled = updatesEnabled();
-  setUpdatesEnabled(false);
-  batch_.emplace();
-  const auto end_batch = qScopeGuard([this, updates_were_enabled] {
-    batch_.reset();
-    setUpdatesEnabled(updates_were_enabled);
+  mutateStructure([&]() {
+    const bool updates_were_enabled = updatesEnabled();
+    setUpdatesEnabled(false);
+    batch_.emplace();
+    const auto end_batch = qScopeGuard([this, updates_were_enabled] {
+      batch_.reset();
+      setUpdatesEnabled(updates_were_enabled);
+    });
+    add_rows();
+    for (QTreeWidgetItem* parent : std::as_const(batch_->grown)) {
+      parent->sortChildren(kNameColumn, Qt::AscendingOrder);  // its own children only
+    }
   });
-  add_rows();
-  for (QTreeWidgetItem* parent : std::as_const(batch_->grown)) {
-    parent->sortChildren(kNameColumn, Qt::AscendingOrder);  // its own children only
-  }
 }
 
 void CurveTreeView::sortTree() {

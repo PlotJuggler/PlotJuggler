@@ -30,9 +30,10 @@ derived-data design (on-demand, batch and series engines, scheduling, TF) is in
   (`IncrementalEngine`).
 - **Metadata is the identity of marker and derived topics; names are opaque ids.** Recognize them with `isMarkerTopic` /
   `isDerivedObjectTopic` / `isOffClockTopic`, never by parsing a topic name.
-- **Every edit of `CatalogModel`'s items ends in `Impl::dropCaches()`**, a rebuild included. It drops what is read
-  from them (the dataset list, the shown topics, the scalar lookups) and marks the per-topic record a rebuild during
-  an ingest reuses as out of date; without it that rebuild leaves the items out of step with what a full one gives.
+- **Every edit of `CatalogModel`'s items goes through `Impl::dropCaches()`** (a rebuild through `dropReadCaches()`
+  and then re-validates its record): it clears the caches read from them (datasets, shown topics, scalar lookups) and
+  invalidates the per-topic record `rebuildIfChanged` reuses; a missed edit makes that rebuild leave items a full
+  rebuild would not.
 - **GUI-thread APIs stay on the GUI thread**: `CatalogModel`, `TopicDemandTracker`, `TransformService` (its ingest-tap
   callback is the only worker entry), `RecordingService`, the `pj.data_processors.v1` bridges (`[main-thread]` slots).
   Callbacks that fire on plugin threads (`DataSourceRuntimeHost`'s `on_available_topics`, `RecordTap`) own their own

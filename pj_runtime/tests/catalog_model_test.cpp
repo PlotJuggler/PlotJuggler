@@ -51,6 +51,35 @@ PJ::TopicId addScalarTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id
   return handle_or->topic_id;
 }
 
+// A topic of an x/y struct schema: listed from its type tree until it has a row.
+PJ::TopicId addXYTopic(PJ::DataWriter& writer, PJ::DatasetId dataset_id, const std::string& topic_name) {
+  const auto schema = writer.registerSchema(
+      topic_name, PJ::makeStruct(
+                      "xy", {PJ::makePrimitive("x", PJ::PrimitiveType::kFloat64),
+                             PJ::makePrimitive("y", PJ::PrimitiveType::kFloat64)}));
+  EXPECT_TRUE(schema.has_value()) << schema.error();
+  if (!schema.has_value()) {
+    return 0;
+  }
+  PJ::TopicDescriptor descriptor;
+  descriptor.name = topic_name;
+  descriptor.schema_id = *schema;
+  const auto topic = writer.registerTopic(dataset_id, descriptor);
+  EXPECT_TRUE(topic.has_value()) << topic.error();
+  return topic.has_value() ? *topic : 0;
+}
+
+// One row of an addXYTopic() topic, committed as a source's flush is.
+void writeXYRow(
+    PJ::SessionManager& session, PJ::DataWriter& writer, PJ::TopicId topic, PJ::Timestamp timestamp, double x,
+    double y) {
+  ASSERT_TRUE(writer.beginRow(topic, timestamp).has_value());
+  writer.set(topic, 0, x);
+  writer.set(topic, 1, y);
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  (void)session.commitChunks(writer.flushAll());
+}
+
 TEST(CatalogModelTest, TopicLookupRejectsDuplicateDatasets) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -971,21 +1000,9 @@ TEST(CatalogModelPathResolve, ShownTopicsListEachTopicOnceAndFollowTheItems) {
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
   ASSERT_TRUE(dataset);
   PJ::DataWriter writer = session.dataEngine().createWriter();
-  const auto schema = writer.registerSchema(
-      "pose", PJ::makeStruct(
-                  "pose", {PJ::makePrimitive("x", PJ::PrimitiveType::kFloat64),
-                           PJ::makePrimitive("y", PJ::PrimitiveType::kFloat64)}));
-  ASSERT_TRUE(schema.has_value()) << schema.error();
-  PJ::TopicDescriptor descriptor;
-  descriptor.name = "/pose";
-  descriptor.schema_id = *schema;
-  const auto pose = writer.registerTopic(*dataset, descriptor);
-  ASSERT_TRUE(pose.has_value()) << pose.error();
-  ASSERT_TRUE(writer.beginRow(*pose, 1'000).has_value());
-  writer.set(*pose, 0, 1.0);
-  writer.set(*pose, 1, 2.0);
-  ASSERT_TRUE(writer.finishRow(*pose).has_value());
-  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  const PJ::TopicId pose = addXYTopic(writer, *dataset, "/pose");
+  ASSERT_NE(pose, 0U);
+  ASSERT_NO_FATAL_FAILURE(writeXYRow(session, writer, pose, 1'000, 1.0, 2.0));
   const auto cloud =
       session.objectStore().registerTopic({.dataset_id = *dataset, .topic_name = "/cloud", .metadata_json = "{}"});
   ASSERT_TRUE(cloud.has_value()) << cloud.error();
@@ -995,7 +1012,7 @@ TEST(CatalogModelPathResolve, ShownTopicsListEachTopicOnceAndFollowTheItems) {
 
   PJ::CatalogModel::ShownTopics shown = catalog.shownTopics();
   ASSERT_EQ(shown.scalar.size(), 1U);
-  EXPECT_EQ(shown.scalar[0], std::make_pair(*dataset, *pose));
+  EXPECT_EQ(shown.scalar[0], std::make_pair(*dataset, pose));
   ASSERT_EQ(shown.object.size(), 1U);
   EXPECT_EQ(shown.object[0].first, *dataset);
   EXPECT_EQ(shown.object[0].second.id, cloud->id);
@@ -1007,14 +1024,13 @@ TEST(CatalogModelPathResolve, ShownTopicsListEachTopicOnceAndFollowTheItems) {
   ASSERT_NE(speed, 0U);
   shown = catalog.shownTopics();
   ASSERT_EQ(shown.scalar.size(), 2U);
-  EXPECT_EQ(shown.scalar[0], std::make_pair(*dataset, *pose));
+  EXPECT_EQ(shown.scalar[0], std::make_pair(*dataset, pose));
   EXPECT_EQ(shown.scalar[1], std::make_pair(*second, speed));
 
   // A topic stays while one of its fields does, and goes with the last.
   std::vector<QString> pose_keys;
   catalog.forEachItem([&](const PJ::CatalogItem& item) {
-    if (const PJ::ScalarFieldPayload* scalar = PJ::asScalarField(item);
-        scalar != nullptr && scalar->topic_id == *pose) {
+    if (const PJ::ScalarFieldPayload* scalar = PJ::asScalarField(item); scalar != nullptr && scalar->topic_id == pose) {
       pose_keys.push_back(item.key);
     }
   });
@@ -1154,21 +1170,12 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
       columns_of[*topic] = 1 + static_cast<int>(pick(3));
       dataset_of[*topic] = dataset;
     };
-    // Listed from its type tree until it has a row.
     const auto add_schema_topic = [&] {
       const PJ::DatasetId dataset = datasets[pick(datasets.size())];
-      const auto schema = writer.registerSchema(
-          "xy" + std::to_string(++names), PJ::makeStruct(
-                                              "xy", {PJ::makePrimitive("x", PJ::PrimitiveType::kFloat64),
-                                                     PJ::makePrimitive("y", PJ::PrimitiveType::kFloat64)}));
-      ASSERT_TRUE(schema.has_value()) << schema.error();
-      PJ::TopicDescriptor descriptor;
-      descriptor.name = "/schema" + std::to_string(names);
-      descriptor.schema_id = *schema;
-      const auto topic = writer.registerTopic(dataset, descriptor);
-      ASSERT_TRUE(topic.has_value()) << topic.error();
-      schema_topics.push_back(*topic);
-      dataset_of[*topic] = dataset;
+      const PJ::TopicId topic = addXYTopic(writer, dataset, "/schema" + std::to_string(++names));
+      ASSERT_NE(topic, 0U);
+      schema_topics.push_back(topic);
+      dataset_of[topic] = dataset;
     };
     // A row in every column the topic has, of whole numbers or not: a float column's kind follows its values.
     const auto write_row = [&](PJ::TopicId topic, bool whole) {
@@ -1178,31 +1185,24 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
       }
       writeColumns(session, writer, topic, now += 10, values);
     };
-    const auto write_schema_row = [&](PJ::TopicId topic, bool whole) {
-      ASSERT_TRUE(writer.beginRow(topic, now += 10).has_value());
-      writer.set(topic, 0, whole ? 2.0 : 2.5);
-      writer.set(topic, 1, 3.0);
-      ASSERT_TRUE(writer.finishRow(topic).has_value());
-      (void)session.commitChunks(writer.flushAll());
-    };
-    add_dataset();
-    add_topic();
+    ASSERT_NO_FATAL_FAILURE(add_dataset());
+    ASSERT_NO_FATAL_FAILURE(add_topic());
 
     constexpr int kSteps = 240;
     for (int step = 0; step < kSteps; ++step) {
       SCOPED_TRACE(testing::Message() << "step " << step);
       const std::size_t choice = pick(24);
       if (choice < 7) {
-        write_row(topics[pick(topics.size())], pick(4) != 0);
+        ASSERT_NO_FATAL_FAILURE(write_row(topics[pick(topics.size())], pick(4) != 0));
       } else if (choice < 11) {
         const PJ::TopicId topic = topics[pick(topics.size())];
         ++columns_of[topic];
-        write_row(topic, true);
+        ASSERT_NO_FATAL_FAILURE(write_row(topic, true));
       } else if (choice < 13) {
-        add_topic();
-        write_row(topics.back(), pick(2) == 0);
+        ASSERT_NO_FATAL_FAILURE(add_topic());
+        ASSERT_NO_FATAL_FAILURE(write_row(topics.back(), pick(2) == 0));
       } else if (choice == 13) {
-        add_dataset();
+        ASSERT_NO_FATAL_FAILURE(add_dataset());
       } else if (choice == 14) {
         (void)session.objectStore().registerTopic(
             {.dataset_id = datasets[pick(datasets.size())],
@@ -1231,10 +1231,12 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
                                PJ::AdvertisedTopic{.topic_name = u"/advertised%1"_s.arg(static_cast<int>(pick(3)))},
                                PJ::AdvertisedTopic{.topic_name = u"/topic2"_s}});
       } else if (choice < 21) {
-        add_schema_topic();
+        ASSERT_NO_FATAL_FAILURE(add_schema_topic());
       } else if (choice < 23) {
         if (!schema_topics.empty()) {
-          write_schema_row(schema_topics[pick(schema_topics.size())], pick(3) != 0);
+          const PJ::TopicId topic = schema_topics[pick(schema_topics.size())];
+          const double x = pick(3) != 0 ? 2.0 : 2.5;  // whole numbers or not: a float column's kind follows its values
+          ASSERT_NO_FATAL_FAILURE(writeXYRow(session, writer, topic, now += 10, x, 3.0));
         }
       } else if (datasets.size() > 2) {
         // The dataset leaves the engine, and the catalog is told nothing but to look again.
@@ -1245,11 +1247,8 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
         std::erase_if(schema_topics, [&](PJ::TopicId topic) { return dataset_of[topic] == gone; });
         (void)session.removeDataset(gone);  // true only when it took processors with it
         if (topics.empty()) {
-          add_topic();
+          ASSERT_NO_FATAL_FAILURE(add_topic());
         }
-      }
-      if (testing::Test::HasFatalFailure()) {
-        return;
       }
       const std::size_t derived = catalog.scalarTopicsDerived();
       catalog.rebuildIfChanged();
@@ -1257,10 +1256,7 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
       const std::size_t derived_now = catalog.scalarTopicsDerived() - derived;
       topics_kept += derived_now > 0 && derived_now < scalar_topics ? scalar_topics - derived_now : 0U;
       largest_catalog = std::max(largest_catalog, mirror.size());
-      expect_mirror_in_step("after the change");
-      if (testing::Test::HasFatalFailure()) {
-        return;
-      }
+      ASSERT_NO_FATAL_FAILURE(expect_mirror_in_step("after the change"));
 
       // A full rebuild finds nothing to do. Not after every step: during a load the rebuilds that reuse follow one
       // another, each starting from the record the one before left.
@@ -1275,10 +1271,7 @@ TEST(CatalogModelIncrementalRebuild, LeavesWhatAFullRebuildLeavesAfterEveryChang
       catalog.rebuildFromDatastore();
       ASSERT_EQ(added.count() + removed.count() + modified.count() + cleared.count(), 0);
       ASSERT_TRUE(catalog.items() == before);
-      expect_mirror_in_step("after the full rebuild");
-      if (testing::Test::HasFatalFailure()) {
-        return;
-      }
+      ASSERT_NO_FATAL_FAILURE(expect_mirror_in_step("after the full rebuild"));
     }
   }
   EXPECT_GT(largest_catalog, 40U) << "the sequences built catalogs worth the name";

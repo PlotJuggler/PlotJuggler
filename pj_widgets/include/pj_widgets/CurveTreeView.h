@@ -447,8 +447,8 @@ class CurveTreeView : public QTreeWidget {
   // Resolves a normalized catalog tree path to its top-level dataset ancestor, never the matching topic or field row.
   QTreeWidgetItem* findDatasetNode(const QString& dataset_tree_path);
   QTreeWidgetItem* ensureGroupSegments(const QStringList& segments);
-  // Every row is made here but a ghost and the empty-filter message: a new child of `parent` named `name`, noted in
-  // batch_ while one is open.
+  // Every row but a ghost and the empty-filter placeholder is made here: a row made elsewhere during a batch is not
+  // sorted. batch_ notes it while a batch is open.
   QTreeWidgetItem* newRow(QTreeWidgetItem* parent, const QString& name);
   // The first child of `parent` named `name`, or nullptr.
   QTreeWidgetItem* childNamed(QTreeWidgetItem* parent, const QString& name);
@@ -574,15 +574,11 @@ class CurveTreeView : public QTreeWidget {
   // rows without passing through this class, and a raw pointer would survive that as a dangling non-null the next
   // same-membership tick would dereference. An invalidated index is a cache miss, which falls back to the full pass.
   QHash<quint64, QPersistentModelIndex> progress_row_cache_;
-  // Set while addCurves() / addCatalogItems() add their rows. Item pointers: valid because a batch only adds rows, and
-  // gone before anything else can remove one.
+  // Open while addCurves() / addCatalogItems() add rows. Item pointers stay valid because a batch only adds rows.
   struct RowBatch {
-    // The children by name of each parent that has many, so finding a group among the thousands a flattened array
-    // makes is not a scan of them per added row.
+    // Children by name of each parent with many (a flattened array makes thousands): no scan per added row.
     QHash<QTreeWidgetItem*, QHash<QString, QTreeWidgetItem*>> children;
-    // The parents that got a row. Every other parent's children are in order already: each change of the rows ends
-    // sorted (the empty-filter message apart, which shows only while its siblings are hidden). So the batch ends by
-    // sorting these and not the whole tree.
+    // Parents that got a row; the batch sorts only these.
     QSet<QTreeWidgetItem*> grown;
   };
   std::optional<RowBatch> batch_;

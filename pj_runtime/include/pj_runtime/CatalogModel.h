@@ -281,14 +281,13 @@ class CatalogModel : public QObject {
 
   // (id, label), dataset id ascending: the datasets the tree lists (those with items).
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> datasets() const;
-  /// The topics that have an item, each once and ascending: a scalar topic with any of its fields, an object topic;
-  /// no advertised placeholder. Kept until the items change, so asking per topic (a time range, on every progress
-  /// tick of a load) does not walk every series.
+  /// The topics that have an item, each once: scalar and object topics, no advertised placeholders. Valid until the
+  /// items change.
   struct ShownTopics {
     std::vector<std::pair<DatasetId, TopicId>> scalar;
     std::vector<std::pair<DatasetId, ObjectTopicId>> object;
   };
-  [[nodiscard]] ShownTopics shownTopics() const;
+  [[nodiscard]] const ShownTopics& shownTopics() const;
   [[nodiscard]] std::vector<DatasetId> datasetIds() const;
 
   // The datastore's raw DatasetInfo::source_name: no display name, no "name (2)" ordinal. Layout identity
@@ -388,8 +387,7 @@ class CatalogModel : public QObject {
 
  private:
   // The rebuild body; rebuildFromDatastore() also refreshes the fingerprint, so the gate stays in sync.
-  // `reuse_unchanged_topics`: a scalar topic whose sources are what its items were derived from keeps them.
-  void rebuildNow(bool reuse_unchanged_topics);
+  void rebuildNow();
 
   // Engine structure (datasets, topics, column counts, retired columns, object topics, dataset labels) plus tombstones:
   // equal fingerprints mean an identical rebuild.

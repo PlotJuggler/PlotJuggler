@@ -8,7 +8,6 @@
 #include <functional>
 #include <optional>
 #include <set>
-#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -266,9 +265,8 @@ void AppSession::forEachVisibleRawRange(
 
   // Bounds come from the topics the CATALOG shows: the engine retains removed/trashed topics' data (append-only
   // tombstones), and a hidden topic must not stretch the timeline even while sibling topics keep its dataset visible.
-  // One visit per topic, from the catalog's own list of them: this runs on every ingest notification, and a walk of
-  // every series took milliseconds at ~100k of them.
-  const CatalogModel::ShownTopics shown = catalog_model_->shownTopics();
+  // One visit per topic, not per series: this runs on every ingest notification.
+  const CatalogModel::ShownTopics& shown = catalog_model_->shownTopics();
   std::unordered_map<DatasetId, bool> static_references;
   const auto is_static_reference = [&](DatasetId dataset_id) {
     auto [reference, inserted] = static_references.try_emplace(dataset_id, false);
