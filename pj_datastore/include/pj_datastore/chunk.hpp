@@ -177,10 +177,8 @@ class TopicChunkBuilder {
 
   void updateColumnStats(std::size_t col_index, double value);
 
-  // A column not set in a row owes that row a null, written only when the column is next set or before anything reads
-  // the columns (bulk append, stats(), seal()): finishRow() then costs the columns a row sets, not every column, which
-  // is what a topic of thousands of sparse columns (a flattened variable-length array) paid per row. Every path that
-  // writes or reads columns_ goes through padColumn()/padAllColumns() first, or it sees misaligned rows.
+  // A column a row does not set owes it a null, written when the column is next set or before the columns are read
+  // (bulk append, stats(), seal()). Every path touching columns_ pads first, or its rows misalign.
   TypedColumnBuffer& padColumn(std::size_t col_index);
   void padAllColumns();
 

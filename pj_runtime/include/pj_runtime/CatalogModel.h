@@ -353,14 +353,11 @@ class CatalogModel : public QObject {
   void setPerTopicPauseCapable(DatasetId dataset_id, bool capable);
   [[nodiscard]] bool isPerTopicPauseCapable(DatasetId dataset_id) const;
 
-  // Rebuilds only when the content fingerprint moved (most ingest batches only add rows). A created or retired topic
-  // always moves it, so it also serves a caller that may have changed no topics. Synchronous: a caller reads the
-  // updated catalog on return.
+  // Rebuilds only when the content fingerprint moved; a created or retired topic always moves it. Synchronous: a
+  // caller reads the updated catalog on return.
   void rebuildIfChanged();
 
-  /// The least time between two rebuilds that a commit triggers while a progressive ingest is open (see the
-  /// samplesIngested connection in the constructor); the gap is also at least four times the last rebuild's cost, and
-  /// at most a second whatever the floor.
+  /// Test seam: a floor under the gap between rebuilds that commits trigger during an open ingest (still capped).
   void setMinIngestRebuildGap(std::chrono::milliseconds gap);
 
  public slots:

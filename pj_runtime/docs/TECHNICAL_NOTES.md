@@ -10,8 +10,8 @@ code works is in [ARCHITECTURE.md](./ARCHITECTURE.md).
   an open ingest until four times the last rebuild's cost had passed cut GUI-thread CPU from 14.8 to 8.0 s, process CPU
   from 37.5 to 29.8 s and the load from 21.6 to 20.3 s (Linux x86_64, i7-13700H, two runs each).
 - **What the code does:** see ARCHITECTURE "`CatalogModel` rebuild timing". The factor of four (rebuilds take at most a
-  fifth of the GUI thread) and the one-second cap (a new topic shows within a second) are reasoning; no other values
-  were measured.
+  fifth of the GUI thread, while one costs under 250 ms) and the one-second cap (a new topic shows within a second)
+  are reasoning; no other values were measured.
 - **Re-test:** if a rebuild becomes incremental (cost proportional to the change, not the catalog), which would make the
   gap unnecessary.
 

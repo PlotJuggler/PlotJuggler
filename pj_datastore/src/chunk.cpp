@@ -314,10 +314,9 @@ void TopicChunkBuilder::finishBulkAppend() {
   const std::size_t expected_rows = static_cast<std::size_t>(stats_.row_count) + count;
 
   for (std::size_t col = 0; col < columns_.size(); ++col) {
-    // A batch may omit columns (an Arrow stream with a subset of the fields): pad them with nulls, as a row's unset
-    // columns are.
-    while (columns_[col].rowCount() < expected_rows) {
-      columns_[col].appendNull();
+    // A batch may omit columns (an Arrow stream with a subset of the fields): they read null.
+    if (columns_[col].rowCount() < expected_rows) {
+      columns_[col].appendNulls(expected_rows - columns_[col].rowCount());
     }
     PJ_ASSERT(
         columns_[col].rowCount() == expected_rows,

@@ -194,15 +194,13 @@ does not link it.
 
 ### Catalog and demand
 
-- **`CatalogModel` rebuild timing**: a rebuild walks the whole engine, and runs only when the content fingerprint
-  moved. `rebuildIfChanged` and `rebuildFromDatastore` are synchronous. A commit (`samplesIngested`) rebuilds at once,
-  except while any progressive ingest is open (`SessionManager::hasActiveIngests`: a file load or a toolbox import):
-  then a non-live commit inside the gap after the last rebuild, whichever producer made it (a transform, a merge),
-  arms a single-shot timer for the one rebuild left waiting. The gap is four times the last rebuild's cost, at most
-  a second; `setMinIngestRebuildGap` sets a floor under that cap. Load completion rebuilds synchronously, so the final
-  catalog never depends on the timer; a caller that reads the catalog right after its own commit rebuilds explicitly.
-  The playback range is bounded by the items the catalog lists, so `MainWindow` also recomputes it when items are
-  added.
+- **`CatalogModel` rebuild timing**: a rebuild walks the whole engine and runs only when the content fingerprint
+  moved; `rebuildIfChanged` and `rebuildFromDatastore` are synchronous. A commit (`samplesIngested`) rebuilds at once,
+  except while a progressive ingest is open (`SessionManager::hasActiveIngests`): then a non-live commit, from any
+  producer, inside the gap after the last rebuild arms a single-shot timer for the one rebuild left waiting. The gap
+  scales with the last rebuild's cost, capped (`Impl::recordRebuildCost`). Load completion rebuilds synchronously, so
+  the final catalog never waits on the timer. The playback range covers only listed items, so `MainWindow` also
+  recomputes it when items are added.
 - **`CatalogModel` demand surface**: advertised-but-unsubscribed placeholders
   (`setAdvertisedTopics`, data-less rows real data supersedes) and the per-dataset
   `setPerTopicPauseCapable` / `isPerTopicPauseCapable` flag, set by `pj_app`'s

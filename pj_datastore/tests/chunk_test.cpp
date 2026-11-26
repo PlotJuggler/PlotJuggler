@@ -1471,7 +1471,7 @@ TEST(ChunkTest, FreshBulkBatchOmittingAColumnDoesNotReadOutOfBounds) {
 
 // A row pays only for the columns it sets: the others hold their nulls back until their next value or the seal. Every
 // read must still see one null per row a column was not set, whatever its kind, wherever the gaps fall.
-TEST(ChunkTest, SparseRowsReadTheSameAsEagerNulls) {
+TEST(ChunkTest, SparseRowsReadOneNullPerUnsetRow) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(0, PrimitiveType::kFloat64, "every_third"), makeCol(1, PrimitiveType::kString, "name"),
       makeCol(2, PrimitiveType::kBool, "flag"),           makeCol(3, PrimitiveType::kInt32, "never"),
