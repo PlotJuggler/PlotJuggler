@@ -61,8 +61,8 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   |---|---|---|---|---|---|---|---|
   | 250 ms | a chunk per commit | 7,615 | 4.75 M | 6,804 | 18.6 s | 26.1 s | 3.68 GB |
   | 50 ms | a chunk per commit | 25,712 | 11.48 M | 25,458 | 20.7 s | 30.2 s | 5.72 GB |
-  | 250 ms | last chunk grows | 2,105 | 1.19 M | 193 | 19.1 s | 26.7 s | 2.76 GB |
-  | 50 ms | last chunk grows | 2,105 | 1.19 M | 193 | 21.5 s | 31.3 s | 2.75 GB |
+  | 250 ms | last chunk grows | 2,105 | 1.19 M | 193 | 19.4 s | 27.0 s | 2.64 GB |
+  | 50 ms | last chunk grows | 2,105 | 1.19 M | 193 | 21.5 s | 30.8 s | 2.64 GB |
 
   The 193 chunks that are not full are each cut by a new column (a growing array); 1,920 would be the fewest.
 
@@ -71,9 +71,10 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   row copy and 4.8 s to the re-encoding). Encoding in place with the function `seal()` uses, one step for a column no
   row or every row of the batch set, the builder's own stats for a batch appended whole, and builders kept across
   commits brought it to about 19 s. Giving back the spare capacity of the buffers a full chunk keeps saved about
-  0.1 GB.
+  0.1 GB, and so did one descriptor per topic column for all the chunks a writer makes of it, where every chunk
+  allocated its own, name included (2.76 to 2.64 GB): a chunk-column now costs the column entry and its stats.
 - **Letting the last chunk gain a new column, tried and taken out:** it left no chunk short of full (1,920 chunks,
-  0.66 M chunk-columns, 2.63 GB), but the rows written before the column existed became nulls of it, back to the
+  0.66 M chunk-columns, 0.13 GB less), but the rows written before the column existed became nulls of it, back to the
   start of the chunk. A reader tells "this chunk lacks the column" from "this cell is null" by the chunk's column
   count, in about a dozen places, and the read tools report the difference: for an array that grows at message 1,550
   of 3,000, `read_series` gave 1,976 samples with 526 invalid where the file holds 1,450, and `export_series` wrote the

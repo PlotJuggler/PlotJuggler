@@ -121,6 +121,14 @@ class TopicChunkBuilder {
  public:
   TopicChunkBuilder(TopicId topic_id, SchemaId schema_id, std::vector<ColumnDescriptor> columns, uint32_t max_rows);
 
+  /// The same, with descriptors the caller keeps: every chunk this builder makes points at them instead of holding a
+  /// copy of each column's descriptor, so a writer gives all the builders of a topic the same ones (DataWriter does).
+  [[nodiscard]] static TopicChunkBuilder withSharedColumns(
+      TopicId topic_id, SchemaId schema_id, std::vector<std::shared_ptr<const ColumnDescriptor>> columns,
+      uint32_t max_rows) {
+    return {topic_id, schema_id, max_rows, std::move(columns)};
+  }
+
   void beginRow(Timestamp timestamp);
 
   /// T: float, double, int32_t, int64_t, uint64_t, bool, std::string_view.
@@ -216,6 +224,11 @@ class TopicChunkBuilder {
   }
 
  private:
+  // Not an overload of the public constructor: a braced column list would fit both.
+  TopicChunkBuilder(
+      TopicId topic_id, SchemaId schema_id, uint32_t max_rows,
+      std::vector<std::shared_ptr<const ColumnDescriptor>> columns);
+
   TopicId topic_id_;
   SchemaId schema_id_;
   uint32_t max_rows_;
@@ -224,6 +237,8 @@ class TopicChunkBuilder {
   std::vector<Timestamp> timestamps_;
   std::vector<TypedColumnBuffer> columns_;
   std::vector<ColumnDescriptor> column_descriptors_;
+  // The same descriptors, as the chunks made here share them (TopicChunk::Column::descriptor).
+  std::vector<std::shared_ptr<const ColumnDescriptor>> shared_descriptors_;
   ChunkStats stats_;
 
   bool row_in_progress_ = false;

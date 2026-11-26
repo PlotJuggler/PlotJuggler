@@ -40,6 +40,9 @@ struct DataWriter::Impl {
   };
   tsl::robin_map<PJ::TopicId, Pending> pending_batches;
   tsl::robin_map<PJ::TopicId, std::vector<ColumnDescriptor>> topic_columns;
+  // topic_columns as the chunks hold them: one descriptor per column for every chunk this writer makes of the topic,
+  // where each chunk would otherwise allocate its own copy, name included.
+  tsl::robin_map<PJ::TopicId, std::vector<std::shared_ptr<const ColumnDescriptor>>> shared_columns;
 };
 
 namespace {
@@ -789,9 +792,26 @@ TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id, const TopicS
   ensureColsLoaded(topic_id, *storage);
   auto col_it = impl_->topic_columns.find(topic_id);
 
+  // Columns are only added at the end and keep their path and type, so the descriptors made for earlier builders
+  // stand; a layout replaced under this writer (a reload) is made anew.
+  auto& shared = impl_->shared_columns[topic_id];
+  const std::vector<ColumnDescriptor>& columns = col_it->second;
+  bool same_prefix = shared.size() <= columns.size();
+  for (std::size_t i = 0; same_prefix && i < shared.size(); ++i) {
+    same_prefix = shared[i]->field_id == columns[i].field_id && shared[i]->logical_type == columns[i].logical_type &&
+                  shared[i]->field_path == columns[i].field_path;
+  }
+  if (!same_prefix) {
+    shared.clear();
+  }
+  shared.reserve(columns.size());
+  for (std::size_t i = shared.size(); i < columns.size(); ++i) {
+    shared.push_back(std::make_shared<const ColumnDescriptor>(columns[i]));
+  }
+
   auto [insert_it, inserted] = impl_->builders.emplace(
-      std::piecewise_construct, std::forward_as_tuple(topic_id),
-      std::forward_as_tuple(topic_id, desc.schema_id, col_it->second, builderRows(topic_id, *storage)));
+      topic_id,
+      TopicChunkBuilder::withSharedColumns(topic_id, desc.schema_id, shared, builderRows(topic_id, *storage)));
 
   return insert_it.value();
 }

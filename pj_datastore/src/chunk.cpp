@@ -244,12 +244,31 @@ std::optional<encoding::EncodedData> encodeConstantBools(const FixedColumnView& 
 
 }  // namespace
 
+namespace {
+[[nodiscard]] std::vector<std::shared_ptr<const ColumnDescriptor>> sharedCopies(
+    const std::vector<ColumnDescriptor>& columns) {
+  std::vector<std::shared_ptr<const ColumnDescriptor>> shared;
+  shared.reserve(columns.size());
+  for (const ColumnDescriptor& column : columns) {
+    shared.push_back(std::make_shared<const ColumnDescriptor>(column));
+  }
+  return shared;
+}
+}  // namespace
+
 TopicChunkBuilder::TopicChunkBuilder(
     TopicId topic_id, SchemaId schema_id, std::vector<ColumnDescriptor> columns, uint32_t max_rows)
-    : topic_id_(topic_id), schema_id_(schema_id), max_rows_(max_rows), column_descriptors_(std::move(columns)) {
-  columns_.reserve(column_descriptors_.size());
-  for (const auto& desc : column_descriptors_) {
-    columns_.emplace_back(desc);
+    : TopicChunkBuilder(topic_id, schema_id, max_rows, sharedCopies(columns)) {}
+
+TopicChunkBuilder::TopicChunkBuilder(
+    TopicId topic_id, SchemaId schema_id, uint32_t max_rows,
+    std::vector<std::shared_ptr<const ColumnDescriptor>> columns)
+    : topic_id_(topic_id), schema_id_(schema_id), max_rows_(max_rows), shared_descriptors_(std::move(columns)) {
+  column_descriptors_.reserve(shared_descriptors_.size());
+  columns_.reserve(shared_descriptors_.size());
+  for (const auto& descriptor : shared_descriptors_) {
+    column_descriptors_.push_back(*descriptor);
+    columns_.emplace_back(*descriptor);
   }
   resetStats();
 }
@@ -765,7 +784,7 @@ TopicChunk TopicChunkBuilder::seal() {
     const StorageKind kind = storageKindOf(column_descriptors_[i].logical_type);
     const auto& cs = stats_.column_stats[i];
 
-    chunk.columns[i].descriptor = std::make_shared<const ColumnDescriptor>(column_descriptors_[i]);
+    chunk.columns[i].descriptor = shared_descriptors_[i];
 
     if (kind == StorageKind::kString) {
       chunk.columns[i].data = encoding::dictionaryEncodeStrings(
@@ -834,7 +853,7 @@ TopicChunk TopicChunkBuilder::makeGrowableChunk() const {
   chunk.columns.resize(column_descriptors_.size());
   chunk.stats.column_stats.resize(column_descriptors_.size());
   for (std::size_t i = 0; i < column_descriptors_.size(); ++i) {
-    chunk.columns[i].descriptor = std::make_shared<const ColumnDescriptor>(column_descriptors_[i]);
+    chunk.columns[i].descriptor = shared_descriptors_[i];
     switch (storageKindOf(column_descriptors_[i].logical_type)) {
       case StorageKind::kString:
         chunk.columns[i].data = encoding::DictionaryEncoded{};  // 4-byte indices
@@ -1142,7 +1161,7 @@ TopicChunk TopicChunkBuilder::mergedWith(const TopicChunk& chunk) const {
   PJ_ASSERT(hasLayoutOf(chunk), "mergedWith: layouts differ");
   PJ_ASSERT(chunk.isGrowable(), "mergedWith: chunk is not in growable form");
   const std::size_t rows = chunk.stats.row_count + timestamps_.size();
-  TopicChunkBuilder merged(topic_id_, schema_id_, column_descriptors_, static_cast<uint32_t>(rows));
+  TopicChunkBuilder merged(topic_id_, schema_id_, static_cast<uint32_t>(rows), shared_descriptors_);
   merged.appendRowsOf(chunk);  // first, so the stable sort keeps them first among equal timestamps
   merged.appendRowsOf(*this);
   merged.sortRows();

@@ -845,6 +845,33 @@ TEST(ChunkGrowthTest, AChunkRestoredUnderNewerIdsTakesANewIdBeforeItGrows) {
   EXPECT_GT(chunks[0].id, newer_id) << "under the old id the new row would sit below a watermark already past it";
 }
 
+TEST(ChunkGrowthTest, AWritersChunksOfATopicShareTheirColumnDescriptors) {
+  Fixture fixture(2);
+  for (Timestamp t = 0; t < 3 * static_cast<Timestamp>(kMaxRows) + 5; ++t) {
+    fixture.write(Row{.timestamp = t, .cells = {Cell{1.0}, Cell{2.0F}}});
+    if (t % 50 == 0) {
+      fixture.commitGrowing();
+    }
+  }
+  fixture.commitGrowing();
+  const auto& chunks = fixture.storage().sealedChunks();
+  ASSERT_EQ(chunks.size(), 4U);
+  for (const TopicChunk& chunk : chunks) {
+    // The same objects, not equal copies: a chunk pays nothing per column for its names.
+    EXPECT_EQ(chunk.columns[0].descriptor, chunks[0].columns[0].descriptor);
+    EXPECT_EQ(chunk.columns[1].descriptor, chunks[0].columns[1].descriptor);
+  }
+  EXPECT_EQ(chunks[0].columns[1].descriptor->field_path, "f32");
+
+  // A column added later: the chunks after it share the earlier columns' descriptors still.
+  ASSERT_TRUE(fixture.writer.ensureColumn(fixture.topic, "i32", PrimitiveType::kInt32).has_value());
+  fixture.write(Row{.timestamp = 1000, .cells = {Cell{1.0}, Cell{2.0F}, Cell{int32_t{3}}}});
+  fixture.commitGrowing();
+  ASSERT_EQ(chunks.size(), 5U);
+  EXPECT_EQ(chunks[4].columns[0].descriptor, chunks[0].columns[0].descriptor);
+  EXPECT_EQ(chunks[4].columns[2].descriptor->field_path, "i32");
+}
+
 TEST(ChunkGrowthTest, SealedChunksCommittedWholeAreNotMergedIntoEachOther) {
   Fixture fixture(1);
   fixture.write(numberRow(10, 1.0));

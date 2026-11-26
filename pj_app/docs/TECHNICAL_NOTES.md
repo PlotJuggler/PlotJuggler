@@ -8,7 +8,7 @@ observed, under which conditions, what the code does about it and when to measur
 - **Observed:** a flush copies each topic's new rows into its last chunk, one visit per column, and announces them to
   the GUI, so its cost follows the columns of the topics with new rows and not the rows. Loading a 30-minute ROS 1
   MCAP with 117k series (topics flattening variable-length arrays into up to 13k columns), flushing every 50 ms: 21.5 s,
-  31.3 CPU-s (8.2 on the GUI thread), 2.75 GB RSS. Every 250 ms: 19.1 s, 26.7 CPU-s (6.0 on the GUI thread), 2.76 GB
+  30.8 CPU-s (7.9 on the GUI thread), 2.64 GB RSS. Every 250 ms: 19.4 s, 27.0 CPU-s (6.1 on the GUI thread), 2.64 GB
   (Linux x86_64, i7-13700H, two runs each). The stored chunks are the same at both (`pj_datastore` TECHNICAL_NOTES
   "Chunks cut by rows, not by commits"); data shows during a load four times a second instead of twenty.
 - **What the code does:** `PJ::kFileLoadFlushInterval` (`FileLoadFlushInterval.h`) sets the interval for file loads and
