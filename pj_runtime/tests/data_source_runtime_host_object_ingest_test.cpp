@@ -48,7 +48,9 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
     source_handle_ = PJ_data_source_handle_t{static_cast<uint32_t>(*dataset_or)};
     host_ = std::make_unique<PJ::DataSourceRuntimeHost>(
         engine_, catalog_, dataset_id_, source_handle_, object_store_, "runtime_host_test_source",
-        /*parser_registrar=*/nullptr, /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
+        /*parser_registrar=*/
+        [this](PJ::ObjectTopicId id, std::unique_ptr<PJ::MessageParserHandle>) { registered_parsers_.push_back(id); },
+        /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
         /*library_keepalive=*/nullptr, ingest_taps_);
     EXPECT_TRUE(host_->registerServices(registry_builder_).has_value());
   }
@@ -102,7 +104,14 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
   std::shared_ptr<PJ::ObjectIngestTapRegistry> ingest_taps_ = std::make_shared<PJ::ObjectIngestTapRegistry>();
   std::unique_ptr<PJ::DataSourceRuntimeHost> host_;
   PJ::ServiceRegistryBuilder registry_builder_;
+  std::vector<PJ::ObjectTopicId> registered_parsers_;
 };
+
+std::vector<uint8_t> logPayload(PJ::sdk::Log::Level level, const std::string& message) {
+  std::vector<uint8_t> bytes{static_cast<uint8_t>(level)};
+  bytes.insert(bytes.end(), message.begin(), message.end());
+  return bytes;
+}
 
 TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageEagerCommitsScalarsAndStoresOwnedObjectBytes) {
   host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kEager);
@@ -573,6 +582,56 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, EmbeddedTimestampRegressionKeepsSc
   auto object_topic = object_store_.findTopic(dataset_id_, "/tf_like");
   ASSERT_TRUE(object_topic.has_value());
   EXPECT_EQ(object_store_.entryCount(*object_topic), embedded_stamps.size());
+}
+
+TEST_F(DataSourceRuntimeHostObjectIngestTest, KLogTopicStoresCanonicalLogsAndBindsNoReaderParser) {
+  auto binding_or = bindTopic("/rosout", "mock/log");
+  ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
+  using Level = PJ::sdk::Log::Level;
+  (void)pushPayload(*binding_or, 100, logPayload(Level::kInfo, "first"));
+  (void)pushPayload(*binding_or, 200, logPayload(Level::kWarning, "second"));
+  (void)pushPayload(*binding_or, 300, logPayload(Level::kError, "third"));
+  host_->flushAll();
+
+  auto topic = object_store_.findTopic(dataset_id_, "/rosout");
+  ASSERT_TRUE(topic.has_value());
+  EXPECT_EQ(object_store_.descriptor(*topic).metadata_json, R"({"builtin_object_type":"kLog"})");
+  EXPECT_TRUE(registered_parsers_.empty());
+  auto view = object_store_.logView(*topic);
+  ASSERT_TRUE(view.has_value());
+  ASSERT_EQ((*view)->size(), 3U);
+  EXPECT_EQ((*view)->level(1), Level::kWarning);
+  const PJ::LogRecord third = (*view)->recordAt(2);
+  EXPECT_EQ(third.log.message, "third");
+  EXPECT_EQ(third.log.source, "mock_node");
+  EXPECT_EQ(third.log.timestamp_ns, 301);
+}
+
+TEST_F(DataSourceRuntimeHostObjectIngestTest, KLogIsEagerEvenUnderPureLazyOverride) {
+  host_->policyResolver().setForTopic("/rosout", PJ::sdk::ObjectIngestPolicy::kPureLazy);
+  auto binding_or = bindTopic("/rosout", "mock/log");
+  ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
+  auto fetches = pushPayload(*binding_or, 100, logPayload(PJ::sdk::Log::Level::kInfo, "kept"));
+  EXPECT_EQ(fetches->load(), 1);
+  auto topic = object_store_.findTopic(dataset_id_, "/rosout");
+  ASSERT_TRUE(topic.has_value());
+  auto view = object_store_.logView(*topic);
+  ASSERT_TRUE(view.has_value());
+  ASSERT_EQ((*view)->size(), 1U);
+  EXPECT_EQ((*view)->recordAt(0).log.message, "kept");
+}
+
+TEST_F(DataSourceRuntimeHostObjectIngestTest, UnparseableLogMessageIsSkippedNotFatal) {
+  auto binding_or = bindTopic("/rosout", "mock/log");
+  ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
+  (void)pushPayload(*binding_or, 100, logPayload(PJ::sdk::Log::Level::kInfo, "a"));
+  (void)pushPayload(*binding_or, 200, {});  // pushPayload asserts the push succeeds
+  (void)pushPayload(*binding_or, 300, logPayload(PJ::sdk::Log::Level::kInfo, "c"));
+  auto topic = object_store_.findTopic(dataset_id_, "/rosout");
+  ASSERT_TRUE(topic.has_value());
+  EXPECT_EQ(object_store_.entryCount(*topic), 2U);
+  EXPECT_EQ(host_->logDecodeFailures(), 1U);
+  EXPECT_EQ(host_->ingestCallbackFailures(), 0U);
 }
 
 }  // namespace

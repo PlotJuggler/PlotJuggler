@@ -15,10 +15,12 @@
 #include <utility>
 #include <vector>
 
+#include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/source/record_envelope.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/log_entries.hpp"
 #include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
@@ -722,6 +724,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
         selection.object.has_value() ? selection.object->object_type : sdk::BuiltinObjectType::kNone;
     std::optional<ObjectTopicId> object_topic_id;
     std::unique_ptr<DatastoreParserObjectWriteHost> object_write_host;
+    std::unique_ptr<MessageParserHandle> log_parser;
     if (object_kind == sdk::BuiltinObjectType::kNone) {
       // Scalar columns only; traced once per binding for anyone chasing why a topic is not an object topic.
       qCInfo(lcIngestBind) << "[parser-bind] classifySchema=kNone topic="
@@ -745,17 +748,23 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
           // Known limitation: a same-provider retype to another builtin type keeps the original metadata_json until the
           // stream restarts.
           object_topic_id = existing;
+          if (object_kind == sdk::BuiltinObjectType::kLog &&
+              isCanonicalLogMetadata(self->object_store_.descriptor(*existing).metadata_json)) {
+            log_parser = std::make_unique<MessageParserHandle>(std::move(selection.object->parser));
+          }
         }
       } else {
         // The wire format travels with the topic: a dataset merge checks it before fusing same-named topics
-        // (objectPayloadFormatFromMetadata).
+        // (objectPayloadFormatFromMetadata). A log is decoded here and stored canonical, so it carries no wire format.
+        const bool decode_at_ingest = object_kind == sdk::BuiltinObjectType::kLog;
         const std::string metadata_json =
-            nlohmann::json{
-                {"builtin_object_type", sdk::name(object_kind)},
-                {"payload_encoding", std::string(encoding)},
-                {"payload_schema", std::string(type_name)},
-            }
-                .dump();
+            decode_at_ingest ? nlohmann::json{{"builtin_object_type", sdk::name(object_kind)}}.dump()
+                             : nlohmann::json{
+                                   {"builtin_object_type", sdk::name(object_kind)},
+                                   {"payload_encoding", std::string(encoding)},
+                                   {"payload_schema", std::string(type_name)},
+                               }
+                                   .dump();
         const ObjectTopicDescriptor descriptor{
             .dataset_id = self->dataset_id_,
             .topic_name = std::string(topic_name),
@@ -768,6 +777,9 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
               ("failed to register object topic '" + std::string(topic_name) + "': " + registered.error()).c_str());
         }
         object_topic_id = *registered;
+        if (decode_at_ingest) {
+          log_parser = std::make_unique<MessageParserHandle>(std::move(selection.object->parser));
+        }
         // Mirror into the secondary with the same ObjectTopicId (the stores' counters drift, as the engines' do).
         if (self->secondary_object_store_ != nullptr) {
           auto mirrored = self->secondary_object_store_->registerTopic(descriptor, *registered);
@@ -800,7 +812,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
           }
         }
 
-        if (self->object_topic_parser_registrar_) {
+        if (self->object_topic_parser_registrar_ && log_parser == nullptr) {
           // One decoder slot per object topic; the provider guard above keeps another provider out. A replacement build
           // with the same provider id would still need per-entry pinning.
           self->object_topic_parser_registrar_(
@@ -827,6 +839,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
                         object_topic_id,
                     });
     inserted.first->second.object_only = object_topic_id.has_value() && selection.scalar_winner_object_only;
+    inserted.first->second.log_parser = std::move(log_parser);
 
     *out = PJ_parser_binding_handle_t{binding_id};
     qCInfo(lcIngestBind) << "[parser-bind] encoding="
@@ -862,7 +875,9 @@ bool DataSourceRuntimeHost::cbPushMessage(
     // Only builtin-object bindings follow the object ingest policy: scalar topics stay eager, so a broad lazy default
     // cannot drop normal curves.
     const bool is_object_topic = binding.object_topic_id.has_value();
-    const auto policy = is_object_topic
+    // A log is decoded at ingest, so it needs its bytes now whatever the policy says.
+    const auto policy = binding.log_parser != nullptr ? sdk::ObjectIngestPolicy::kEager
+                        : is_object_topic
                             ? self->policy_resolver_.resolve(self->source_id_, binding.topic_name, binding.object_kind)
                             : sdk::ObjectIngestPolicy::kEager;
 
@@ -961,6 +976,36 @@ bool DataSourceRuntimeHost::cbPushMessage(
       }
       return true;
     }();
+    if (binding.log_parser != nullptr) {
+      auto record = binding.log_parser->parseObjectFunctional(
+          timestamp_ns, Span<const uint8_t>(payload.data, static_cast<size_t>(payload.size)));
+      std::optional<std::vector<uint8_t>> bytes;
+      std::string error;
+      if (!record) {
+        error = record.error();
+      } else if (record->object.get<sdk::Log>() == nullptr) {
+        error = "the parser returned another object type";
+      } else if (auto serialized = serializeBuiltinObject(record->object); serialized) {
+        bytes = std::move(*serialized);
+      } else {
+        error = serialized.error();
+      }
+      if (!bytes) {
+        self->log_decode_failures_.fetch_add(1, std::memory_order_relaxed);
+        if (!binding.log_decode_logged) {
+          binding.log_decode_logged = true;
+          qCWarning(lcIngest).noquote() << "log message skipped on topic" << QString::fromStdString(binding.topic_name)
+                                        << ":" << QString::fromStdString(error) << "(later failures are counted only)";
+        }
+        return true;
+      }
+      if (auto status =
+              self->object_store_target_.load()->pushOwned(*binding.object_topic_id, timestamp_ns, std::move(*bytes));
+          !status) {
+        return self->fail(out_error, ("ObjectStore.pushOwned failed: " + status.error()).c_str());
+      }
+      return true;
+    }
     // File-backed tapped objects are decoded before storage and keep only their re-readable closure; untapped ones keep
     // the ingest-time seed so live-edge reads do not re-fetch.
     if (policy == sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars) {
