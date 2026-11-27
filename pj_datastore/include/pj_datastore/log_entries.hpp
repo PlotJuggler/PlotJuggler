@@ -180,6 +180,12 @@ class LogEntries {
   /// Removes the rows whose plan position is kRemoved from the payload chunks.
   void compactChunks(const Removal& plan);
   static size_t rowBytes(const Row& row);
+  [[nodiscard]] uint32_t orderAt(size_t rank) const {
+    return uid_order_identity_ ? static_cast<uint32_t>(rank) : uid_order_[rank];
+  }
+  /// The first rank whose UID is >= @p uid, or > it with @p after.
+  [[nodiscard]] size_t uidRank(SequentialUID uid, bool after) const;
+  void materializeUidOrder();
   void insertRow(size_t index, Row&& row);
   void rebuildChunkStarts();
   void seal(Chunk& chunk);
@@ -188,7 +194,10 @@ class LogEntries {
 
   std::vector<Timestamp> timestamps_;
   std::vector<SequentialUID> uids_;
+  /// Positions in ascending UID order; empty while uid_order_identity_ (position k has the k-th UID), the case of every
+  /// series that never took an out-of-order insert.
   std::vector<uint32_t> uid_order_;
+  bool uid_order_identity_ = true;
   std::vector<Chunk> chunks_;
   std::vector<size_t> chunk_starts_;
   /// Shared by sources and categories; id 0 is "".

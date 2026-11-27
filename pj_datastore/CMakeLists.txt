@@ -11,6 +11,15 @@ option(
 
 find_package(tsl-robin-map REQUIRED)
 find_package(nlohmann_json REQUIRED)  # marker_topic_metadata.cpp
+# log_entries.cpp: sealed log chunks. The browser build provides the targets itself (cmake/PjWasmDependencies.cmake).
+if(NOT TARGET zstd::libzstd_static AND NOT TARGET zstd::libzstd)
+  find_package(zstd CONFIG REQUIRED)
+endif()
+if(TARGET zstd::libzstd_static)
+  set(PJ_DATASTORE_ZSTD zstd::libzstd_static)
+else()
+  set(PJ_DATASTORE_ZSTD zstd::libzstd)
+endif()
 # Google Benchmark is skipped in the MemorySanitizer lane, which builds no benchmarks: requiring it would mean
 # instrumenting a library nothing there links, and its regex-backend detection fails against an instrumented libc++.
 if(PJ_BUILD_TESTS AND NOT PJ_ENABLE_MSAN)
@@ -70,6 +79,7 @@ target_link_libraries(pj_datastore
   PRIVATE
     tsl::robin_map
     nlohmann_json::nlohmann_json
+    ${PJ_DATASTORE_ZSTD}
     $<BUILD_INTERFACE:pj_internal_fmt>
     nanoarrow::nanoarrow
     nanoarrow::nanoarrow_ipc

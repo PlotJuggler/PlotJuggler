@@ -9,7 +9,9 @@
 #include <gtest/gtest.h>
 
 #include <functional>
+#include <iostream>
 #include <memory>
+#include <random>
 #include <string>
 #include <variant>
 #include <vector>
@@ -371,6 +373,94 @@ TEST(LogEntries, MergeSortedIsStableByTimestamp) {
   for (size_t i = 1; i < merged.size(); ++i) {
     EXPECT_LT(merged.uidAt(i - 1), merged.uidAt(i));
   }
+}
+
+// --- Sealed chunks ---
+
+// rosout-like: 8 sources, 3 levels, 30% exact repeats of earlier messages, 40-120 chars, every third with an own stamp.
+std::vector<sdk::Log> rosoutLike(size_t count, uint32_t seed = 7) {
+  std::mt19937 rng(seed);
+  std::vector<sdk::Log> out;
+  out.reserve(count);
+  const std::vector<std::string> words = {"goal",    "reached",   "planner", "timeout", "waiting",
+                                          "for",     "transform", "map",     "odom",    "base_link",
+                                          "costmap", "updated",   "x=",      "y=",      "ok"};
+  for (size_t i = 0; i < count; ++i) {
+    if (i > 0 && rng() % 10 < 3) {
+      out.push_back(out[rng() % out.size()]);
+      continue;
+    }
+    std::string message;
+    const size_t target = 40 + rng() % 81;
+    while (message.size() < target) {
+      message += words[rng() % words.size()];
+      message += rng() % 4 == 0 ? std::to_string(rng() % 10000) : " ";
+    }
+    out.push_back(makeLog(
+        std::move(message), "node_" + std::to_string(rng() % 8), static_cast<sdk::Log::Level>(1 + rng() % 3),
+        i % 3 == 0 ? Timestamp(i * 1000 + 17) : 0, rng() % 2 == 0 ? "cat" : ""));
+  }
+  return out;
+}
+
+LogEntries fillWith(const std::vector<sdk::Log>& logs) {
+  LogEntries log;
+  for (size_t i = 0; i < logs.size(); ++i) {
+    log.push(Timestamp(i * 1000), SequentialUID::getNext(), logs[i]);
+  }
+  return log;
+}
+
+TEST(LogEntries, SealedChunksRoundTripEveryField) {
+  const std::vector<sdk::Log> in = rosoutLike(3 * LogEntries::kChunkRows + 7);
+  const LogEntries log = fillWith(in);
+  ASSERT_EQ(log.size(), in.size());
+  size_t checked = 0;
+  log.records(0, log.size(), [&](size_t i, LogRecord&& record) {
+    EXPECT_EQ(record.log, in[i]) << i;
+    EXPECT_EQ(log.level(i), in[i].level) << i;
+    EXPECT_EQ(log.dictionaryText(log.sourceId(i)), in[i].source) << i;
+    EXPECT_EQ(log.ownStamp(i), in[i].timestamp_ns) << i;
+    ++checked;
+  });
+  EXPECT_EQ(checked, in.size());
+  EXPECT_EQ(log.recordAt(5).log, in[5]);
+}
+
+TEST(LogEntries, LateInsertIntoSealedChunkKeepsEveryMessage) {
+  std::vector<sdk::Log> in = rosoutLike(2 * LogEntries::kChunkRows + 3);
+  LogEntries log = fillWith(in);
+  const sdk::Log late = makeLog("late arrival", "late_node");
+  log.push(1500, SequentialUID::getNext(), late);  // between rows 1 and 2, in the first (sealed) chunk
+  in.insert(in.begin() + 2, late);
+  ASSERT_EQ(log.size(), in.size());
+  log.records(0, log.size(), [&](size_t i, LogRecord&& record) { EXPECT_EQ(record.log, in[i]) << i; });
+}
+
+TEST(LogEntries, MessagesRoundTripEmptyHugeAndEscaped) {
+  std::vector<sdk::Log> in = rosoutLike(LogEntries::kChunkRows + 10);
+  in[3].message.clear();
+  in[4].message = std::string(1 << 20, 'z');
+  in[4].message[12345] = '\0';
+  in[5].message = "\x1b[31mred\x1b[0m";
+  const LogEntries log = fillWith(in);
+  for (const size_t i : {3, 4, 5}) {
+    EXPECT_EQ(log.recordAt(i).log.message, in[i].message) << i;
+  }
+  std::vector<std::string> read;
+  log.messages(3, 3, [&read](size_t, std::string_view message) { read.emplace_back(message); });
+  ASSERT_EQ(read.size(), 3u);
+  EXPECT_EQ(read[1], in[4].message);
+}
+
+TEST(LogEntries, SealingShrinksMemory) {
+  const size_t rows = 10 * LogEntries::kChunkRows;
+  const LogEntries log = fillWith(rosoutLike(rows));
+  const double per_row = static_cast<double>(log.memoryBytes()) / static_cast<double>(rows);
+  // The generator salts every fourth word with random digits, so its messages compress worse (3.8x) than typical
+  // rosout text; the bound guards the layout (index + narrowed columns + one zstd frame), not a compression ratio.
+  EXPECT_LT(per_row, 60.0);
+  std::cout << "LogEntries bytes/row: " << per_row << "\n";
 }
 
 }  // namespace
