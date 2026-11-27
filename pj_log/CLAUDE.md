@@ -8,17 +8,24 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 
 ## Invariants
 
-- **Each stored entry is decoded once.** An update appends what landed after a topic's `drainNewSince` cursor, late
-  entries included, and re-reads a topic only when its `contentIdentity().removal` moved or the display offset
-  changed. Re-reading on each landing makes a progressive load quadratic in the log size; a streamed reload of 50 000
-  entries measured ten times an append ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md), "Streaming"). The
-  identity is read before the drain: read after, a removal in between goes unseen.
+- **The panel holds no copy of a log.** `LogStore` is an index (`RowRef`: time, topic, row number) over each topic's
+  `LogRowSource`; the dock's source reads the session's `LogEntries` through `ObjectStore::logView`, and the panel
+  decodes only what it shows or filters. Copying rows back in brings back the memory ceiling the index removed (a
+  1'000'000-row cap dropped the start of large logs).
+- **An update re-indexes only what changed:** the new rows, the rows from the oldest late entry on when
+  `contentIdentity().rewrite` moved, and the whole topic only when `removal` moved or the display offset changed.
+  Re-indexing on each landing makes a progressive load quadratic in the log size
+  ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md), "Streaming"). The snapshot (identity, row range, newest UID)
+  is taken under one view before the panel reads rows; a change after it shows as a new identity next update.
+- **Never hold a `LogSeriesView` while taking another** (or calling the store): a `LogRowSource::batch` reads its own
+  topic only. Holding one while acquiring a second deadlocks against a writer waiting for the store lock. This is why
+  `RowRef` carries the row's time: merging and the tracker never read another topic.
 - **Row times are display-axis seconds** (`rawToDisplaySecondsAtOrAfter` of the entry's store stamp); the log's own
   stamp is metadata for the detail pane only. Sorting, the tracker and seeks on the own stamp would put rows where a
   seek to them does not reveal them.
-- **`LogView` is runtime-agnostic:** it takes `LogEntry` rows keyed by a host-chosen topic id and never reaches the
-  session. An entry list is in ascending time, or `LogStore`'s merge order breaks; `appendEntries` merges earlier
-  entries into place.
+- **`LogView` is runtime-agnostic:** it takes a `LogRowSource` (or `LogEntry` rows, kept in a `VectorLogRowSource`)
+  keyed by a host-chosen topic id and never reaches the session. A source's rows are in ascending time, or
+  `LogStore`'s merge order breaks; `appendEntries` merges earlier entries into place.
 - **Persisted names are a layout-file contract:** the `<log>` tag, its `<topic>` children with the scene-dock identity
   attributes (so `LayoutXml`'s dataset relocation applies) and the level keys in `log_view::kLevelNames`. Renaming one
   drops the setting from saved layouts.
@@ -31,17 +38,18 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 
 ## Layout
 
-- `core/` (`pj_log_core`, Qt-free): `LogStore.h` (`LogLevel`, `LogRow`, `StoreChange`, the merged `LogStore`,
-  `LogFilter` / `CompiledFilter`, the level names, `stripTerminalEscapes`).
+- `core/` (`pj_log_core`, Qt-free): `LogRowSource.h` (`LogLevel`, `LogEntry`, the `LogRowSource` read seam,
+  `VectorLogRowSource`), `LogStore.h` (`RowRef`, `LogRow`, `StoreChange`, the merged `LogStore` index and its message
+  cache, `LogFilter` / `CompiledFilter`, the level names, `stripTerminalEscapes`).
 - `widget/` (`pj_log`): `LogTableModel.h` (the table model over the filtered rows, tracker tint, future rows),
-  `LogView.h` + `src/LogView.ui` (the list, filters and detail pane), `LogDockWidget.h` (the `IDataWidget`: reads
-  `kLog` topics from the session, persistence, pending topics).
+  `LogView.h` + `src/LogView.ui` (the list, filters and detail pane), `LogDockWidget.h` (the `IDataWidget`: indexes
+  canonical `kLog` topics of the session, persistence, pending topics).
 - Shell side lives in `pj_app`: `MainWindow::makeSceneDock` (the `log` kind), `TopicDemandController::registerLogDock`,
   `PendingDisplayBinder::addPendingLogTopic`, `scene_object_classification` (drop routing and the curve-list badge).
 
 ## Tests
 
-`./test.sh -R '^pj_log_tests\.'`: `log_model_test.cpp` (store, filter, table model), `log_view_test.cpp` (the view
+`./test.sh -R '^pj_log_tests\.'`: `log_model_test.cpp` (index, filter, table model), `log_view_test.cpp` (the view
 with plain `LogEntry` data), `log_dock_widget_test.cpp` (the dock over a real session). The shell paths (placeholder
 button, drops, layouts) are in `pj_app/tests/main_window_log_panel_test.cpp`.
 

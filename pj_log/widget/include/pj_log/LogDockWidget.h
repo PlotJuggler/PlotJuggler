@@ -28,12 +28,14 @@ class SessionManager;
 /// The Log panel: a LogView over the log topics (`sdk::BuiltinObjectType::kLog`) dropped on it, merged by time, as the
 /// `IDataWidget` the dock system hosts. Kind string and XML payload tag: `log`.
 ///
-/// Data: each topic is read from the session's ObjectStore and decoded once per entry (`decodeStoredObjects`). Entries
-/// landing on the session (dataPublished, ingestEnded, derivedEntriesPublished) bring an update at once, then at most
-/// one per kEntriesLandedInterval; an update appends what arrived after the topic's cursor, late entries included, and
-/// re-reads the topic only when an entry it may hold was removed or changed (`contentIdentity().removal`: a reload, a
-/// merge). Rows the store's retention evicted stay. A display-offset change re-reads every topic: a row's time is
-/// display-axis seconds (`rawToDisplaySecondsAtOrAfter`, so a seek to a row reveals it). GUI thread only.
+/// Data: the panel holds no copy of a topic. It indexes the topic's rows in the session's ObjectStore
+/// (`ObjectStore::logView`) and reads the ones it shows or filters through a LogRowSource that takes a view per read.
+/// Entries landing on the session (dataPublished, ingestEnded, derivedEntriesPublished) bring an update at once, then
+/// at most one per kEntriesLandedInterval; an update drops the rows the store evicted and indexes the new ones. A late
+/// entry (`contentIdentity().rewrite` moved) re-indexes the topic from the oldest late entry on; a removal (a reload, a
+/// merge) or a display-offset change re-indexes the whole topic: a row's time is display-axis seconds
+/// (`rawToDisplaySecondsAtOrAfter`, so a seek to a row reveals it). Only canonical kLog topics (stored as LogEntries)
+/// are accepted. GUI thread only.
 ///
 /// Persistence: one `<topic>` child per topic with the scene-dock identity attributes (`dataset_id`,
 /// `dataset_source`, `dataset_path`, `topic`), so LayoutXml's dataset relocation applies, plus the filters, the
@@ -104,8 +106,10 @@ class LogDockWidget : public QWidget, public IDataWidget {
   struct Topic {
     ObjectTopicId id;
     SavedSeriesPath saved;  ///< its layout identity (no field), taken while its dataset is loaded
-    SequentialUID cursor;   ///< drainNewSince position: every entry up to it is in the view
+    /// The newest UID indexed: entries after it are the ones a late insert added.
+    SequentialUID cursor;
     OrderedEntries::ContentIdentity identity;
+    uint64_t end = 0;  ///< absolute number past the last row indexed
   };
 
   [[nodiscard]] bool shows(ObjectTopicId topic_id) const;
@@ -115,7 +119,8 @@ class LogDockWidget : public QWidget, public IDataWidget {
   /// Adds `topic_id` and reads its history; false when it is not a kLog topic or already shown. Emits nothing: the
   /// caller emits topicsChanged.
   bool addTopic(ObjectTopicId topic_id);
-  /// Brings one topic's rows up to date: appended entries, or everything when `full` or rewritten.
+  /// Brings one topic's index up to date: the new rows, the rows from a late entry on, or everything when `full` or a
+  /// row it indexed was removed.
   void loadTopic(Topic& topic, bool full);
   /// Follows the store: drops topics that vanished (back to pending), loads new entries, everything on `reload_all_`.
   void refresh();

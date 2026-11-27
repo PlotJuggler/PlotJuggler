@@ -13,15 +13,20 @@ namespace PJ::log_view {
 
 namespace {
 
-/// Merge order: time, then wire, then arrival within the wire.
-bool before(const LogRow& a, const LogRow& b) {
+constexpr uint32_t kUnmapped = UINT32_MAX;
+/// Rows per cached message block; four blocks are kept.
+constexpr uint64_t kBlockRows = 1024;
+constexpr size_t kCachedBlocks = 4;
+
+/// Merge order: time, then wire, then row number within the wire.
+bool before(const RowRef& a, const RowRef& b) {
   if (a.time != b.time) {
     return a.time < b.time;
   }
   if (a.wire != b.wire) {
     return a.wire < b.wire;
   }
-  return a.seq < b.seq;
+  return a.row < b.row;
 }
 
 char lowerAscii(char c) {
@@ -32,6 +37,13 @@ char lowerAscii(char c) {
 /// sets from the environment, and could fold UTF-8 bytes the haystack keeps.
 std::string lowerNeedle(std::string text) {
   std::transform(text.begin(), text.end(), text.begin(), lowerAscii);
+  return text;
+}
+
+/// The text a row shows and filters on: terminal escapes stripped.
+std::string shownText(std::string_view message) {
+  std::string text(message);
+  stripTerminalEscapes(text);
   return text;
 }
 
@@ -52,7 +64,7 @@ void StoreChange::then(const StoreChange& next) {
 
 // --- LogStore ---
 
-LogStore::LogStore(size_t capacity) : capacity_(capacity) {
+LogStore::LogStore() {
   strings_.emplace_back();  // id 0 = ""
 }
 
@@ -70,91 +82,224 @@ uint32_t LogStore::intern(std::string_view text) {
   return id;
 }
 
-void LogStore::tally(const LogRow& row, int sign) {
-  rows_with_source_ += row.source != 0 ? sign : 0;
-  rows_with_category_ += row.category != 0 ? sign : 0;
+bool LogStore::hasSources() const {
+  return std::ranges::any_of(wires_, [](const auto& pair) { return pair.second.any_source; });
 }
 
-StoreChange LogStore::insert(uint32_t wire, std::vector<LogRow> rows) {
-  StoreChange change = StoreChange::none(rows_.size());
-  if (rows.empty()) {
-    return change;
+bool LogStore::hasCategories() const {
+  return std::ranges::any_of(wires_, [](const auto& pair) { return pair.second.any_category; });
+}
+
+const LogRowSource* LogStore::source(uint32_t wire) const {
+  const auto found = wires_.find(wire);
+  return found != wires_.end() ? found->second.source.get() : nullptr;
+}
+
+uint32_t LogStore::panelId(uint32_t wire, uint32_t id) const {
+  const auto found = wires_.find(wire);
+  if (found == wires_.end() || id >= found->second.ids.size() || found->second.ids[id] == kUnmapped) {
+    return 0;
   }
-  for (auto& row : rows) {
-    row.wire = wire;
-    tally(row, 1);
+  return found->second.ids[id];
+}
+
+void LogStore::mapIds(Wire& state, const LogRowSource& source, size_t index) {
+  for (const uint32_t id : {source.sourceId(index), source.categoryId(index)}) {
+    if (id >= state.ids.size()) {
+      state.ids.resize(id + 1, kUnmapped);
+    }
+    if (state.ids[id] == kUnmapped) {
+      state.ids[id] = id == 0 ? 0 : intern(source.dictionaryText(id));
+    }
   }
-  const auto first = std::lower_bound(rows_.begin(), rows_.end(), rows.front(), before);
-  const auto position = static_cast<size_t>(std::distance(rows_.begin(), first));
-  change.old_tail = position;
-  if (position == rows_.size()) {
-    std::move(rows.begin(), rows.end(), std::back_inserter(rows_));
-  } else {
-    // Merge the new rows with the tail they interleave with; the head stays where it is.
-    std::vector<LogRow> tail(std::make_move_iterator(first), std::make_move_iterator(rows_.end()));
-    rows_.erase(first, rows_.end());
-    std::merge(
-        std::make_move_iterator(tail.begin()), std::make_move_iterator(tail.end()),
-        std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()), std::back_inserter(rows_), before);
+  state.any_source = state.any_source || source.sourceId(index) != 0;
+  state.any_category = state.any_category || source.categoryId(index) != 0;
+}
+
+void LogStore::forgetCached(uint32_t wire) const {
+  std::erase_if(cache_, [wire](const Block& block) { return block.wire == wire; });
+}
+
+StoreChange LogStore::apply(uint32_t wire, Wire& state, uint64_t evicted, uint64_t cut, std::vector<RowRef> fresh) {
+  StoreChange change = StoreChange::none(refs_.size());
+  // The rows to drop: below `evicted` (the oldest of the wire) and from `cut` on (the newest).
+  const uint64_t keep_begin = std::clamp(evicted, state.begin, state.end);
+  const uint64_t keep_end = std::clamp(cut, keep_begin, state.end);
+  const uint64_t front_gone = keep_begin - state.begin;
+  const uint64_t back_gone = state.end - keep_end;
+  if (front_gone + back_gone > 0) {
+    const auto gone = [&](const RowRef& ref) {
+      return ref.wire == wire && (ref.row < keep_begin || ref.row >= keep_end);
+    };
+    // The leading run leaves from the front (a deque pops it without moving the rest).
+    size_t lead = 0;
+    while (lead < refs_.size() && gone(refs_[lead])) {
+      ++lead;
+    }
+    refs_.erase(refs_.begin(), refs_.begin() + static_cast<std::ptrdiff_t>(lead));
+    change.dropped_front = lead;
+    if (front_gone + back_gone > lead) {
+      // The first other gone row: the oldest rows sit near the front, the newest near the back.
+      size_t first = 0;
+      if (lead > 0 || front_gone > 0) {
+        while (!gone(refs_[first])) {
+          ++first;
+        }
+      } else {
+        first = refs_.size();
+        for (uint64_t left = back_gone; left > 0; --first) {
+          left -= gone(refs_[first - 1]) ? 1 : 0;
+        }
+      }
+      refs_.erase(std::remove_if(refs_.begin() + static_cast<std::ptrdiff_t>(first), refs_.end(), gone), refs_.end());
+      change.old_tail = first + lead;
+    }
   }
-  evictOverflow(change);
+  state.begin = keep_begin;
+  state.end = keep_end;
+  if (state.begin == state.end && !fresh.empty()) {
+    state.begin = state.end = fresh.front().row;
+  }
+  if (!fresh.empty()) {
+    state.end = static_cast<uint64_t>(fresh.back().row) + 1;
+    const auto first = std::lower_bound(refs_.begin(), refs_.end(), fresh.front(), before);
+    const auto position = static_cast<size_t>(std::distance(refs_.begin(), first));
+    change.old_tail = std::min(change.old_tail, position + change.dropped_front);
+    if (position == refs_.size()) {
+      refs_.insert(refs_.end(), fresh.begin(), fresh.end());
+    } else {
+      // Merge the new rows with the tail they interleave with; the head stays where it is.
+      std::vector<RowRef> tail(first, refs_.end());
+      refs_.erase(first, refs_.end());
+      std::merge(tail.begin(), tail.end(), fresh.begin(), fresh.end(), std::back_inserter(refs_), before);
+    }
+  }
   return change;
+}
+
+StoreChange LogStore::insert(
+    uint32_t wire, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row) {
+  Wire& state = wires_[wire];
+  if (from_row < state.end) {
+    forgetCached(wire);  // those rows changed
+  }
+  state.source = std::move(source);
+  const LogRowSource& src = *state.source;
+  uint64_t evicted = 0;
+  std::vector<RowRef> fresh;
+  src.batch([&] {
+    evicted = src.evicted();
+    const uint64_t first = std::max(from_row, evicted);
+    const uint64_t last = std::min(to_row, evicted + src.size());
+    if (first < last) {
+      fresh.reserve(last - first);
+    }
+    for (uint64_t row = first; row < last; ++row) {
+      const auto index = static_cast<size_t>(row - evicted);
+      fresh.push_back(RowRef{.time = src.time(index), .wire = wire, .row = static_cast<uint32_t>(row)});
+      mapIds(state, src, index);
+    }
+  });
+  return apply(wire, state, evicted, from_row, std::move(fresh));
+}
+
+StoreChange LogStore::dropFront(uint32_t wire, uint64_t evicted) {
+  const auto found = wires_.find(wire);
+  if (found == wires_.end()) {
+    return StoreChange::none(refs_.size());
+  }
+  return apply(wire, found->second, evicted, UINT64_MAX, {});
 }
 
 StoreChange LogStore::removeWire(uint32_t wire) {
-  StoreChange change = StoreChange::none(rows_.size());
-  const auto first = std::ranges::find(rows_, wire, &LogRow::wire);
-  change.old_tail = static_cast<size_t>(std::distance(rows_.begin(), first));
-  const auto kept = std::remove_if(first, rows_.end(), [this, wire](const LogRow& row) {
-    if (row.wire != wire) {
-      return false;
-    }
-    tally(row, -1);
-    return true;
-  });
-  rows_.erase(kept, rows_.end());
+  StoreChange change = StoreChange::none(refs_.size());
+  const auto first = std::ranges::find(refs_, wire, &RowRef::wire);
+  change.old_tail = static_cast<size_t>(std::distance(refs_.begin(), first));
+  refs_.erase(std::remove_if(first, refs_.end(), [wire](const RowRef& ref) { return ref.wire == wire; }), refs_.end());
+  wires_.erase(wire);
+  forgetCached(wire);
   return change;
 }
 
-StoreChange LogStore::replaceWire(uint32_t wire, std::vector<LogRow> rows) {
+StoreChange LogStore::replaceWire(uint32_t wire, std::shared_ptr<const LogRowSource> source) {
   StoreChange change = removeWire(wire);
-  change.then(insert(wire, std::move(rows)));
+  change.then(insert(wire, std::move(source), 0, UINT64_MAX));
   return change;
+}
+
+LogRow LogStore::row(size_t index, bool with_message) const {
+  const RowRef& ref = refs_[index];
+  LogRow out;
+  out.time = ref.time;
+  out.wire = ref.wire;
+  const auto found = wires_.find(ref.wire);
+  if (found == wires_.end() || !found->second.source) {
+    return out;
+  }
+  const LogRowSource& src = *found->second.source;
+  src.batch([&] {
+    const uint64_t evicted = src.evicted();
+    if (ref.row < evicted || ref.row - evicted >= src.size()) {
+      return;  // gone from the source
+    }
+    const auto at = static_cast<size_t>(ref.row - evicted);
+    out.present = true;
+    out.level = src.level(at);
+    out.stamp_ns = src.ownStamp(at);
+    out.source = panelId(ref.wire, src.sourceId(at));
+    out.category = panelId(ref.wire, src.categoryId(at));
+    if (!with_message) {
+      return;
+    }
+    for (Block& block : cache_) {
+      if (block.wire == ref.wire && ref.row >= block.first && ref.row - block.first < block.texts.size()) {
+        block.used = ++cache_clock_;
+        out.message = block.texts[ref.row - block.first];
+        return;
+      }
+    }
+    // Fill the block holding the row, from the row's block start (or the oldest row held) to its end.
+    const uint64_t first = std::max(ref.row - ref.row % kBlockRows, evicted);
+    const auto count =
+        static_cast<size_t>(std::min(ref.row - ref.row % kBlockRows + kBlockRows, evicted + src.size()) - first);
+    Block block{.wire = ref.wire, .first = first, .texts = {}, .used = ++cache_clock_};
+    block.texts.reserve(count);
+    src.messages(static_cast<size_t>(first - evicted), count, [&block](size_t, std::string_view message) {
+      block.texts.push_back(shownText(message));
+    });
+    if (ref.row - first < block.texts.size()) {
+      out.message = block.texts[ref.row - first];
+    }
+    if (cache_.size() >= kCachedBlocks) {
+      std::ranges::min_element(cache_, {}, &Block::used)->operator=(std::move(block));
+    } else {
+      cache_.push_back(std::move(block));
+    }
+  });
+  return out;
 }
 
 LogStore::RowKey LogStore::keyOf(size_t index) const {
-  const LogRow& row = rows_[index];
-  LogRow probe;
-  probe.time = row.time;
-  probe.wire = row.wire;
-  const auto end = rows_.begin() + static_cast<std::ptrdiff_t>(index);
-  const auto first = std::lower_bound(rows_.begin(), end, probe, before);
-  return RowKey{row.time, row.wire, static_cast<size_t>(std::distance(first, end))};
+  const RowRef& ref = refs_[index];
+  const RowRef probe{.time = ref.time, .wire = ref.wire, .row = 0};
+  const auto end = refs_.begin() + static_cast<std::ptrdiff_t>(index);
+  const auto first = std::lower_bound(refs_.begin(), end, probe, before);
+  return RowKey{ref.time, ref.wire, static_cast<size_t>(std::distance(first, end))};
 }
 
 std::optional<size_t> LogStore::indexOf(const RowKey& key) const {
-  LogRow probe;
-  probe.time = key.time;
-  probe.wire = key.wire;
-  const auto first = std::lower_bound(rows_.begin(), rows_.end(), probe, before);
-  const size_t index = static_cast<size_t>(std::distance(rows_.begin(), first)) + key.rank;
-  if (index >= rows_.size() || rows_[index].time != key.time || rows_[index].wire != key.wire) {
+  const RowRef probe{.time = key.time, .wire = key.wire, .row = 0};
+  const auto first = std::lower_bound(refs_.begin(), refs_.end(), probe, before);
+  const size_t index = static_cast<size_t>(std::distance(refs_.begin(), first)) + key.rank;
+  if (index >= refs_.size() || refs_[index].time != key.time || refs_[index].wire != key.wire) {
     return std::nullopt;
   }
   return index;
 }
 
-void LogStore::evictOverflow(StoreChange& change) {
-  while (rows_.size() > capacity_) {
-    tally(rows_.front(), -1);
-    rows_.pop_front();
-    ++change.dropped_front;
-  }
-}
-
 // --- Filter ---
 
-bool containsCaseInsensitive(const std::string& haystack, const std::string& lower_needle) {
+bool containsCaseInsensitive(std::string_view haystack, std::string_view lower_needle) {
   if (lower_needle.empty()) {
     return true;
   }
@@ -175,32 +320,95 @@ CompiledFilter::CompiledFilter(const LogFilter& filter, const LogStore& store)
   std::sort(hidden_wires_.begin(), hidden_wires_.end());
 }
 
-bool CompiledFilter::accepts(const LogRow& row) const {
-  const auto level = static_cast<size_t>(row.level);
-  if (level < levels_.size() && !levels_[level]) {
-    return false;
+bool CompiledFilter::idPasses(std::vector<char>& passes, uint32_t id, const std::string& needle) const {
+  if (needle.empty()) {
+    return true;
   }
-  if (!containsCaseInsensitive(store_.text(row.source), source_needle_) ||
-      !containsCaseInsensitive(store_.text(row.category), category_needle_)) {
-    return false;
+  auto& memo = passes;
+  if (id >= memo.size()) {
+    memo.resize(id + 1, -1);
   }
-  if (!hidden_wires_.empty() && std::binary_search(hidden_wires_.begin(), hidden_wires_.end(), row.wire)) {
-    return false;
+  if (memo[id] < 0) {
+    memo[id] = containsCaseInsensitive(store_.text(id), needle) ? 1 : 0;
   }
-  return containsCaseInsensitive(row.message, needle_);
+  return memo[id] == 1;
 }
 
-void CompiledFilter::collect(size_t from, size_t to, std::vector<uint32_t>& out) const {
-  for (size_t i = from; i < to; ++i) {
-    if (accepts(store_.row(i))) {
+size_t CompiledFilter::collect(size_t from, size_t to, size_t budget_rows, std::vector<uint32_t>& out) const {
+  const size_t stop = std::min(to, from + std::max<size_t>(budget_rows, 1));
+  if (from >= stop) {
+    return stop;
+  }
+  // A wire's rows in [from, stop) are consecutive rows of its source: read them in one batch per wire.
+  std::map<uint32_t, std::vector<size_t>> by_wire;
+  for (size_t i = from; i < stop; ++i) {
+    by_wire[store_.ref(i).wire].push_back(i);
+  }
+  std::vector<char> pass(stop - from, 0);
+  for (const auto& [wire, positions] : by_wire) {
+    if (std::binary_search(hidden_wires_.begin(), hidden_wires_.end(), wire)) {
+      continue;
+    }
+    const LogRowSource* src = store_.source(wire);
+    if (src == nullptr) {
+      continue;
+    }
+    src->batch([&] {
+      const uint64_t evicted = src->evicted();
+      const size_t held = src->size();
+      std::vector<size_t> candidates;  // positions passing everything but the text
+      for (const size_t position : positions) {
+        const uint64_t row = store_.ref(position).row;
+        if (row < evicted || row - evicted >= held) {
+          continue;
+        }
+        const auto at = static_cast<size_t>(row - evicted);
+        const auto level = static_cast<size_t>(src->level(at));
+        if (level < levels_.size() && !levels_[level]) {
+          continue;
+        }
+        if (!idPasses(source_passes_, store_.panelId(wire, src->sourceId(at)), source_needle_) ||
+            !idPasses(category_passes_, store_.panelId(wire, src->categoryId(at)), category_needle_)) {
+          continue;
+        }
+        candidates.push_back(position);
+      }
+      if (candidates.empty()) {
+        return;
+      }
+      if (needle_.empty()) {
+        for (const size_t position : candidates) {
+          pass[position - from] = 1;
+        }
+        return;
+      }
+      const auto rowOf = [&](size_t position) { return static_cast<size_t>(store_.ref(position).row - evicted); };
+      const size_t first = rowOf(candidates.front());
+      size_t next = 0;
+      src->messages(first, rowOf(candidates.back()) - first + 1, [&](size_t index, std::string_view message) {
+        if (next >= candidates.size() || rowOf(candidates[next]) != index) {
+          return;
+        }
+        const bool escaped = message.find('\x1b') != std::string_view::npos;
+        if (escaped ? containsCaseInsensitive(shownText(message), needle_)
+                    : containsCaseInsensitive(message, needle_)) {
+          pass[candidates[next] - from] = 1;
+        }
+        ++next;
+      });
+    });
+  }
+  for (size_t i = from; i < stop; ++i) {
+    if (pass[i - from] != 0) {
       out.push_back(static_cast<uint32_t>(i));
     }
   }
+  return stop;
 }
 
 size_t revealedCount(const LogStore& store, const std::vector<uint32_t>& filtered, double tracker) {
   const auto end = std::upper_bound(filtered.begin(), filtered.end(), tracker, [&store](double t, uint32_t index) {
-    return t < store.row(index).time;
+    return t < store.ref(index).time;
   });
   return static_cast<size_t>(std::distance(filtered.begin(), end));
 }

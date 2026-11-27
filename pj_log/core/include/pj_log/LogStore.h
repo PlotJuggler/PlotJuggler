@@ -2,37 +2,45 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The Qt-free data side of LogView: the merged row store and the row filter.
+// The Qt-free data side of LogView: the merged row index and the row filter.
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
+#include "pj_log/LogRowSource.h"
+
 namespace PJ {
-
-/// Severity of a log entry. Values and order match the SDK's canonical `sdk::Log::Level`, so a host converts with a
-/// cast.
-enum class LogLevel : std::uint8_t { kUnknown = 0, kDebug = 1, kInfo = 2, kWarning = 3, kError = 4, kFatal = 5 };
-
 namespace log_view {
 
-/// One log entry. Strings that repeat (source, category) are interned in the store.
+/// One row of the merged index: where it sorts and which topic row it is.
+struct RowRef {
+  double time = 0.0;  ///< display-axis seconds, copied from the source so ordering never reads it
+  uint32_t wire = 0;  ///< topic id; orders rows of equal time
+  /// The row's absolute number in its source. ponytail: 32 bits, a topic past 2^32 rows in one session wraps.
+  uint32_t row = 0;
+};
+
+/// A row read from its source. `present` is false when the source no longer has it (evicted, or replaced and not
+/// re-indexed yet): every other field but `time` and `wire` is then empty.
 struct LogRow {
-  double time = 0.0;      ///< display-axis seconds of the sample
-  int64_t stamp_ns = 0;   ///< the entry's own stamp, shown as metadata only
-  uint64_t seq = 0;       ///< arrival order within the wire
-  uint32_t wire = 0;      ///< topic id; orders rows of equal time
-  uint32_t source = 0;    ///< interned
-  uint32_t category = 0;  ///< interned; 0 = none
+  double time = 0.0;
+  int64_t stamp_ns = 0;  ///< the entry's own stamp, shown as metadata only
+  uint32_t wire = 0;
+  uint32_t source = 0;    ///< id into LogStore::text()
+  uint32_t category = 0;  ///< id into LogStore::text(); 0 = none
   LogLevel level = LogLevel::kUnknown;
-  std::string message;
+  bool present = false;
+  std::string message;  ///< terminal escapes stripped
 };
 
 /// What a mutation did to the row sequence, so a view can update without starting over.
@@ -61,42 +69,51 @@ struct StoreChange {
   }
 };
 
-/// Merged log of every topic, ordered by (time, wire, seq). Evicts the oldest rows beyond its capacity.
+/// Merged index of every topic's rows, ordered by (time, wire, row); the rows stay in their LogRowSource and are read
+/// on demand (the messages of the rows shown through a small cache). Each topic's index covers a contiguous range of
+/// its source's absolute rows. GUI thread only.
 class LogStore {
  public:
-  static constexpr size_t kDefaultCapacity = 1'000'000;
+  LogStore();
 
-  explicit LogStore(size_t capacity = kDefaultCapacity);
-
-  /// Id of @p text in the string pool, adding it when new. Id 0 is the empty string.
+  /// Id of @p text in the panel's string pool, adding it when new. Id 0 is the empty string.
   uint32_t intern(std::string_view text);
   [[nodiscard]] const std::string& text(uint32_t id) const {
     return strings_[id];
   }
-  /// Whether a row the store holds has a source, a category.
-  [[nodiscard]] bool hasSources() const {
-    return rows_with_source_ > 0;
-  }
-  [[nodiscard]] bool hasCategories() const {
-    return rows_with_category_ > 0;
-  }
+  /// Whether a topic indexed a row with a source, a category.
+  [[nodiscard]] bool hasSources() const;
+  [[nodiscard]] bool hasCategories() const;
 
-  /// Add the rows of @p wire, in ascending (time, seq) order; they merge with the rows already held, earlier ones
-  /// included. @p seq must keep growing per wire: it orders the wire's rows of equal time.
-  StoreChange insert(uint32_t wire, std::vector<LogRow> rows);
+  /// Indexes @p source as topic @p wire: drops the rows it evicted and the rows numbered from @p from_row on (they
+  /// changed), then adds its rows [from_row, to_row) (clamped to what it holds). @p source replaces the one held.
+  StoreChange insert(uint32_t wire, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row);
+  /// Drops the rows of @p wire numbered below @p evicted.
+  StoreChange dropFront(uint32_t wire, uint64_t evicted);
   /// Drop every row of @p wire.
   StoreChange removeWire(uint32_t wire);
-  /// Drop the rows of @p wire and insert @p rows in their place.
-  StoreChange replaceWire(uint32_t wire, std::vector<LogRow> rows);
+  /// Drop the rows of @p wire and index all of @p source in their place.
+  StoreChange replaceWire(uint32_t wire, std::shared_ptr<const LogRowSource> source);
 
   [[nodiscard]] size_t size() const {
-    return rows_.size();
+    return refs_.size();
   }
-  [[nodiscard]] const LogRow& row(size_t index) const {
-    return rows_[index];
+  [[nodiscard]] const RowRef& ref(size_t index) const {
+    return refs_[index];
   }
+  /// Reads row @p index from its source; without @p with_message the message stays empty.
+  [[nodiscard]] LogRow row(size_t index, bool with_message = true) const;
+  /// The source of @p wire, or null.
+  [[nodiscard]] const LogRowSource* source(uint32_t wire) const;
+  /// Absolute number past the last row of @p wire indexed (0 for an unknown wire).
+  [[nodiscard]] uint64_t wireEnd(uint32_t wire) const {
+    const auto found = wires_.find(wire);
+    return found != wires_.end() ? found->second.end : 0;
+  }
+  /// Panel string id of @p wire's dictionary id @p id (0 when the topic never indexed it).
+  [[nodiscard]] uint32_t panelId(uint32_t wire, uint32_t id) const;
 
-  /// Identity of a row that survives a reload of its wire: arrival numbers (seq) restart on a reload.
+  /// Identity of a row that survives a reload of its wire: row numbers restart on a reload.
   struct RowKey {
     double time = 0.0;
     uint32_t wire = 0;
@@ -107,12 +124,23 @@ class LogStore {
   [[nodiscard]] std::optional<size_t> indexOf(const RowKey& key) const;
 
  private:
-  void evictOverflow(StoreChange& change);
-  /// Counts @p row in (or, with @p sign -1, out of) the rows with a source and a category.
-  void tally(const LogRow& row, int sign);
+  struct Wire {
+    std::shared_ptr<const LogRowSource> source;
+    /// Source dictionary id -> panel string id; kUnmapped where never seen.
+    std::vector<uint32_t> ids;
+    uint64_t begin = 0;  ///< the rows indexed are [begin, end)
+    uint64_t end = 0;
+    bool any_source = false;
+    bool any_category = false;
+  };
+  /// Drops the rows of @p wire outside [evicted, cut), then merges @p fresh (the wire's rows from the new end, in
+  /// order).
+  StoreChange apply(uint32_t wire, Wire& state, uint64_t evicted, uint64_t cut, std::vector<RowRef> fresh);
+  void mapIds(Wire& state, const LogRowSource& source, size_t index);
+  void forgetCached(uint32_t wire) const;
 
-  size_t capacity_;
-  std::deque<LogRow> rows_;
+  std::deque<RowRef> refs_;
+  std::map<uint32_t, Wire> wires_;
 
   std::vector<std::string> strings_;
   /// Hashes std::string and std::string_view alike, so a lookup does not build a std::string.
@@ -123,8 +151,16 @@ class LogStore {
     }
   };
   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> string_ids_;
-  size_t rows_with_source_ = 0;
-  size_t rows_with_category_ = 0;
+
+  /// Decoded messages of the rows read last: a few blocks of consecutive rows of one topic, least recently used out.
+  struct Block {
+    uint32_t wire = 0;
+    uint64_t first = 0;  ///< absolute number of texts[0]
+    std::vector<std::string> texts;
+    uint64_t used = 0;
+  };
+  mutable std::vector<Block> cache_;
+  mutable uint64_t cache_clock_ = 0;
 };
 
 /// The spellings of a level: `key` in a saved layout, `label` on screen.
@@ -159,27 +195,35 @@ struct LogFilter {
   std::vector<uint32_t> hidden_wires;
 };
 
-/// A LogFilter resolved against one store, cheap to evaluate per row.
+/// A LogFilter resolved against one store: the source and category needles are evaluated once per panel string, and
+/// the messages are read in batches, one topic at a time.
 class CompiledFilter {
  public:
   CompiledFilter(const LogFilter& filter, const LogStore& store);
 
-  [[nodiscard]] bool accepts(const LogRow& row) const;
-
   /// Append to @p out the indices of the rows in [@p from, @p to) that pass.
-  void collect(size_t from, size_t to, std::vector<uint32_t>& out) const;
+  void collect(size_t from, size_t to, std::vector<uint32_t>& out) const {
+    (void)collect(from, to, to - from, out);
+  }
+  /// As collect(), over at most @p budget_rows rows (at least one); returns the index it stopped at.
+  size_t collect(size_t from, size_t to, size_t budget_rows, std::vector<uint32_t>& out) const;
 
  private:
+  [[nodiscard]] bool idPasses(std::vector<char>& passes, uint32_t id, const std::string& needle) const;
+
   const LogStore& store_;
   std::array<bool, 6> levels_;
   std::string source_needle_;    ///< lower-cased
   std::string category_needle_;  ///< lower-cased
   std::string needle_;           ///< lower-cased
+  /// By panel string id, filled on first use: -1 not evaluated yet.
+  mutable std::vector<char> source_passes_;
+  mutable std::vector<char> category_passes_;
   std::vector<uint32_t> hidden_wires_;
 };
 
 /// Whether @p haystack contains @p lower_needle, comparing ASCII letters case-insensitively.
-bool containsCaseInsensitive(const std::string& haystack, const std::string& lower_needle);
+bool containsCaseInsensitive(std::string_view haystack, std::string_view lower_needle);
 
 /// Number of entries of @p filtered (store indices in ascending order) whose row time is <= @p tracker.
 size_t revealedCount(const LogStore& store, const std::vector<uint32_t>& filtered, double tracker);

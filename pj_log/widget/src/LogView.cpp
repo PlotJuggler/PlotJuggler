@@ -134,6 +134,7 @@ LogView::LogView(QWidget* parent)
   connect(ui_->logView->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &LogView::updateDetail);
   connect(ui_->logView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &LogView::updateDetail);
   connect(model_, &QAbstractItemModel::modelReset, this, &LogView::updateDetail);
+  connect(model_, &LogTableModel::filterApplied, this, &LogView::onFilterApplied);
   connect(ui_->copyButton, &QToolButton::clicked, this, [this]() {
     QGuiApplication::clipboard()->setText(ui_->detailText->toPlainText());
   });
@@ -159,54 +160,47 @@ std::array<QToolButton*, log_view::kToggleLevelCount> LogView::levelToggles() co
   return {ui_->levelDebug, ui_->levelInfo, ui_->levelWarn, ui_->levelError, ui_->levelFatal};
 }
 
-std::vector<LogRow> LogView::toRows(uint32_t topic, std::vector<LogEntry> entries) {
-  std::vector<LogRow> rows;
-  rows.reserve(entries.size());
-  uint64_t& seq = next_seq_[topic];
-  for (LogEntry& entry : entries) {
-    if (!std::isfinite(entry.time)) {
-      continue;
-    }
-    LogRow row;
-    row.time = entry.time;
-    row.stamp_ns = entry.stamp_ns;
-    row.seq = seq++;
-    row.level = entry.level;
-    row.source = store_.intern(entry.source);
-    row.category = store_.intern(entry.category);
-    row.message = std::move(entry.message);
-    log_view::stripTerminalEscapes(row.message);
-    rows.push_back(std::move(row));
-  }
-  return rows;
+void LogView::changeStore(const std::function<StoreChange()>& mutate) {
+  const std::optional<size_t> selected = selectedStoreRow();
+  const auto key = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
+  followChange(mutate(), selected, key);
 }
 
 void LogView::appendEntries(uint32_t topic, std::vector<LogEntry> entries) {
   if (entries.empty()) {
     return;
   }
-  const std::optional<size_t> selected = selectedStoreRow();
-  const auto key = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
-  const StoreChange change = store_.insert(topic, toRows(topic, std::move(entries)));
-  followChange(change, selected, key);
+  auto& source = entry_sources_[topic];
+  if (!source) {
+    source = std::make_shared<VectorLogRowSource>();
+  }
+  const uint64_t from = source->merge(std::move(entries));
+  changeStore([&] { return store_.insert(topic, source, from, source->evicted() + source->size()); });
 }
 
 void LogView::replaceEntries(uint32_t topic, std::vector<LogEntry> entries) {
-  const std::optional<size_t> selected = selectedStoreRow();
-  const auto key = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
-  next_seq_[topic] = 0;  // arrival numbers restart with a reload; RowKey re-finds the selection
-  const StoreChange change = store_.replaceWire(topic, toRows(topic, std::move(entries)));
-  followChange(change, selected, key);
+  auto source = std::make_shared<VectorLogRowSource>();
+  source->merge(std::move(entries));
+  entry_sources_[topic] = source;
+  changeStore([&] { return store_.replaceWire(topic, source); });  // RowKey re-finds the selection
+}
+
+void LogView::setTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source) {
+  entry_sources_.erase(topic);
+  changeStore([&] { return store_.replaceWire(topic, std::move(source)); });
+}
+
+void LogView::updateTopicRows(
+    uint32_t topic, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row) {
+  entry_sources_.erase(topic);
+  changeStore([&] { return store_.insert(topic, std::move(source), from_row, to_row); });
 }
 
 void LogView::removeTopic(uint32_t topic) {
-  const std::optional<size_t> selected = selectedStoreRow();
-  const auto key = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
-  const StoreChange change = store_.removeWire(topic);
   topics_.erase(topic);
-  next_seq_.erase(topic);
+  entry_sources_.erase(topic);
   refreshTopics();
-  followChange(change, selected, key);
+  changeStore([&] { return store_.removeWire(topic); });
 }
 
 void LogView::followChange(
@@ -311,9 +305,14 @@ log_view::LogFilter LogView::currentFilter() const {
 void LogView::applyFilters() {
   text_timer_.stop();
   const std::optional<size_t> selected = selectedStoreRow();
-  const log_view::LogFilter filter = currentFilter();
-  model_->setFilter(filter);
-  selectStoreRow(selected);
+  filter_selection_ = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
+  model_->setFilter(currentFilter());
+}
+
+void LogView::onFilterApplied() {
+  if (const auto key = std::exchange(filter_selection_, std::nullopt)) {
+    selectStoreRow(store_.indexOf(*key));
+  }
   if (playing_) {
     scrollToTracker(true);
   } else if (const QModelIndex current = ui_->logView->currentIndex(); current.isValid()) {
@@ -393,7 +392,7 @@ void LogView::updateDetail() {
   ui_->copyButton->setEnabled(selected.has_value());
   QString text;
   if (selected && *selected < store_.size()) {
-    const LogRow& row = store_.row(*selected);
+    const LogRow row = store_.row(*selected);
     QStringList lines;
     lines << tr("Time: %1").arg(model_->timeText(row));
     lines << tr("Stamp: %1").arg(formatStamp(row.stamp_ns));
@@ -467,7 +466,8 @@ bool LogView::fitTimeColumn() {
     return false;
   }
   HeaderResizePolicy::install(ui_->logView->header())
-      ->setSectionWidth(LogTableModel::kTime, fitWidth(model_->timeText(store_.row(*last)), LogTableModel::kTime));
+      ->setSectionWidth(
+          LogTableModel::kTime, fitWidth(model_->timeText(store_.row(*last, false)), LogTableModel::kTime));
   return true;
 }
 
@@ -497,7 +497,7 @@ void LogView::onRowDoubleClicked(const QModelIndex& index) {
   if (!store_index || *store_index >= store_.size()) {
     return;
   }
-  const double time = store_.row(*store_index).time;
+  const double time = store_.ref(*store_index).time;
   pending_seek_ = time;
   emit seekRequested(time);
 }

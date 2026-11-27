@@ -132,14 +132,93 @@ TEST_F(LogDockWidgetTest, AppendsNewAndLateEntriesInTimeOrder) {
   push(rosout_, 4, "rosout 4");
   landed();
   EXPECT_EQ(messages(*dock), (std::vector<std::string>{"rosout 1", "rosout 2", "rosout 3", "rosout 4"}));
-  // Entries older than the newest land in time order, without re-reading the topic: the row the store evicted stays.
+  // Entries older than the newest land in time order; the row the store evicted leaves the panel with it.
   session_.objectStore().evictBefore(rosout_, 2 * kNs);
   push(rosout_, 0, "rosout 0");
   push(rosout_, 3, "rosout 3 again");
   landed();
   EXPECT_EQ(
-      messages(*dock),
-      (std::vector<std::string>{"rosout 0", "rosout 1", "rosout 2", "rosout 3", "rosout 3 again", "rosout 4"}));
+      messages(*dock), (std::vector<std::string>{"rosout 0", "rosout 2", "rosout 3", "rosout 3 again", "rosout 4"}));
+}
+
+std::vector<QString> modelMessages(const LogDockWidget& dock) {
+  const auto* model = dock.view()->model();
+  std::vector<QString> out;
+  for (int row = 0; row < model->rowCount(); ++row) {
+    out.push_back(model->data(model->index(row, log_view::LogTableModel::kMessage)).toString());
+  }
+  return out;
+}
+
+TEST_F(LogDockWidgetTest, ShowsFirstEntryOfALogLargerThanTheOldCapacity) {
+  constexpr int kEntries = 1'000'010;
+  const ObjectTopicId big = registerTopic("/big", kLogMetadata);
+  sdk::Log log;
+  log.level = sdk::Log::Level::kInfo;
+  for (int i = 0; i < kEntries; ++i) {
+    log.message = "entry " + std::to_string(i);
+    ASSERT_TRUE(session_.objectStore().pushOwned(big, Timestamp{i} * 1000, serializeLog(log)).has_value());
+  }
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(big, sdk::BuiltinObjectType::kLog, {}));
+  const auto* model = dock->view()->model();
+  ASSERT_EQ(model->rowCount(), kEntries);
+  EXPECT_EQ(model->data(model->index(0, log_view::LogTableModel::kMessage)).toString(), u"entry 0"_s);
+  EXPECT_EQ(
+      model->data(model->index(kEntries - 1, log_view::LogTableModel::kMessage)).toString(),
+      QString::fromStdString("entry " + std::to_string(kEntries - 1)));
+}
+
+TEST_F(LogDockWidgetTest, EvictionUnderTheViewDropsRowsWithoutStaleText) {
+  const ObjectTopicId live = registerTopic("/live", kLogMetadata);
+  session_.objectStore().setRetentionBudget(live, RetentionBudget{.max_entries = 100});
+  const auto push_many = [&](int first, int count) {
+    sdk::Log log;
+    for (int i = first; i < first + count; ++i) {
+      log.message = "m" + std::to_string(i);
+      ASSERT_TRUE(session_.objectStore().pushOwned(live, Timestamp{i + 10} * kNs, serializeLog(log)).has_value());
+    }
+  };
+  push_many(0, 100);
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(live, sdk::BuiltinObjectType::kLog, {}));
+  ASSERT_EQ(modelMessages(*dock).size(), 100u);
+  EXPECT_EQ(modelMessages(*dock).front(), u"m0"_s);
+
+  push_many(100, 50);  // evicts m0..m49 before the panel hears of it
+  const auto evicted = [](const QString& text) {
+    return text.startsWith(u'm') && text.mid(1).toInt() < 50 && text != u"m"_s;
+  };
+  for (const QString& text : modelMessages(*dock)) {
+    EXPECT_FALSE(evicted(text)) << text.toStdString();
+  }
+  landed();
+  const std::vector<QString> after = modelMessages(*dock);
+  ASSERT_EQ(after.size(), 100u);
+  EXPECT_EQ(after.front(), u"m50"_s);
+  EXPECT_EQ(after.back(), u"m149"_s);
+}
+
+TEST_F(LogDockWidgetTest, ReloadReplacesEveryRow) {
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  ASSERT_EQ(messages(*dock).size(), 3u);
+  ObjectStore staged;
+  constexpr DatasetId kStaged = 77;
+  auto reloaded = staged.registerTopic(
+      ObjectTopicDescriptor{.dataset_id = kStaged, .topic_name = "/rosout", .metadata_json = kLogMetadata});
+  ASSERT_TRUE(reloaded.has_value());
+  sdk::Log log;
+  for (const char* text : {"new a", "new b"}) {
+    log.message = text;
+    ASSERT_TRUE(staged.pushOwned(*reloaded, (log.message == "new a" ? 5 : 6) * kNs, serializeLog(log)).has_value());
+  }
+  ASSERT_TRUE(session_.objectStore().replaceDatasetFrom(staged, kStaged, dataset_id_).has_value());
+  landed();
+  EXPECT_EQ(messages(*dock), (std::vector<std::string>{"new a", "new b"}));
+  EXPECT_EQ(modelMessages(*dock), (std::vector<QString>{u"new a"_s, u"new b"_s}));
 }
 
 TEST_F(LogDockWidgetTest, ADisplayOffsetChangeMovesTheRows) {

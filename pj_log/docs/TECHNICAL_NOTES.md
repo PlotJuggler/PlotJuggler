@@ -102,9 +102,10 @@ After, a late refresh costs what an in-order one does (1.9 ms median at 10 000 m
 entries, and the rebuild is the model re-filtering the tail from the earliest late row, about 50 ms of rows. The panel
 keeps every row, like the in-order runs.
 
-What the code does: `LogDockWidget::loadTopic` re-reads a topic only on a `removal` move or a display-offset change.
-Re-test when the retention defaults change, with lateness of seconds (the rebuilt tail grows with it), or when the
-panel's `LogStore` capacity is reached.
+These runs measured the panel when it decoded and copied each entry. What the code does now: `LogDockWidget::loadTopic`
+indexes the new rows, re-indexes a topic from its oldest late entry on when `rewrite` moved, and the whole topic only
+on a `removal` move or a display-offset change; the panel holds no rows, so rows the store evicts leave it. Re-test
+when the retention defaults change, or with lateness of seconds (the re-indexed tail grows with it).
 
 ## One-off costs at 1e5 entries
 
@@ -113,10 +114,11 @@ panel's `LogStore` capacity is reached.
 - One filter change over 1e5 rows (what the debounce timer's `applyFilters` runs, plus the paint): 21 ms to set
   "timeout", 12.5 ms to clear it (medians of 5).
 
-What the code does: both re-walk every row on the GUI thread in one go. Re-test with larger logs.
+Measured when the panel copied each entry. What the code does now: an accept indexes every row on the GUI thread in
+one go (reading times and ids, not messages); a filter change over more than `LogTableModel::kFilterSliceRows` rows
+runs one slice per event-loop turn. Re-test with larger logs.
 
 ## Not measured
 
-- Logs of 1e6 entries and `LogStore`'s capacity (`LogStore::kDefaultCapacity`): `LogView` constructs its store with
-  the default and has no knob to lower it, and the runs stop at 1e5 entries.
+- The panel over logs of 1e6 entries and more: the runs stop at 1e5 entries.
 - The app stylesheet, a real display and its compositor, and the browser build.

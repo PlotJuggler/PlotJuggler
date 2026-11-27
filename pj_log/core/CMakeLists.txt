@@ -1,6 +1,8 @@
 # Qt-free: the merged row store and the row filter.
 add_library(pj_log_core STATIC
+    src/LogRowSource.cpp
     src/LogStore.cpp
+    include/pj_log/LogRowSource.h
     include/pj_log/LogStore.h
 )
 

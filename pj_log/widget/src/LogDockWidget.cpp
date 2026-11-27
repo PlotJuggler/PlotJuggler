@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "pj_base/builtin/log.hpp"
+#include "pj_datastore/log_entries.hpp"
 #include "pj_log/LogView.h"
 #include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/CatalogModel.h"
@@ -31,12 +32,107 @@ constexpr auto kTopicTag = "topic"_L1;
 constexpr auto kHiddenTopicTag = "hidden_topic"_L1;
 
 bool isLogTopic(const ObjectStore& objects, ObjectTopicId topic_id) {
-  return objectTypeFromMetadata(objects.descriptor(topic_id).metadata_json) == sdk::BuiltinObjectType::kLog;
+  return objectTypeFromMetadata(objects.descriptor(topic_id).metadata_json) == sdk::BuiltinObjectType::kLog &&
+         objects.logView(topic_id).has_value();
 }
 
 LogLevel levelOf(sdk::Log::Level level) {
   return level <= sdk::Log::Level::kFatal ? static_cast<LogLevel>(level) : LogLevel::kUnknown;
 }
+
+/// One topic's rows in the ObjectStore. Each read takes a LogSeriesView (a batch takes one for all its reads), so the
+/// panel never holds the series lock across event-loop turns. Reads see no rows once the series was rewritten since
+/// the dock indexed it (`rewrite` differs): the dock re-indexes it on its next update.
+class StoreLogSource final : public LogRowSource {
+ public:
+  StoreLogSource(const ObjectStore& objects, ObjectTopicId id, DisplayOffset offset, uint64_t rewrite)
+      : objects_(objects), id_(id), offset_(offset), rewrite_(rewrite) {}
+
+  [[nodiscard]] size_t size() const override {
+    size_t size = 0;
+    read([&size](const LogEntries& entries) { size = entries.size(); });
+    return size;
+  }
+  [[nodiscard]] uint64_t evicted() const override {
+    uint64_t evicted = 0;
+    read([&evicted](const LogEntries& entries) { evicted = entries.evicted(); });
+    return evicted;
+  }
+  [[nodiscard]] double time(size_t index) const override {
+    double time = 0.0;
+    read([&](const LogEntries& entries) {
+      time = toAxisDouble(rawToDisplaySecondsAtOrAfter(entries.timestamps()[index], offset_));
+    });
+    return time;
+  }
+  [[nodiscard]] LogLevel level(size_t index) const override {
+    LogLevel level = LogLevel::kUnknown;
+    read([&](const LogEntries& entries) { level = levelOf(entries.level(index)); });
+    return level;
+  }
+  [[nodiscard]] uint32_t sourceId(size_t index) const override {
+    uint32_t id = 0;
+    read([&](const LogEntries& entries) { id = entries.sourceId(index); });
+    return id;
+  }
+  [[nodiscard]] uint32_t categoryId(size_t index) const override {
+    uint32_t id = 0;
+    read([&](const LogEntries& entries) { id = entries.categoryId(index); });
+    return id;
+  }
+  [[nodiscard]] int64_t ownStamp(size_t index) const override {
+    int64_t stamp = 0;
+    read([&](const LogEntries& entries) { stamp = entries.ownStamp(index); });
+    return stamp;
+  }
+  [[nodiscard]] std::string dictionaryText(uint32_t id) const override {
+    std::string text;
+    read([&](const LogEntries& entries) { text = std::string(entries.dictionaryText(id)); });
+    return text;
+  }
+  void messages(size_t first, size_t count, const MessageSink& sink) const override {
+    read([&](const LogEntries& entries) { entries.messages(first, count, sink); });
+  }
+  void batch(const std::function<void()>& body) const override {
+    if (in_batch_) {
+      body();
+      return;
+    }
+    auto view = objects_.logView(id_);
+    pinned_ = view && (*view)->contentIdentity().rewrite == rewrite_ ? &**view : nullptr;
+    in_batch_ = true;
+    struct Unpin {
+      const StoreLogSource* self;
+      ~Unpin() {
+        self->pinned_ = nullptr;
+        self->in_batch_ = false;
+      }
+    } unpin{this};
+    body();
+  }
+
+ private:
+  template <typename F>
+  void read(F&& f) const {
+    if (in_batch_) {
+      if (pinned_ != nullptr) {
+        f(*pinned_);
+      }
+      return;
+    }
+    auto view = objects_.logView(id_);
+    if (view && (*view)->contentIdentity().rewrite == rewrite_) {
+      f(**view);
+    }
+  }
+
+  const ObjectStore& objects_;
+  ObjectTopicId id_;
+  DisplayOffset offset_;
+  uint64_t rewrite_;
+  mutable const LogEntries* pinned_ = nullptr;
+  mutable bool in_batch_ = false;
+};
 
 struct ParsedLogState {
   LogViewState view;
@@ -225,46 +321,47 @@ bool LogDockWidget::addTopic(ObjectTopicId topic_id) {
 
 void LogDockWidget::loadTopic(Topic& topic, bool full) {
   const ObjectStore& objects = session_->objectStore();
-  // Read before the drain: a change racing in between shows up as a new identity on the next update.
-  const OrderedEntries::ContentIdentity identity = objects.contentIdentity(topic.id);
-  if (!full && identity == topic.identity) {
-    return;
-  }
-  // Inserts, late ones included, and front evictions keep `removal`: every entry they add lies after the cursor, and
-  // the rows the store evicted stay. A removed, replaced or shifted entry may be one the view holds.
-  full = full || identity.removal != topic.identity.removal;
-  topic.identity = identity;
-  if (full) {
-    topic.cursor = SequentialUID{};
-  }
-  std::vector<ResolvedObjectEntry> entries = objects.drainNewSince(topic.id, topic.cursor);
-  std::erase_if(entries, [](const ResolvedObjectEntry& entry) { return entry.fetch_failed; });
-  // Arrival order; the view wants time order.
-  std::ranges::stable_sort(entries, {}, &ResolvedObjectEntry::timestamp);
-  const DisplayOffset offset = session_->displayOffset(topic.saved.dataset_id);
-  std::vector<LogEntry> rows;
-  rows.reserve(entries.size());
-  const auto add_row = [&rows, offset](const ResolvedObjectEntry& entry, Expected<sdk::BuiltinObject> object) {
-    const sdk::Log* log = object ? object->get<sdk::Log>() : nullptr;
-    if (log == nullptr) {
-      return;  // an entry its parser rejects shows nothing
+  OrderedEntries::ContentIdentity identity;
+  uint64_t end = 0;
+  uint64_t late_from = 0;
+  SequentialUID newest;
+  {
+    // One view for a consistent snapshot, released before the panel reads rows (each read takes its own).
+    auto view = objects.logView(topic.id);
+    if (!view) {
+      return;
     }
-    rows.push_back(
-        LogEntry{
-            .time = toAxisDouble(rawToDisplaySecondsAtOrAfter(entry.timestamp, offset)),
-            .stamp_ns = log->timestamp_ns,
-            .level = levelOf(log->level),
-            .source = log->source,
-            .category = log->category,
-            .message = log->message,
-        });
-  };
-  decodeStoredObjects(*session_, topic.id, sdk::BuiltinObjectType::kLog, entries, add_row);
-  if (full) {
-    view_->replaceEntries(topic.id.id, std::move(rows));
-  } else {
-    view_->appendEntries(topic.id.id, std::move(rows));
+    const LogEntries& entries = **view;
+    identity = entries.contentIdentity();
+    if (!full && identity == topic.identity) {
+      return;
+    }
+    end = entries.evicted() + entries.size();
+    newest = entries.maxUidAtOrBefore(std::numeric_limits<Timestamp>::max());
+    // A late entry moves the rows after it: they are re-indexed from the oldest late one on. Rows of equal stamp it
+    // landed after keep their number, so the rows strictly older are the unchanged prefix.
+    if (const auto oldest = entries.oldestTimestampAfterUid(topic.cursor); oldest.has_value()) {
+      const auto& stamps = entries.timestamps();
+      late_from = entries.evicted() +
+                  static_cast<uint64_t>(std::distance(stamps.begin(), std::ranges::lower_bound(stamps, *oldest)));
+    } else {
+      late_from = entries.evicted();
+    }
   }
+  full = full || identity.removal != topic.identity.removal;
+  const bool late = identity.rewrite != topic.identity.rewrite;
+  auto source = std::make_shared<StoreLogSource>(
+      objects, topic.id, session_->displayOffset(topic.saved.dataset_id), identity.rewrite);
+  if (full) {
+    view_->setTopicRows(topic.id.id, std::move(source));
+  } else {
+    view_->updateTopicRows(topic.id.id, std::move(source), late ? std::min(late_from, topic.end) : topic.end, end);
+  }
+  topic.identity = identity;
+  topic.cursor = newest;
+  // What the panel indexed: less than `end` when the series was rewritten after the snapshot, which shows as a new
+  // identity on the next update.
+  topic.end = view_->store().wireEnd(topic.id.id);
 }
 
 void LogDockWidget::refresh() {
