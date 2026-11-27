@@ -730,11 +730,12 @@ class ListRowDeleteDelegate : public LockedRowDelegate {
   }
 
   // Elided rows lose their tail to paint()'s budget: the full text is shown as a tooltip when it does not fit that same
-  // budget. A row that fits shows none (no Qt::ToolTipRole is ever set on these items).
+  // budget. A row that fits shows none (no Qt::ToolTipRole is ever set on these items). An invalid index (the view's
+  // empty area) goes to the base: initStyleOption would ask its null model, and Qt fills it from the last cell styled.
   bool helpEvent(
       QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option,
       const QModelIndex& index) override {
-    if (event == nullptr || event->type() != QEvent::ToolTip) {
+    if (event == nullptr || event->type() != QEvent::ToolTip || !index.isValid()) {
       return QStyledItemDelegate::helpEvent(event, view, option, index);
     }
     QStyleOptionViewItem opt = option;

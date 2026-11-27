@@ -1868,6 +1868,59 @@ TEST(WidgetBindingListTooltip, DeletableListReservesIconWidthFromTheTooltipBudge
       << "the icon reservation must be counted even though the bare text alone would fit";
 }
 
+namespace {
+void sendToolTipThroughViewport(QAbstractItemView* view, QPoint pos) {
+  QHelpEvent help(QEvent::ToolTip, pos, view->viewport()->mapToGlobal(pos));
+  QApplication::sendEvent(view->viewport(), &help);
+}
+}  // namespace
+
+// Where no cell is (below the last row, an empty view), Qt hands helpEvent indexAt(pos): an invalid index with no
+// model. QStyledItemDelegate does not clear the role data of the last cell it styled for it, so after a paint an
+// empty-area tooltip would show that cell's text.
+TEST(WidgetBindingListTooltip, EmptyAreaBelowTheRowsShowsNoTooltip) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+  PJ::WidgetData wd;
+  wd.setListItems("lst", {"first", "second"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  PJ::connectWidgetSignals(&root, [](const std::string&, const std::string&) {});
+  root.resize(300, 300);
+  root.show();
+  (void)root.grab();  // paints every row through the delegate
+
+  const QPoint below_rows(10, lw->viewport()->height() - 5);
+  const QModelIndex index = lw->indexAt(below_rows);
+  ASSERT_FALSE(index.isValid());
+  const QStyleOptionViewItem option;
+  QHelpEvent help(QEvent::ToolTip, below_rows, lw->viewport()->mapToGlobal(below_rows));
+  EXPECT_FALSE(lw->itemDelegate()->helpEvent(&help, lw, option, index));
+
+  sendToolTipThroughViewport(lw, below_rows);  // the path the tooltip timer takes; a crash fails the test
+}
+
+TEST(WidgetBindingListTooltip, ToolTipOverAnEmptyTableDoesNotCrash) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  layout->addWidget(tw);
+  PJ::WidgetData wd;
+  wd.setTableHeaders("tbl", {"Topic", "Type"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  PJ::connectWidgetSignals(&root, [](const std::string&, const std::string&) {});
+  root.resize(300, 300);
+  root.show();
+
+  ASSERT_EQ(tw->rowCount(), 0);
+  sendToolTipThroughViewport(tw, tw->viewport()->rect().center());
+}
+
 // --- Row context menu (pj_context_actions) ---
 
 TEST(WidgetBindingListContextMenu, AbsentPropertyLeavesTheDefaultContextMenuPolicy) {
