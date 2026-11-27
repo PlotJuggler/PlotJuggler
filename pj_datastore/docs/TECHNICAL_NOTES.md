@@ -125,6 +125,20 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 - **FIFO, not LRU** (reasoning, not measured): the producer appends in time order and consumers chase the live edge,
   and FIFO keeps reads free of shared bookkeeping.
 
+## kLog columnar storage
+
+Measured 2026-11-27 (`log_panel_benchmark --only bigload`, Release, offscreen, one topic of generated rosout-like logs:
+six sources, four categories, messages of 40-200 chars from 20 phrases plus random numbers): the store holds
+57.2 bytes per log against 154.8 as canonical payloads (`memoryUsage` per entry; RSS 112 MiB against 422 MiB at 1e6,
+1083 MiB at 1e7). Ingest decodes and compresses on the push thread: 1.0 s per 1e6 logs against 0.55 s for payloads.
+
+Tried: `LogEntries::kChunkRows` 4096 and 16384 give 57.2 and 56.8 bytes per log; the random numbers in these messages
+bound what zstd finds, and a larger chunk makes reading one row decompress more. Levels above 3 were not tried: the
+code never compresses above level 3, to keep ingest cost bounded.
+
+What the code does: chunks of 4096 rows, zstd level 3. Re-test with logs of real robots (more repeated messages
+compress better, and may pay for larger chunks) or when the row read path changes.
+
 ## Toolbox Arrow reads
 
 Appending a numeric column to an Arrow array one row at a time cost about 36 ns a sample on a 7.2M-sample float64

@@ -300,6 +300,11 @@ does not link it.
   only for the call. Carrying the binding on every message lets a recording started
   mid-stream capture topics subscribed long before it. A `kPureLazy` push fetches no bytes
   and is counted in `recordTapSkippedLazy()` instead.
+- **kLog topics.** A topic whose parser produces kLog registers with the canonical kLog metadata only and is always
+  eager, whatever the ingest policy: the host decodes each message through the parser once, after the taps, and
+  pushes the canonical log owned, so the store keeps `LogEntries` and no wire bytes. A message that does not decode to
+  a log is skipped, counted in `logDecodeFailures()` (not `ingestCallbackFailures()`, which vetoes a capture) and
+  warned once per topic.
 - `setDiagnosticSink` forwards the plugin's WARNING/ERROR reports (cap and threading in the
   header).
 

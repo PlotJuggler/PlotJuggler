@@ -118,7 +118,29 @@ Measured when the panel copied each entry. What the code does now: an accept ind
 one go (reading times and ids, not messages); a filter change over more than `LogTableModel::kFilterSliceRows` rows
 runs one slice per event-loop turn. Re-test with larger logs.
 
+## Large logs
+
+Measured 2026-11-27 (`log_panel_benchmark --only bigload`, Release, offscreen, one topic; the "before" build is the
+same benchmark against the panel that copied every row, capped at 1'000'000):
+
+| rows | panel | panel RSS | accept | level toggle | filter "timeout" | clear | longest GUI event |
+|-----:|-------|----------:|-------:|-------------:|-----------------:|------:|------------------:|
+| 1e6 | copy (before) | 265 MiB | 617 ms | 21 ms | 70 ms | 24 ms | the whole filter, in one call |
+| 1e6 | index | 75 MiB | 109 ms | 46 ms | 229 ms | 52 ms | 12 ms filtering, 18.5 ms on clear |
+| 1e7 | index | 595 MiB | 1237 ms | 492 ms | 2274 ms | 579 ms | 19 ms filtering, 106-164 ms on completion |
+
+Wall times of a filter run until the list shows its result; the index filters in slices of
+`LogTableModel::kFilterSliceRows`, so the GUI stays responsive meanwhile. 100 000-row slices took up to 22 ms with a
+message needle (decompressing the messages), 50 000-row slices 12 ms.
+
+The completion event grows with the rows the result holds (19 ms for 5 % of 1e7, 164 ms for all of them), as does the
+panel's RSS beyond the index (16 bytes a row) and the filtered list (4): about 42 bytes a row. Reasoning, not
+profiled: `QTreeView` keeps one layout item per row and rebuilds them on each model reset; a `QTableView` or a
+`QListView` with uniform rows keeps none.
+
+What the code does: slices of 50 000 rows. Re-test when the list widget changes, or with logs whose messages are much
+longer.
+
 ## Not measured
 
-- The panel over logs of 1e6 entries and more: the runs stop at 1e5 entries.
 - The app stylesheet, a real display and its compositor, and the browser build.

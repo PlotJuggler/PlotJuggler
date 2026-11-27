@@ -3,7 +3,8 @@
 
 // GUI-thread CPU of the Log panel (LogDockWidget over a real SessionManager / ObjectStore):
 //
-//   QT_QPA_PLATFORM=offscreen log_panel_benchmark [--only playback|streaming|oneoff] [--stream-seconds 10]
+//   QT_QPA_PLATFORM=offscreen log_panel_benchmark [--only playback|streaming|oneoff|bigload] [--stream-seconds 10]
+//       [--rows 1000000]
 //
 // playback: 1e4 and 1e5 kLog entries over a 10-minute log, in 1 or 3 merged topics, future rows greyed or hidden,
 // with and without a message filter. A precise 33 ms timer (PlaybackEngine's tick) moves the tracker at 1x while the
@@ -20,6 +21,9 @@
 // oneoff: dropping a loaded 1e5-entry topic on a shown panel, and one filter change over 1e5 rows; each includes
 // 30 ms of event processing for the paint.
 //
+// bigload (only when asked for): --rows entries in one topic: ingest time, store bytes per entry, RSS, then the panel's
+// accept and, until the list shows the result, a level toggle, the filter kFilterText and its clearing (wall time and
+// the longest GUI event), and a scroll to the top.
 // One LOG_BENCH line per run, then a summary table. Built with PJ_BUILD_DEMOS; no ctest.
 
 #include <QApplication>
@@ -27,6 +31,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QTimer>
+#include <QTreeView>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -39,6 +44,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #include "pj_base/builtin/log_codec.hpp"
 #include "pj_base/dataset.hpp"
@@ -431,6 +440,84 @@ void runOneOff() {
           pj_bench::fmt(clear.median, 1) + " ms CPU with paint");
 }
 
+/// RSS after returning the heap's free pages, so a freed temporary does not count as held memory.
+double heldRssMib() {
+#if defined(__GLIBC__)
+  malloc_trim(0);
+#endif
+  return pj_bench::rssMib();
+}
+
+void runBigLoad(TimedApplication& app, size_t rows) {
+  const double rss_start = heldRssMib();
+  Fixture fixture(1);
+  QElapsedTimer wall;
+  wall.start();
+  fixture.fill(rows);
+  const double ingest_s = static_cast<double>(wall.nsecsElapsed()) / 1e9;
+  const double store_bytes = static_cast<double>(fixture.session.objectStore().memoryUsage(fixture.topics.front()));
+  const double rss_filled = heldRssMib();
+
+  auto dock = makeShownDock(fixture);
+  LogView& view = *dock->view();
+  setView(view, true, false);  // every row in the list, so its row count is the filter's
+  spin(100);
+  wall.restart();
+  (void)dock->tryAcceptObjectTopic(fixture.topics.front(), sdk::BuiltinObjectType::kLog, {});
+  const double accept_ms = static_cast<double>(wall.nsecsElapsed()) / 1e6;
+  spin(100);
+  const double rss_shown = heldRssMib();
+  const auto shown = static_cast<qulonglong>(view.model()->rowCount());
+
+  double longest = 0.0;
+  app.on_top_event = [&longest](double cpu) { longest = std::max(longest, cpu); };
+  /// Wall ms from applying @p state until the list's row count changes, and the longest GUI event meanwhile.
+  const auto timed = [&](const LogViewState& state) {
+    const int before = view.model()->rowCount();
+    longest = 0.0;
+    QElapsedTimer timer;
+    timer.start();
+    view.applyState(state);
+    (void)pj_bench::waitUntil([&] { return view.model()->rowCount() != before; }, 600'000);
+    const double ms = static_cast<double>(timer.nsecsElapsed()) / 1e6;
+    spin(30);
+    return std::pair{ms, longest};
+  };
+  LogViewState state = view.state();
+  state.levels[0] = false;  // Debug
+  const auto [level_ms, level_event] = timed(state);
+  state.levels[0] = true;
+  (void)timed(state);
+  state.text = QString::fromLatin1(kFilterText);
+  const auto [filter_ms, filter_event] = timed(state);
+  state.text.clear();
+  const auto [clear_ms, clear_event] = timed(state);
+
+  auto* list = view.findChild<QTreeView*>(u"logView"_s);
+  list->scrollToBottom();
+  spin(50);
+  longest = 0.0;
+  const double cpu = pj_bench::threadCpuMs();
+  list->scrollToTop();
+  spin(50);
+  const double top_ms = pj_bench::threadCpuMs() - cpu;
+  app.on_top_event = nullptr;
+
+  const auto ms = [](double value) { return pj_bench::fmt(value, 1); };
+  report(
+      QByteArray("scenario=bigload rows=") + QByteArray::number(qulonglong(rows)) +
+          " shown=" + QByteArray::number(shown) + " ingest_s=" + pj_bench::fmt(ingest_s, 2) +
+          " store_bytes_per_row=" + pj_bench::fmt(store_bytes / static_cast<double>(rows), 1) + " rss_store_mib=" +
+          pj_bench::fmt(rss_filled - rss_start, 0) + " rss_panel_mib=" + pj_bench::fmt(rss_shown - rss_filled, 0) +
+          " accept_ms=" + ms(accept_ms) + " level_ms=" + ms(level_ms) + " level_event_ms=" + ms(level_event) +
+          " filter_ms=" + ms(filter_ms) + " filter_event_ms=" + ms(filter_event) + " clear_ms=" + ms(clear_ms) +
+          " clear_event_ms=" + ms(clear_event) + " scroll_top_cpu_ms=" + ms(top_ms),
+      QByteArray("bigload   ") + QByteArray::number(qulonglong(rows)) + " rows, shown " + QByteArray::number(shown) +
+          " | " + pj_bench::fmt(store_bytes / static_cast<double>(rows), 1) + " B/row in the store, panel +" +
+          pj_bench::fmt(rss_shown - rss_filled, 0) + " MiB, accept " + ms(accept_ms) + " ms, filter " + ms(filter_ms) +
+          " ms (longest event " + ms(filter_event) + " ms)");
+}
+
 }  // namespace
 }  // namespace PJ
 
@@ -441,7 +528,8 @@ int main(int argc, char** argv) {
   PJ::TimedApplication app(argc, argv);
   QCommandLineParser parser;
   parser.addHelpOption();
-  parser.addOption({u"only"_s, u"playback, streaming or oneoff"_s, u"group"_s});
+  parser.addOption({u"only"_s, u"playback, streaming, oneoff or bigload"_s, u"group"_s});
+  parser.addOption({u"rows"_s, u"entries of the bigload run"_s, u"count"_s, u"1000000"_s});
   parser.addOption({u"stream-seconds"_s, u"seconds per streaming run"_s, u"seconds"_s, u"10"_s});
   parser.process(app);
   const QString only = parser.value(u"only"_s);
@@ -471,6 +559,9 @@ int main(int argc, char** argv) {
   }
   if (only.isEmpty() || only == u"oneoff"_s) {
     PJ::runOneOff();
+  }
+  if (only == u"bigload"_s) {
+    PJ::runBigLoad(app, std::max<qulonglong>(1, parser.value(u"rows"_s).toULongLong()));
   }
   std::printf("\nSummary (GUI-thread CPU)\n");
   for (const std::string& line : PJ::g_summary) {

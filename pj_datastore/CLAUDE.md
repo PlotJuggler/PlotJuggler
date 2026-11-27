@@ -3,7 +3,7 @@
 The in-memory store every source writes to and every view reads from: `DataEngine` (columnar scalar time series),
 `ObjectStore` (timestamped opaque payloads), `IncrementalEngine` (derived series), the host side of the plugin data
 C ABI, and the `PJ::proc` data-processor substrate that `pj_scripting` builds filters on. Pure C++20; links
-`plotjuggler_sdk::base` plus fmt, tsl::robin_map, nanoarrow and nlohmann_json, never Qt or `pj_plugins`. Plugins reach
+`plotjuggler_sdk::base` plus fmt, tsl::robin_map, nanoarrow, nlohmann_json and zstd, never Qt or `pj_plugins`. Plugins reach
 it only through the C ABI. Timestamps are absolute int64 nanoseconds. How it works:
 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
@@ -24,6 +24,8 @@ it only through the C ABI. Timestamps are absolute int64 nanoseconds. How it wor
 - Freeing or moving chunks (retention, clear, retire, detach, `flushTo()`, `replaceDatasetFrom()`, `mergeDatasets()`,
   `removeDataset()`) happens on the GUI thread after consumers drop cached `TopicChunk*`, or those pointers dangle.
 - Two engines are locked together with `lockEnginePair()`; locking one, then the other deadlocks against `flushTo()`.
+- A `LogSeriesView` (`ObjectStore::logView`) holds its topic's shared lock: never take a second view or call the store
+  while one lives, or a writer queued for the lock deadlocks the thread.
 - The engine lock and the `ObjectStore` locks never nest. Store predicates, visitors and holders of an
   `EntryTimestampsView` never call the store. Both deadlock.
 - Curves are keyed by (topic id, column index): reload and merge keep both, or saved layouts lose their curves.
@@ -45,6 +47,7 @@ it only through the C ABI. Timestamps are absolute int64 nanoseconds. How it wor
 - `reader.hpp`, `query.hpp`: `DataReader`; row cursors, series views, latest-at.
 - `chunk.hpp`, `topic_storage.hpp`, `encoding.hpp`, `column_buffer.hpp`, `buffer.hpp`, `type_registry.hpp`: storage.
 - `object_store.hpp`, `ordered_entries.hpp`, `sequential_uid.hpp`, `resident_payload_pool.hpp`: `ObjectStore`.
+- `log_entries.hpp`: `LogEntries`, the columnar zstd-compressed storage of a canonical kLog topic.
 - `incremental_engine.hpp`, `builtin_transforms.hpp`: the derived-series graph and the built-in transforms.
 - `plugin_data_host.hpp`: the C-ABI host bridges; the windowed series read and value scan the MCP tools use.
 - `arrow_import.hpp`: Arrow IPC and C streams into a `DataWriter`.
@@ -66,5 +69,6 @@ against a GUI reader); `examples/parquet_import` builds with `PJ_BUILD_PARQUET_I
 
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): data model, ingest, storage, reads, threading, pause/resume,
   reload and merge, derived series, ObjectStore, host bridges, processors, known gaps.
-- [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): measurements and the alternatives tried or considered.
+- [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): measurements and the alternatives tried or considered (kLog
+  compression and chunk size among them).
 - [docs/USER_GUIDE.md](./docs/USER_GUIDE.md): plugin-facing write and read patterns.

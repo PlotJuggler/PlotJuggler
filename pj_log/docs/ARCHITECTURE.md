@@ -70,7 +70,8 @@ Advertised topics with no storage yet (a placeholder drop) wait as pending, and 
 
 ## Known gaps
 
-- The index costs 16 bytes a row (`RowRef`), on top of what the store holds.
+- The index costs 16 bytes a row (`RowRef`), on top of what the store holds; the `QTreeView` adds about 42 bytes a row
+  shown and a relayout of every shown row when a filter completes (164 ms at 1e7 rows, TECHNICAL_NOTES "Large logs").
 - A topic evicting rows that sort after another topic's rows makes the model re-filter every row from the first one
   evicted (`StoreChange` expresses only a leading eviction).
 - Between a reload or late entry in the store and the dock's next update (up to `kEntriesLandedIntervalMs`), the rows

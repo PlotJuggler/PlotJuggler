@@ -60,11 +60,11 @@ playback, streaming and one-off loads (one `LOG_BENCH` line per run, then a summ
 ```bash
 host-job log-bench-build bash -c 'PJ_BUILD_JOBS=8 ./build.sh --target log_panel_benchmark'
 host-job --light log-bench env QT_QPA_PLATFORM=offscreen ./build/pj_log/benchmarks/log_panel_benchmark \
-    [--only playback|streaming|oneoff] [--stream-seconds 10]
+    [--only playback|streaming|oneoff|bigload] [--stream-seconds 10] [--rows 1000000]
 ```
 
 ## Docs
 
 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): components, data flow, tracker and seeking, persistence, known gaps.
 [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): measured CPU cost under playback (grey vs hidden future rows),
-streaming (late entries appended, against the re-read they replaced) and one-off loads.
+streaming (late entries appended, against the re-read they replaced), one-off loads and large logs (1e6 and 1e7 rows).

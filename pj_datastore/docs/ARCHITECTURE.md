@@ -249,6 +249,18 @@ topic, to be selected by time and never expanded into columns. It does not decod
 metadata JSON is kept verbatim. The one exception: registering a legacy `__markers__/<key>` name stamps the plot-marker
 metadata on it.
 
+**kLog series.** A topic whose metadata is canonical kLog (`isCanonicalLogMetadata`: `builtin_object_type` "kLog" and
+no wire `payload_encoding`) is stored as a `LogEntries` series instead of payloads: each log is decoded once at push
+(`pushOwned` and bundles decode before taking the lock; `pushLazy` is refused) into columns. Stamps, UIDs and the UID
+order are whole-series vectors; the rest lives in chunks of `LogEntries::kChunkRows` rows, sealed ones holding
+narrowed source/category ids into one dictionary, level and own-stamp columns stored as a constant when the chunk's rows
+agree, and the messages as one zstd frame (level 3). A change inside a sealed chunk reseals that chunk only. The reads
+below serve a log series like any other, re-serializing canonical bytes per entry; typed reads go through `logView()`,
+a `LogSeriesView` that holds the topic's shared lock for its lifetime (one view at a time, and no store call while it
+lives, or a writer waiting for the lock deadlocks the thread). A byte budget on a log series evicts whole chunks.
+`flushTo()`, `replaceDatasetFrom()`, the merge and detach move `LogEntries` like entries, and refuse to mix a log series
+with a payload series.
+
 **Entries** are kept in non-decreasing timestamp order. An out-of-order push is inserted at its sorted position; equal
 timestamps keep arrival order.
 
@@ -349,5 +361,7 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
   writes and a derived series have no `finish()`: their last chunk stays unencoded until another follows it.
 - A chunk dropped whole by retention does not say how many rows it held: the rows it gained after a node last read
   it are not reported as a gap.
+- A kLog topic pushed lazily (a plugin's `push_lazy`) is refused: the store decodes logs at push, and a lazy entry has
+  no bytes yet. The plugin gets the store's error.
 - A row begun and never finished (an exception between `beginRow()` and `finishRow()`) keeps its topic's uncommitted
   rows out of every later commit, `finish()` included.

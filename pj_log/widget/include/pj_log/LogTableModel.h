@@ -28,7 +28,7 @@ class LogTableModel : public QAbstractTableModel {
   enum Column { kTime = 0, kLevel, kSource, kCategory, kTopic, kMessage, kColumnCount };
 
   /// A filter over more rows than this runs in slices of this many rows, one per event-loop turn.
-  static constexpr size_t kFilterSliceRows = 100'000;
+  static constexpr size_t kFilterSliceRows = 50'000;
 
   /// @p palette_source supplies the colours of greyed rows; @p topic_label names a wire.
   LogTableModel(
