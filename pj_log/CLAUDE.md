@@ -16,7 +16,11 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
   `contentIdentity().rewrite` moved, and the whole topic only when `removal` moved or the display offset changed.
   Re-indexing on each landing makes a progressive load quadratic in the log size
   ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md), "Streaming"). The snapshot (identity, row range, newest UID)
-  is taken under one view before the panel reads rows; a change after it shows as a new identity next update.
+  is taken under one view before the panel reads rows; a change after it shows as a new identity next update. Until
+  then the rows it moved read as absent (`LogRowSource::validEnd`, from `LogEntries::firstRowChangedSince`), never as
+  their new neighbour's text.
+- **A source's `on_moved` never updates synchronously:** a read runs inside a paint or inside a batch holding a
+  `LogSeriesView`, and an update takes a view (deadlock) and changes the model (mid-paint).
 - **Never hold a `LogSeriesView` while taking another** (or calling the store): a `LogRowSource::batch` reads its own
   topic only. Holding one while acquiring a second deadlocks against a writer waiting for the store lock. This is why
   `RowRef` carries the row's time: merging and the tracker never read another topic.

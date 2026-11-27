@@ -128,16 +128,19 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
 ## kLog columnar storage
 
 Measured 2026-11-27 (`log_panel_benchmark --only bigload`, Release, offscreen, one topic of generated rosout-like logs:
-six sources, four categories, messages of 40-200 chars from 20 phrases plus random numbers): the store holds
-57.2 bytes per log against 154.8 as canonical payloads (`memoryUsage` per entry; RSS 112 MiB against 422 MiB at 1e6,
-1083 MiB at 1e7). Ingest decodes and compresses on the push thread: 1.0 s per 1e6 logs against 0.55 s for payloads.
+six sources, four categories, messages of 40-200 chars from 20 phrases plus random numbers, own stamps 0-5 ms before
+the store stamp): the store holds 61.9 bytes per log against 154.7 as canonical payloads (`memoryUsage` per entry;
+RSS 116 MiB against 421 MiB at 1e6, 1125 MiB at 1e7). With own stamps equal to the store stamp (a constant offset per
+chunk) it was 57.2. Ingest decodes and compresses on the push thread: about 1.0 s per 1e6 logs against 0.55 s for
+payloads.
 
-Tried: `LogEntries::kChunkRows` 4096 and 16384 give 57.2 and 56.8 bytes per log; the random numbers in these messages
-bound what zstd finds, and a larger chunk makes reading one row decompress more. Levels above 3 were not tried: the
-code never compresses above level 3, to keep ingest cost bounded.
+Tried: `LogEntries::kChunkRows` 4096 and 16384 give 57.2 and 56.8 bytes per log (constant own stamps); the random
+numbers in these messages bound what zstd finds, and a larger chunk makes a cache miss decompress more. Levels above 3
+were not tried: the code never compresses above level 3, to keep ingest cost bounded.
 
-What the code does: chunks of 4096 rows, zstd level 3. Re-test with logs of real robots (more repeated messages
-compress better, and may pay for larger chunks) or when the row read path changes.
+What the code does: chunks of 4096 rows, zstd level 3, the last two chunks open, two decoded chunks cached per series.
+Re-test with logs of real robots (more repeated messages compress better, and may pay for larger chunks) or when the
+row read path changes.
 
 ## Toolbox Arrow reads
 

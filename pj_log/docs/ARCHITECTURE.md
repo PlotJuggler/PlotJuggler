@@ -20,9 +20,10 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
   row). Each topic's index covers a contiguous range of its source's rows. `insert` drops the rows the source evicted
   and the rows from a given number on (they changed: a late entry), then indexes the new ones; `dropFront`,
   `removeWire` and `replaceWire` complete it. Each returns a `StoreChange` that says which rows were evicted, kept and
-  added, so the model updates without a reset. Source and category ids map to panel string ids once per new id. The
-  messages of the rows read last live in a cache of four 1024-row blocks, escapes stripped; a row whose source no
-  longer has it reads as absent (no text), so an eviction the dock has not followed yet shows no stale text.
+  added, so the model updates without a reset. Source and category ids map to panel string ids once per new id. Rows
+  are read from the source on demand (the store's `LogEntries` caches what it decodes); a row whose source no longer
+  has it, or that a late entry moved (`validEnd`), reads as absent (no text), so a change the dock has not followed
+  yet shows no stale text.
 - **`CompiledFilter`** resolves a `LogFilter` (enabled levels, case-insensitive source/category/message substrings,
   hidden topics) against one store: the source and category needles are evaluated once per panel string, and the
   rows are read one topic at a time in one batch, messages in one call over the topic's rows in range.
@@ -41,8 +42,9 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
 ## Data flow
 
 The dock accepts canonical `kLog` topics, which the ObjectStore keeps as `LogEntries` (decoded once at ingest), and
-indexes them through a `StoreLogSource`: each read takes an `ObjectStore::logView` (a batch, one for all its reads), and
-reads see no rows once the series was rewritten after the dock indexed it. Rows carry display-axis seconds
+indexes them through a `StoreLogSource`: each read takes an `ObjectStore::logView` (a batch, one for all its reads).
+The rows a late entry or a removal moved since the dock indexed the series read as absent, and seeing one queues an
+update on the next event-loop turn. Rows carry display-axis seconds
 (`rawToDisplaySecondsAtOrAfter` of the entry's store stamp, so a seek to a row reveals it); the detail pane also shows
 the log's own stamp (on the store clock, so a merge shift moves it too).
 
@@ -50,7 +52,8 @@ Entries landing (`dataPublished`, `ingestEnded`, `derivedEntriesPublished`) brin
 per `kEntriesLandedIntervalMs`. Each update snapshots the topic under one view (identity, row range, newest UID) and
 then: drops the rows the store evicted and indexes the new ones; when `contentIdentity().rewrite` moved (a late
 entry), re-indexes from the oldest entry after the previous newest UID on; when `removal` moved (a reload, a merge) or
-the display offset changed, re-indexes the whole topic. Rows the store's retention evicts leave the panel. A topic that leaves the store (removed, reparented by a merge) goes back to pending and binds again by the identity it
+the display offset changed, re-indexes the whole topic. Rows the store's retention evicts leave the panel: a live
+log keeps what the streaming window keeps, like every other topic. A topic that leaves the store (removed, reparented by a merge) goes back to pending and binds again by the identity it
 was added with (its dataset's id, source and path, kept from when the dataset was loaded). A topic or dataset the user
 deletes leaves the panel instead (`discardTopic` / `discardDataset`, called by the shell before the store drops it).
 A pending topic that resolves to a topic shown already counts as resolved.
@@ -74,7 +77,7 @@ Advertised topics with no storage yet (a placeholder drop) wait as pending, and 
   shown and a relayout of every shown row when a filter completes (164 ms at 1e7 rows, TECHNICAL_NOTES "Large logs").
 - A topic evicting rows that sort after another topic's rows makes the model re-filter every row from the first one
   evicted (`StoreChange` expresses only a leading eviction).
-- Between a reload or late entry in the store and the dock's next update (up to `kEntriesLandedIntervalMs`), the rows
-  past the change show no text.
+- Between a late entry in the store and the dock's next update (the next event-loop turn, or up to
+  `kEntriesLandedIntervalMs` when one just ran), the rows after it show no text; after a reload, every row.
 - Only canonical kLog topics are accepted: a kLog topic stored with a wire `payload_encoding` (not a LogEntries series)
   is refused.

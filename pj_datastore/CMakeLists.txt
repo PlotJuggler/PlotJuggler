@@ -12,14 +12,17 @@ option(
 find_package(tsl-robin-map REQUIRED)
 find_package(nlohmann_json REQUIRED)  # marker_topic_metadata.cpp
 # log_entries.cpp: sealed log chunks. The browser build provides the targets itself (cmake/PjWasmDependencies.cmake).
-if(NOT TARGET zstd::libzstd_static AND NOT TARGET zstd::libzstd)
+# zstd's config defines libzstd_static and/or libzstd_shared; the libzstd alias exists only from 1.5.6 (Nix ships
+# the shared one alone).
+if(NOT TARGET zstd::libzstd_static AND NOT TARGET zstd::libzstd_shared AND NOT TARGET zstd::libzstd)
   find_package(zstd CONFIG REQUIRED)
 endif()
-if(TARGET zstd::libzstd_static)
-  set(PJ_DATASTORE_ZSTD zstd::libzstd_static)
-else()
-  set(PJ_DATASTORE_ZSTD zstd::libzstd)
-endif()
+foreach(_pj_zstd zstd::libzstd_static zstd::libzstd_shared zstd::libzstd)
+  if(TARGET ${_pj_zstd})
+    set(PJ_DATASTORE_ZSTD ${_pj_zstd})
+    break()
+  endif()
+endforeach()
 # Google Benchmark is skipped in the MemorySanitizer lane, which builds no benchmarks: requiring it would mean
 # instrumenting a library nothing there links, and its regex-backend detection fails against an instrumented libc++.
 if(PJ_BUILD_TESTS AND NOT PJ_ENABLE_MSAN)

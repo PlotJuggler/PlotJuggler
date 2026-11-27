@@ -252,12 +252,18 @@ metadata on it.
 **kLog series.** A topic whose metadata is canonical kLog (`isCanonicalLogMetadata`: `builtin_object_type` "kLog" and
 no wire `payload_encoding`) is stored as a `LogEntries` series instead of payloads: each log is decoded once at push
 (`pushOwned` and bundles decode before taking the lock; `pushLazy` is refused) into columns. Stamps, UIDs and the UID
-order are whole-series vectors; the rest lives in chunks of `LogEntries::kChunkRows` rows, sealed ones holding
-narrowed source/category ids into one dictionary, level and own-stamp columns stored as a constant when the chunk's rows
-agree, and the messages as one zstd frame (level 3). A change inside a sealed chunk reseals that chunk only. The reads
-below serve a log series like any other, re-serializing canonical bytes per entry; typed reads go through `logView()`,
-a `LogSeriesView` that holds the topic's shared lock for its lifetime (one view at a time, and no store call while it
-lives, or a writer waiting for the lock deadlocks the thread). A byte budget on a log series evicts whole chunks.
+order are whole-series vectors; the rest lives in chunks of `LogEntries::kChunkRows` rows. The last two chunks are
+open (plain rows), so a late entry close to the newest reseals nothing; the others are sealed: narrowed source/category
+ids into one dictionary, a level column (a constant when the chunk's rows agree), and the own-stamp offsets and the
+messages in one zstd frame (level 3). A late entry inside a sealed chunk reseals that chunk only; a front eviction
+drops whole chunks and only moves the first row of a sealed one. A read of a sealed chunk decompresses it once into a
+two-chunk cache of decoded chunks per series (its own mutex, keyed by a seal generation, so a reseal never reads stale
+rows): reads of nearby rows, the table view's among them, do not decompress again. `firstRowChangedSince(rewrite)`
+tells a reader which rows still read as they did under an earlier `rewrite` (a late entry moves only the rows after
+it). The reads below serve a log series like any other, re-serializing canonical bytes per entry; typed reads go
+through `logView()`, a `LogSeriesView` that holds the topic's shared lock for its lifetime (one view at a time, and no
+store call while it lives, or a writer waiting for the lock deadlocks the thread). Retention applies as to any topic,
+the streaming window included.
 `flushTo()`, `replaceDatasetFrom()`, the merge and detach move `LogEntries` like entries, and refuse to mix a log series
 with a payload series.
 

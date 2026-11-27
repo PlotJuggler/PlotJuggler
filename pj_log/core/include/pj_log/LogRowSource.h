@@ -51,6 +51,11 @@ class LogRowSource {
   [[nodiscard]] virtual std::string dictionaryText(uint32_t id) const = 0;
   /// @p sink gets each row of [first, first + count), in order; the view is valid during the call only.
   virtual void messages(size_t first, size_t count, const MessageSink& sink) const = 0;
+  /// Absolute number of the first row that may no longer be the row the panel indexed under it (a late entry moved
+  /// it): rows from it on read as absent until the host re-indexes them. UINT64_MAX when every row is as indexed.
+  [[nodiscard]] virtual uint64_t validEnd() const {
+    return UINT64_MAX;
+  }
   /// Runs @p body with every read of this source seeing one state (a host may hold a lock for it). @p body reads this
   /// source only: reading another one inside it may deadlock against the host's writers.
   virtual void batch(const std::function<void()>& body) const {

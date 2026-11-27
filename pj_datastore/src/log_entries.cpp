@@ -6,6 +6,8 @@
 #include <zstd.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <nlohmann/json.hpp>
@@ -43,6 +45,9 @@ uint32_t readId(const std::vector<uint8_t>& packed, uint8_t width, size_t index)
   return id;
 }
 
+/// Seal generations, process-wide: a decoded chunk cached under one never matches a chunk sealed later, in any series.
+std::atomic<uint64_t> g_seal_generation{0};
+
 }  // namespace
 
 /// A chunk is open (plain rows) or sealed. Every column of a sealed chunk but the messages reads in O(1).
@@ -70,9 +75,13 @@ struct LogEntries::Chunk {
 
   std::vector<Row> rows;
   std::optional<Sealed> sealed;
+  /// Sealed only: the frame's first `skip` rows were evicted (row k of the chunk is frame row k + skip).
+  size_t skip = 0;
+  /// Sealed only: the key of its decoded rows in the cache; new at every seal.
+  uint64_t generation = 0;
 
   [[nodiscard]] size_t size() const {
-    return sealed ? sealed->rows : rows.size();
+    return sealed ? sealed->rows - skip : rows.size();
   }
   [[nodiscard]] size_t bytes() const {
     if (sealed) {
@@ -86,7 +95,34 @@ struct LogEntries::Chunk {
   }
 };
 
-LogEntries::LogEntries() : dictionary_{std::string{}} {
+/// A sealed chunk's frame, decompressed: message k is raw[starts[k], starts[k + 1]).
+struct LogEntries::Decoded {
+  std::vector<uint8_t> raw;
+  std::vector<uint32_t> starts;
+  size_t stamps_at = 0;  ///< offset of the stamp offsets in raw, when the chunk has them
+
+  [[nodiscard]] std::string_view message(size_t k) const {
+    return {reinterpret_cast<const char*>(raw.data()) + starts[k], starts[k + 1] - starts[k]};
+  }
+  [[nodiscard]] int64_t stampOffset(size_t k) const {
+    int64_t offset = 0;
+    std::memcpy(&offset, raw.data() + stamps_at + k * sizeof(int64_t), sizeof(int64_t));
+    return offset;
+  }
+};
+
+/// The chunks decoded last. ponytail: two slots per series (a view's rows straddle at most one chunk boundary); a
+/// reader alternating among more chunks decompresses again.
+struct LogEntries::DecodedCache {
+  std::mutex mutex;
+  std::array<std::shared_ptr<const Decoded>, 2> chunks;
+  std::array<uint64_t, 2> generations{};
+  std::array<uint64_t, 2> used{};
+  uint64_t clock = 0;
+  uint64_t decompressions = 0;
+};
+
+LogEntries::LogEntries() : dictionary_{std::string{}}, cache_(std::make_unique<DecodedCache>()) {
   dictionary_ids_.emplace(std::string{}, 0);
   changed(Change::kRemoval);
 }
@@ -94,14 +130,85 @@ LogEntries::LogEntries(LogEntries&&) noexcept = default;
 LogEntries& LogEntries::operator=(LogEntries&&) noexcept = default;
 LogEntries::~LogEntries() = default;
 
-void LogEntries::changed(Change change) noexcept {
+void LogEntries::changed(Change change, uint64_t first_row) noexcept {
   identity_.content = nextContentRevision();
   if (change != Change::kFollowable) {
     identity_.rewrite = identity_.content;
+    if (row_changes_.size() == kRowChangesKept) {
+      row_changes_.erase(row_changes_.begin());
+    }
+    try {
+      row_changes_.push_back({identity_.rewrite, change == Change::kInsert ? first_row : 0});
+    } catch (...) {
+      row_changes_.clear();  // forgetting reads as "every row changed", which is safe
+    }
   }
   if (change == Change::kRemoval) {
     identity_.removal = identity_.content;
   }
+}
+
+uint64_t LogEntries::firstRowChangedSince(uint64_t rewrite) const {
+  if (rewrite == identity_.rewrite) {
+    return UINT64_MAX;
+  }
+  if (row_changes_.empty() || row_changes_.front().revision > rewrite) {
+    return 0;  // the changes after it are no longer all kept
+  }
+  uint64_t first = UINT64_MAX;
+  for (const RowChange& change : row_changes_) {
+    if (change.revision > rewrite) {
+      first = std::min(first, change.first_row);
+    }
+  }
+  return first;
+}
+
+uint64_t LogEntries::decompressions() const noexcept {
+  if (!cache_) {
+    return 0;
+  }
+  const std::lock_guard lock(cache_->mutex);
+  return cache_->decompressions;
+}
+
+std::shared_ptr<const LogEntries::Decoded> LogEntries::decoded(const Chunk& chunk) const {
+  assert(chunk.sealed);
+  if (cache_) {
+    const std::lock_guard lock(cache_->mutex);
+    for (size_t slot = 0; slot < cache_->chunks.size(); ++slot) {
+      if (cache_->chunks[slot] && cache_->generations[slot] == chunk.generation) {
+        cache_->used[slot] = ++cache_->clock;
+        return cache_->chunks[slot];
+      }
+    }
+  }
+  // Decompressed with no lock held: two readers missing at once both decompress, and the later one wins the slot.
+  const Chunk::Sealed& sealed = *chunk.sealed;
+  auto out = std::make_shared<Decoded>();
+  out->raw.resize(sealed.raw_message_bytes);
+  const size_t read = ZSTD_decompress(out->raw.data(), out->raw.size(), sealed.messages.data(), sealed.messages.size());
+  assert(ZSTD_isError(read) == 0 && read == out->raw.size());
+  (void)read;
+  out->stamps_at = sealed.rows * sizeof(uint32_t);
+  size_t at = out->stamps_at + (sealed.stamp_constant ? 0 : sealed.rows * sizeof(int64_t));
+  out->starts.resize(sealed.rows + 1);
+  for (size_t k = 0; k < sealed.rows; ++k) {
+    uint32_t length = 0;
+    std::memcpy(&length, out->raw.data() + k * sizeof(uint32_t), sizeof(uint32_t));
+    out->starts[k] = static_cast<uint32_t>(at);
+    at += length;
+  }
+  out->starts[sealed.rows] = static_cast<uint32_t>(at);
+  if (cache_) {
+    const std::lock_guard lock(cache_->mutex);
+    ++cache_->decompressions;
+    const size_t slot = cache_->used[0] <= cache_->used[1] ? 0 : 1;
+    cache_->chunks[slot] = out;
+    cache_->generations[slot] = chunk.generation;
+    cache_->used[slot] = ++cache_->clock;
+  }
+  return out;
 }
 
 uint32_t LogEntries::intern(std::string_view text) {
@@ -158,15 +265,18 @@ void LogEntries::rebuildChunkStarts() {
 }
 
 void LogEntries::appendRow(Row&& row) {
-  if (chunks_.empty() || chunks_.back().sealed) {
+  if (chunks_.empty() || chunks_.back().sealed || chunks_.back().rows.size() >= kChunkRows) {
+    sealBehind();
     chunk_starts_.push_back(chunks_.empty() ? 0 : chunk_starts_.back() + chunks_.back().size());
     chunks_.emplace_back();
   }
-  Chunk& last = chunks_.back();
   chunk_bytes_ += rowBytes(row);
-  last.rows.push_back(std::move(row));
-  if (last.rows.size() >= kChunkRows) {
-    seal(last);
+  chunks_.back().rows.push_back(std::move(row));
+}
+
+void LogEntries::sealBehind() {
+  if (chunks_.size() >= 2) {
+    seal(chunks_[chunks_.size() - 2]);
   }
 }
 
@@ -246,6 +356,8 @@ void LogEntries::seal(Chunk& chunk) {
   chunk_bytes_ -= chunk.bytes();
   chunk.sealed = std::move(sealed);
   chunk.rows = {};
+  chunk.skip = 0;
+  chunk.generation = ++g_seal_generation;
   chunk_bytes_ += chunk.bytes();
 }
 
@@ -257,6 +369,7 @@ void LogEntries::unseal(Chunk& chunk) {
   rowsOf(chunk, rows);
   chunk_bytes_ -= chunk.bytes();
   chunk.sealed.reset();
+  chunk.skip = 0;
   chunk.rows = std::move(rows);
   chunk_bytes_ += chunk.bytes();
 }
@@ -267,26 +380,16 @@ void LogEntries::rowsOf(const Chunk& chunk, std::vector<Row>& out) const {
     return;
   }
   const Chunk::Sealed& sealed = *chunk.sealed;
-  std::vector<uint8_t> raw(sealed.raw_message_bytes);
-  const size_t read = ZSTD_decompress(raw.data(), raw.size(), sealed.messages.data(), sealed.messages.size());
-  assert(ZSTD_isError(read) == 0 && read == raw.size());
-  (void)read;
-  out.resize(sealed.rows);
-  const size_t stamps_at = sealed.rows * sizeof(uint32_t);
-  size_t at = stamps_at + (sealed.stamp_constant ? 0 : sealed.rows * sizeof(int64_t));
-  for (size_t k = 0; k < sealed.rows; ++k) {
+  const auto rows = decoded(chunk);
+  out.resize(chunk.size());
+  for (size_t k = 0; k < out.size(); ++k) {
+    const size_t f = k + chunk.skip;
     Row& row = out[k];
-    row.level = sealed.level_constant ? sealed.constant_level : sealed.levels[k];
-    row.source = readId(sealed.sources, sealed.source_width, k);
-    row.category = readId(sealed.categories, sealed.category_width, k);
-    row.stamp_offset = sealed.constant_stamp;
-    if (!sealed.stamp_constant) {
-      std::memcpy(&row.stamp_offset, raw.data() + stamps_at + k * sizeof(int64_t), sizeof(int64_t));
-    }
-    uint32_t length = 0;
-    std::memcpy(&length, raw.data() + k * sizeof(uint32_t), sizeof(uint32_t));
-    row.message.assign(reinterpret_cast<const char*>(raw.data() + at), length);
-    at += length;
+    row.level = sealed.level_constant ? sealed.constant_level : sealed.levels[f];
+    row.source = readId(sealed.sources, sealed.source_width, f);
+    row.category = readId(sealed.categories, sealed.category_width, f);
+    row.stamp_offset = sealed.stamp_constant ? sealed.constant_stamp : rows->stampOffset(f);
+    row.message.assign(rows->message(f));
   }
 }
 
@@ -382,19 +485,20 @@ sdk::Log::Level LogEntries::level(size_t index) const {
   if (!c.sealed) {
     return static_cast<sdk::Log::Level>(c.rows[offset].level);
   }
-  return static_cast<sdk::Log::Level>(c.sealed->level_constant ? c.sealed->constant_level : c.sealed->levels[offset]);
+  return static_cast<sdk::Log::Level>(
+      c.sealed->level_constant ? c.sealed->constant_level : c.sealed->levels[offset + c.skip]);
 }
 
 uint32_t LogEntries::sourceId(size_t index) const {
   const auto [chunk, offset] = locate(index);
   const Chunk& c = chunks_[chunk];
-  return c.sealed ? readId(c.sealed->sources, c.sealed->source_width, offset) : c.rows[offset].source;
+  return c.sealed ? readId(c.sealed->sources, c.sealed->source_width, offset + c.skip) : c.rows[offset].source;
 }
 
 uint32_t LogEntries::categoryId(size_t index) const {
   const auto [chunk, offset] = locate(index);
   const Chunk& c = chunks_[chunk];
-  return c.sealed ? readId(c.sealed->categories, c.sealed->category_width, offset) : c.rows[offset].category;
+  return c.sealed ? readId(c.sealed->categories, c.sealed->category_width, offset + c.skip) : c.rows[offset].category;
 }
 
 Timestamp LogEntries::ownStamp(size_t index) const {
@@ -406,26 +510,54 @@ Timestamp LogEntries::ownStamp(size_t index) const {
   } else if (c.sealed->stamp_constant) {
     stamp_offset = c.sealed->constant_stamp;
   } else {
-    std::vector<Row> rows;  // the offsets are in the compressed frame
-    rowsOf(c, rows);
-    stamp_offset = rows[offset].stamp_offset;
+    stamp_offset = decoded(c)->stampOffset(offset + c.skip);
   }
   return stamp_offset == kNoOwnStamp ? 0 : saturatingAdd(timestamps_[index], stamp_offset);
 }
 
 void LogEntries::messages(size_t first, size_t count, const MessageSink& sink) const {
-  records(first, count, [&sink](size_t index, LogRecord&& record) { sink(index, record.log.message); });
+  const size_t end = std::min(size(), first + count);
+  size_t index = first;
+  while (index < end) {
+    const auto [chunk, offset] = locate(index);
+    const Chunk& c = chunks_[chunk];
+    if (!c.sealed) {
+      for (size_t k = offset; k < c.rows.size() && index < end; ++k, ++index) {
+        sink(index, c.rows[k].message);
+      }
+      continue;
+    }
+    const auto rows = decoded(c);
+    for (size_t k = offset; k < c.size() && index < end; ++k, ++index) {
+      sink(index, rows->message(k + c.skip));
+    }
+  }
 }
 
 void LogEntries::records(size_t first, size_t count, const std::function<void(size_t, LogRecord&&)>& sink) const {
   const size_t end = std::min(size(), first + count);
-  std::vector<Row> rows;
   size_t index = first;
   while (index < end) {
     const auto [chunk, offset] = locate(index);
-    rowsOf(chunks_[chunk], rows);
-    for (size_t k = offset; k < rows.size() && index < end; ++k, ++index) {
-      sink(index, LogRecord{timestamps_[index], uids_[index], toLog(timestamps_[index], rows[k])});
+    const Chunk& c = chunks_[chunk];
+    if (!c.sealed) {
+      for (size_t k = offset; k < c.rows.size() && index < end; ++k, ++index) {
+        sink(index, LogRecord{timestamps_[index], uids_[index], toLog(timestamps_[index], c.rows[k])});
+      }
+      continue;
+    }
+    const Chunk::Sealed& sealed = *c.sealed;
+    const auto rows = decoded(c);
+    for (size_t k = offset; k < c.size() && index < end; ++k, ++index) {
+      const size_t f = k + c.skip;
+      const int64_t stamp_offset = sealed.stamp_constant ? sealed.constant_stamp : rows->stampOffset(f);
+      LogRecord record{timestamps_[index], uids_[index], {}};
+      record.log.timestamp_ns = stamp_offset == kNoOwnStamp ? 0 : saturatingAdd(timestamps_[index], stamp_offset);
+      record.log.level = static_cast<sdk::Log::Level>(sealed.level_constant ? sealed.constant_level : sealed.levels[f]);
+      record.log.source = dictionary_[readId(sealed.sources, sealed.source_width, f)];
+      record.log.category = dictionary_[readId(sealed.categories, sealed.category_width, f)];
+      record.log.message = rows->message(f);
+      sink(index, std::move(record));
     }
   }
 }
@@ -476,7 +608,7 @@ LogEntries::PushOrder LogEntries::push(Timestamp timestamp, SequentialUID uid, c
     }
   }
   uid_order_.push_back(static_cast<uint32_t>(idx));
-  changed(Change::kInsert);
+  changed(Change::kInsert, evicted_ + idx);
   return PushOrder::kOutOfOrderInsert;
 }
 
@@ -597,6 +729,7 @@ void LogEntries::compactChunks(const Removal& plan) {
       }
     }
     chunk.sealed.reset();
+    chunk.skip = 0;
     chunk.rows = std::move(survivors);
     chunk_bytes_ += chunk.bytes();
     if (was_sealed) {
@@ -614,13 +747,30 @@ std::vector<SequentialUID> LogEntries::evictFront(size_t count) {
     return {};
   }
   std::vector<SequentialUID> removed(uids_.begin(), uids_.begin() + static_cast<std::ptrdiff_t>(count));
-  Removal plan;
-  plan.new_position.resize(size());
-  for (size_t i = 0; i < size(); ++i) {
-    plan.new_position[i] = i < count ? Removal::kRemoved : static_cast<uint32_t>(i - count);
+  // Whole chunks go; in the first one kept, a sealed chunk skips the rows (no reseal), an open one drops them.
+  size_t left = count;
+  size_t dropped = 0;
+  while (left > 0) {
+    Chunk& chunk = chunks_[dropped];
+    if (chunk.size() <= left) {
+      left -= chunk.size();
+      chunk_bytes_ -= chunk.bytes();
+      ++dropped;
+      continue;
+    }
+    if (chunk.sealed) {
+      chunk.skip += left;
+    } else {
+      const auto end = chunk.rows.begin() + static_cast<std::ptrdiff_t>(left);
+      for (auto it = chunk.rows.begin(); it != end; ++it) {
+        chunk_bytes_ -= rowBytes(*it);
+      }
+      chunk.rows.erase(chunk.rows.begin(), end);
+    }
+    left = 0;
   }
-  plan.count = count;
-  compactChunks(plan);
+  chunks_.erase(chunks_.begin(), chunks_.begin() + static_cast<std::ptrdiff_t>(dropped));
+  rebuildChunkStarts();
   timestamps_.erase(timestamps_.begin(), timestamps_.begin() + static_cast<std::ptrdiff_t>(count));
   uids_.erase(uids_.begin(), uids_.begin() + static_cast<std::ptrdiff_t>(count));
   if (!uid_order_identity_) {
@@ -703,6 +853,10 @@ void LogEntries::clear() {
   dictionary_ids_.clear();
   dictionary_ids_.emplace(std::string{}, 0);
   dictionary_bytes_ = 0;
+  if (cache_) {
+    const std::lock_guard lock(cache_->mutex);
+    cache_->chunks = {};
+  }
   changed(Change::kRemoval);
 }
 

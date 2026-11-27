@@ -70,8 +70,8 @@ struct StoreChange {
 };
 
 /// Merged index of every topic's rows, ordered by (time, wire, row); the rows stay in their LogRowSource and are read
-/// on demand (the messages of the rows shown through a small cache). Each topic's index covers a contiguous range of
-/// its source's absolute rows. GUI thread only.
+/// on demand (a source caches what it decodes). Each topic's index covers a contiguous range of its source's absolute
+/// rows. GUI thread only.
 class LogStore {
  public:
   LogStore();
@@ -137,7 +137,6 @@ class LogStore {
   /// order).
   StoreChange apply(uint32_t wire, Wire& state, uint64_t evicted, uint64_t cut, std::vector<RowRef> fresh);
   void mapIds(Wire& state, const LogRowSource& source, size_t index);
-  void forgetCached(uint32_t wire) const;
 
   std::deque<RowRef> refs_;
   std::map<uint32_t, Wire> wires_;
@@ -151,16 +150,6 @@ class LogStore {
     }
   };
   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> string_ids_;
-
-  /// Decoded messages of the rows read last: a few blocks of consecutive rows of one topic, least recently used out.
-  struct Block {
-    uint32_t wire = 0;
-    uint64_t first = 0;  ///< absolute number of texts[0]
-    std::vector<std::string> texts;
-    uint64_t used = 0;
-  };
-  mutable std::vector<Block> cache_;
-  mutable uint64_t cache_clock_ = 0;
 };
 
 /// The spellings of a level: `key` in a saved layout, `label` on screen.

@@ -438,7 +438,7 @@ TEST(LogEntries, LateInsertIntoSealedChunkKeepsEveryMessage) {
 }
 
 TEST(LogEntries, MessagesRoundTripEmptyHugeAndEscaped) {
-  std::vector<sdk::Log> in = rosoutLike(LogEntries::kChunkRows + 10);
+  std::vector<sdk::Log> in = rosoutLike(2 * LogEntries::kChunkRows + 10);  // the first chunk sealed
   in[3].message.clear();
   in[4].message = std::string(1 << 20, 'z');
   in[4].message[12345] = '\0';
@@ -454,13 +454,93 @@ TEST(LogEntries, MessagesRoundTripEmptyHugeAndEscaped) {
 }
 
 TEST(LogEntries, SealingShrinksMemory) {
-  const size_t rows = 10 * LogEntries::kChunkRows;
+  const size_t rows = 40 * LogEntries::kChunkRows;  // the two open chunks at the tail weigh little
   const LogEntries log = fillWith(rosoutLike(rows));
   const double per_row = static_cast<double>(log.memoryBytes()) / static_cast<double>(rows);
   // The generator salts every fourth word with random digits, so its messages compress worse (3.8x) than typical
   // rosout text; the bound guards the layout (index + narrowed columns + one zstd frame), not a compression ratio.
   EXPECT_LT(per_row, 60.0);
   std::cout << "LogEntries bytes/row: " << per_row << "\n";
+}
+
+/// Rows with an own stamp on every row, each at its own offset from the store stamp (as ROS logs stamped by their
+/// sender), so no sealed chunk stores the offsets as a constant.
+LogEntries senderStamped(size_t rows) {
+  std::vector<sdk::Log> in = rosoutLike(rows);
+  for (size_t i = 0; i < in.size(); ++i) {
+    in[i].timestamp_ns = Timestamp(i * 1000 - (i * 37) % 900 + 1);
+  }
+  return fillWith(in);
+}
+
+TEST(LogEntries, ConsecutiveReadsOfASealedChunkDecompressItOnce) {
+  const LogEntries log = senderStamped(3 * LogEntries::kChunkRows);
+  const uint64_t before = log.decompressions();
+  for (size_t i = 0; i < 100; ++i) {
+    (void)log.ownStamp(i);
+    log.messages(i, 1, [](size_t, std::string_view) {});
+    (void)log.recordAt(i);
+  }
+  EXPECT_EQ(log.decompressions() - before, 1u);
+}
+
+TEST(LogEntries, AFullChunkStaysOpenUntilTheNextOneFills) {
+  std::vector<sdk::Log> in = rosoutLike(LogEntries::kChunkRows + 10);
+  LogEntries log = fillWith(in);
+  const uint64_t before = log.decompressions();
+  const sdk::Log late = makeLog("late arrival");
+  log.push(1500, SequentialUID::getNext(), late);  // into the first, full chunk
+  in.insert(in.begin() + 2, late);
+  EXPECT_EQ(log.decompressions(), before);  // nothing was unsealed
+  log.records(0, log.size(), [&](size_t i, LogRecord&& record) { EXPECT_EQ(record.log, in[i]) << i; });
+}
+
+TEST(LogEntries, AResealShowsTheNewRowsNotTheCachedOnes) {
+  std::vector<sdk::Log> in = rosoutLike(3 * LogEntries::kChunkRows);
+  LogEntries log = fillWith(in);
+  EXPECT_EQ(log.recordAt(3).log, in[3]);  // caches the first chunk
+  const sdk::Log late = makeLog("late arrival");
+  log.push(1500, SequentialUID::getNext(), late);
+  in.insert(in.begin() + 2, late);
+  for (const size_t i : {2, 3, 4}) {
+    EXPECT_EQ(log.recordAt(i).log, in[i]) << i;
+  }
+}
+
+TEST(LogEntries, FrontEvictionOfASealedChunkDecompressesNothing) {
+  const std::vector<sdk::Log> in = rosoutLike(3 * LogEntries::kChunkRows);
+  LogEntries log = fillWith(in);
+  const uint64_t before = log.decompressions();
+  const size_t bytes = log.memoryBytes();
+  for (size_t i = 0; i < 10; ++i) {
+    (void)log.evictFront(7);
+  }
+  EXPECT_EQ(log.decompressions(), before);
+  EXPECT_LE(log.memoryBytes(), bytes);
+  EXPECT_EQ(log.recordAt(0).log, in[70]);
+  EXPECT_EQ(log.evicted(), 70u);
+  // Evicting past the chunk frees it, and the rows after it read on.
+  (void)log.evictFront(LogEntries::kChunkRows);
+  EXPECT_LT(log.memoryBytes(), bytes);
+  EXPECT_EQ(log.recordAt(0).log, in[70 + LogEntries::kChunkRows]);
+  log.records(0, log.size(), [&](size_t i, LogRecord&& record) {
+    EXPECT_EQ(record.log, in[i + 70 + LogEntries::kChunkRows]) << i;
+  });
+}
+
+TEST(LogEntries, FirstRowChangedSinceAnIndexedRevision) {
+  LogEntries log = fillWith(rosoutLike(100));
+  (void)log.evictFront(10);
+  const uint64_t indexed = log.contentIdentity().rewrite;
+  EXPECT_EQ(log.firstRowChangedSince(indexed), UINT64_MAX);
+  log.push(Timestamp(99'000), SequentialUID::getNext(), makeLog("in order"));
+  EXPECT_EQ(log.firstRowChangedSince(indexed), UINT64_MAX);                // an append changes no row
+  log.push(Timestamp(50'500), SequentialUID::getNext(), makeLog("late"));  // after row 50, at index 41
+  EXPECT_EQ(log.firstRowChangedSince(indexed), 51u);
+  log.push(Timestamp(30'500), SequentialUID::getNext(), makeLog("later still"));
+  EXPECT_EQ(log.firstRowChangedSince(indexed), 31u);
+  (void)log.shift(1);
+  EXPECT_EQ(log.firstRowChangedSince(indexed), 0u);  // every row moved
 }
 
 }  // namespace

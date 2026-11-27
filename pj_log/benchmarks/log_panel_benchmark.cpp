@@ -30,6 +30,7 @@
 #include <QCommandLineParser>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QScrollBar>
 #include <QTimer>
 #include <QTreeView>
 #include <algorithm>
@@ -137,8 +138,9 @@ class LogGenerator {
     std::discrete_distribution<int> level({0, 30, 50, 12, 7, 1});
     std::discrete_distribution<size_t> category({70, 10, 10, 10});
 
+    std::uniform_int_distribution<Timestamp> sender_lag(0, 5'000'000);
     sdk::Log log;
-    log.timestamp_ns = stamp;
+    log.timestamp_ns = stamp - sender_lag(rng_);  // stamped by its sender, a few ms before it was received
     log.level = static_cast<sdk::Log::Level>(level(rng_));
     log.source = kSources[source(rng_)];
     log.category = kCategories[category(rng_)];
@@ -494,6 +496,17 @@ void runBigLoad(TimedApplication& app, size_t rows) {
   const auto [clear_ms, clear_event] = timed(state);
 
   auto* list = view.findChild<QTreeView*>(u"logView"_s);
+  list->scrollToTop();
+  spin(50);
+  // Ten screens down, one per frame, from the middle of the log (rows nobody read yet).
+  list->verticalScrollBar()->setValue(list->verticalScrollBar()->maximum() / 2);
+  spin(50);
+  const double scroll_start = pj_bench::threadCpuMs();
+  for (int page = 0; page < 10; ++page) {
+    list->verticalScrollBar()->setValue(list->verticalScrollBar()->value() + list->verticalScrollBar()->pageStep());
+    spin(16);
+  }
+  const double scroll10_ms = pj_bench::threadCpuMs() - scroll_start;
   list->scrollToBottom();
   spin(50);
   longest = 0.0;
@@ -507,11 +520,12 @@ void runBigLoad(TimedApplication& app, size_t rows) {
   report(
       QByteArray("scenario=bigload rows=") + QByteArray::number(qulonglong(rows)) +
           " shown=" + QByteArray::number(shown) + " ingest_s=" + pj_bench::fmt(ingest_s, 2) +
-          " store_bytes_per_row=" + pj_bench::fmt(store_bytes / static_cast<double>(rows), 1) + " rss_store_mib=" +
-          pj_bench::fmt(rss_filled - rss_start, 0) + " rss_panel_mib=" + pj_bench::fmt(rss_shown - rss_filled, 0) +
-          " accept_ms=" + ms(accept_ms) + " level_ms=" + ms(level_ms) + " level_event_ms=" + ms(level_event) +
-          " filter_ms=" + ms(filter_ms) + " filter_event_ms=" + ms(filter_event) + " clear_ms=" + ms(clear_ms) +
-          " clear_event_ms=" + ms(clear_event) + " scroll_top_cpu_ms=" + ms(top_ms),
+          " store_bytes_per_row=" + pj_bench::fmt(store_bytes / static_cast<double>(rows), 1) +
+          " rss_store_mib=" + pj_bench::fmt(rss_filled - rss_start, 0) +
+          " rss_panel_mib=" + pj_bench::fmt(rss_shown - rss_filled, 0) + " accept_ms=" + ms(accept_ms) +
+          " level_ms=" + ms(level_ms) + " level_event_ms=" + ms(level_event) + " filter_ms=" + ms(filter_ms) +
+          " filter_event_ms=" + ms(filter_event) + " clear_ms=" + ms(clear_ms) + " clear_event_ms=" + ms(clear_event) +
+          " scroll_top_cpu_ms=" + ms(top_ms) + " scroll10_cpu_ms=" + ms(scroll10_ms),
       QByteArray("bigload   ") + QByteArray::number(qulonglong(rows)) + " rows, shown " + QByteArray::number(shown) +
           " | " + pj_bench::fmt(store_bytes / static_cast<double>(rows), 1) + " B/row in the store, panel +" +
           pj_bench::fmt(rss_shown - rss_filled, 0) + " MiB, accept " + ms(accept_ms) + " ms, filter " + ms(filter_ms) +

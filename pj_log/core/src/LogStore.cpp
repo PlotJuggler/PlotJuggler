@@ -14,9 +14,6 @@ namespace PJ::log_view {
 namespace {
 
 constexpr uint32_t kUnmapped = UINT32_MAX;
-/// Rows per cached message block; four blocks are kept.
-constexpr uint64_t kBlockRows = 1024;
-constexpr size_t kCachedBlocks = 4;
 
 /// Merge order: time, then wire, then row number within the wire.
 bool before(const RowRef& a, const RowRef& b) {
@@ -116,10 +113,6 @@ void LogStore::mapIds(Wire& state, const LogRowSource& source, size_t index) {
   state.any_category = state.any_category || source.categoryId(index) != 0;
 }
 
-void LogStore::forgetCached(uint32_t wire) const {
-  std::erase_if(cache_, [wire](const Block& block) { return block.wire == wire; });
-}
-
 StoreChange LogStore::apply(uint32_t wire, Wire& state, uint64_t evicted, uint64_t cut, std::vector<RowRef> fresh) {
   StoreChange change = StoreChange::none(refs_.size());
   // The rows to drop: below `evicted` (the oldest of the wire) and from `cut` on (the newest).
@@ -180,9 +173,6 @@ StoreChange LogStore::apply(uint32_t wire, Wire& state, uint64_t evicted, uint64
 StoreChange LogStore::insert(
     uint32_t wire, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row) {
   Wire& state = wires_[wire];
-  if (from_row < state.end) {
-    forgetCached(wire);  // those rows changed
-  }
   state.source = std::move(source);
   const LogRowSource& src = *state.source;
   uint64_t evicted = 0;
@@ -190,7 +180,7 @@ StoreChange LogStore::insert(
   src.batch([&] {
     evicted = src.evicted();
     const uint64_t first = std::max(from_row, evicted);
-    const uint64_t last = std::min(to_row, evicted + src.size());
+    const uint64_t last = std::min({to_row, evicted + src.size(), src.validEnd()});
     if (first < last) {
       fresh.reserve(last - first);
     }
@@ -217,7 +207,6 @@ StoreChange LogStore::removeWire(uint32_t wire) {
   change.old_tail = static_cast<size_t>(std::distance(refs_.begin(), first));
   refs_.erase(std::remove_if(first, refs_.end(), [wire](const RowRef& ref) { return ref.wire == wire; }), refs_.end());
   wires_.erase(wire);
-  forgetCached(wire);
   return change;
 }
 
@@ -239,8 +228,8 @@ LogRow LogStore::row(size_t index, bool with_message) const {
   const LogRowSource& src = *found->second.source;
   src.batch([&] {
     const uint64_t evicted = src.evicted();
-    if (ref.row < evicted || ref.row - evicted >= src.size()) {
-      return;  // gone from the source
+    if (ref.row < evicted || ref.row - evicted >= src.size() || ref.row >= src.validEnd()) {
+      return;  // gone from the source, or moved since it was indexed
     }
     const auto at = static_cast<size_t>(ref.row - evicted);
     out.present = true;
@@ -248,32 +237,8 @@ LogRow LogStore::row(size_t index, bool with_message) const {
     out.stamp_ns = src.ownStamp(at);
     out.source = panelId(ref.wire, src.sourceId(at));
     out.category = panelId(ref.wire, src.categoryId(at));
-    if (!with_message) {
-      return;
-    }
-    for (Block& block : cache_) {
-      if (block.wire == ref.wire && ref.row >= block.first && ref.row - block.first < block.texts.size()) {
-        block.used = ++cache_clock_;
-        out.message = block.texts[ref.row - block.first];
-        return;
-      }
-    }
-    // Fill the block holding the row, from the row's block start (or the oldest row held) to its end.
-    const uint64_t first = std::max(ref.row - ref.row % kBlockRows, evicted);
-    const auto count =
-        static_cast<size_t>(std::min(ref.row - ref.row % kBlockRows + kBlockRows, evicted + src.size()) - first);
-    Block block{.wire = ref.wire, .first = first, .texts = {}, .used = ++cache_clock_};
-    block.texts.reserve(count);
-    src.messages(static_cast<size_t>(first - evicted), count, [&block](size_t, std::string_view message) {
-      block.texts.push_back(shownText(message));
-    });
-    if (ref.row - first < block.texts.size()) {
-      out.message = block.texts[ref.row - first];
-    }
-    if (cache_.size() >= kCachedBlocks) {
-      std::ranges::min_element(cache_, {}, &Block::used)->operator=(std::move(block));
-    } else {
-      cache_.push_back(std::move(block));
+    if (with_message) {
+      src.messages(at, 1, [&out](size_t, std::string_view message) { out.message = shownText(message); });
     }
   });
   return out;
@@ -356,10 +321,11 @@ size_t CompiledFilter::collect(size_t from, size_t to, size_t budget_rows, std::
     src->batch([&] {
       const uint64_t evicted = src->evicted();
       const size_t held = src->size();
+      const uint64_t valid_end = src->validEnd();
       std::vector<size_t> candidates;  // positions passing everything but the text
       for (const size_t position : positions) {
         const uint64_t row = store_.ref(position).row;
-        if (row < evicted || row - evicted >= held) {
+        if (row < evicted || row - evicted >= held || row >= valid_end) {
           continue;
         }
         const auto at = static_cast<size_t>(row - evicted);

@@ -150,6 +150,22 @@ std::vector<QString> modelMessages(const LogDockWidget& dock) {
   return out;
 }
 
+TEST_F(LogDockWidgetTest, ALateEntryKeepsTheRowsBeforeItReadableAndReindexesTheRest) {
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  push(rosout_, 4, "rosout 4");
+  landed();
+  ASSERT_EQ(messages(*dock), (std::vector<std::string>{"rosout 1", "rosout 2", "rosout 3", "rosout 4"}));
+  push(rosout_, 2, "late");  // lands after "rosout 2": the rows after it move, the two before do not
+  const std::vector<std::string> before_update = messages(*dock);
+  EXPECT_EQ(before_update[0], "rosout 1");
+  EXPECT_EQ(before_update[1], "rosout 2");
+  EXPECT_EQ(before_update[2], "");  // moved: absent, never the text of its new neighbour
+  // Seeing moved rows asks for an update on its own, with no landing signal.
+  QTest::qWait(50);
+  EXPECT_EQ(messages(*dock), (std::vector<std::string>{"rosout 1", "rosout 2", "late", "rosout 3", "rosout 4"}));
+}
+
 TEST_F(LogDockWidgetTest, ShowsFirstEntryOfALogLargerThanTheOldCapacity) {
   constexpr int kEntries = 1'000'010;
   const ObjectTopicId big = registerTopic("/big", kLogMetadata);

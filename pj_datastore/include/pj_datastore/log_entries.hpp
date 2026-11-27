@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -36,10 +38,14 @@ struct LogRecord {
 /// ObjectStore serves both alike.
 ///
 /// Layout: the stamps, UIDs and UID order are whole-series vectors (`timestamps()` must stay a stable vector for
-/// EntryTimestampsView). The rest lives in chunks of up to about kChunkRows rows: the last chunk is open (plain rows),
-/// the others are sealed (narrowed source/category ids, constant-or-raw level and own-stamp columns, the messages as
-/// one zstd frame). A change inside a sealed chunk unseals and reseals that chunk only. No locking: the caller holds
-/// the series lock.
+/// EntryTimestampsView). The rest lives in chunks of up to about kChunkRows rows: the last two are open (plain rows,
+/// so a late entry close to the newest seals nothing), the others sealed (narrowed source/category ids, a
+/// constant-or-raw level column, the own-stamp offsets and the messages in one zstd frame). A change inside a sealed
+/// chunk reseals that chunk only; a front eviction only moves the chunk's first row. Reads decompress a sealed chunk
+/// once into a small cache of decoded chunks, so reads of nearby rows do not decompress again.
+///
+/// Threading: the caller holds the series lock (shared to read, exclusive to change); the decoded-chunk cache has its
+/// own mutex, so concurrent readers are safe.
 class LogEntries {
  public:
   using ContentIdentity = OrderedEntries::ContentIdentity;
@@ -118,6 +124,13 @@ class LogEntries {
   /// serializeBuiltinObject() of the row's log.
   [[nodiscard]] std::vector<uint8_t> canonicalBytesAt(size_t index) const;
 
+  /// Absolute number of the first row whose content or number changed since the revision @p rewrite (a past
+  /// `contentIdentity().rewrite`): rows numbered below it read as they did then. UINT64_MAX when none changed; 0 when
+  /// every row may have (a removal, a shift, a re-UID, or @p rewrite too old to tell).
+  [[nodiscard]] uint64_t firstRowChangedSince(uint64_t rewrite) const;
+  /// Sealed chunks decompressed so far (decoded-chunk cache misses).
+  [[nodiscard]] uint64_t decompressions() const noexcept;
+
   /// Bytes the retained rows need: their index entries, chunks and the dictionary (vector capacity slack is not
   /// counted). What a byte retention budget is checked against.
   [[nodiscard]] size_t memoryBytes() const noexcept;
@@ -160,11 +173,22 @@ class LogEntries {
   };
   struct Chunk;
   struct Cursor;
+  struct Decoded;
+  struct DecodedCache;
+  /// A rewrite revision and the first absolute row it changed (0: every row).
+  struct RowChange {
+    uint64_t revision = 0;
+    uint64_t first_row = 0;
+  };
+  static constexpr size_t kRowChangesKept = 64;
   /// "No own stamp": an own stamp exactly this far from the store stamp reads as none.
   static constexpr int64_t kNoOwnStamp = std::numeric_limits<int64_t>::min();
 
   enum class Change { kFollowable, kInsert, kRemoval };
-  void changed(Change change) noexcept;
+  /// @p first_row: for kInsert, the absolute number of the first row the insert moved.
+  void changed(Change change, uint64_t first_row = 0) noexcept;
+  /// The decoded rows of sealed chunk @p chunk, from the cache or decompressed now.
+  [[nodiscard]] std::shared_ptr<const Decoded> decoded(const Chunk& chunk) const;
 
   uint32_t intern(std::string_view text);
   [[nodiscard]] Row toRow(Timestamp timestamp, const sdk::Log& log);
@@ -192,6 +216,8 @@ class LogEntries {
   void seal(Chunk& chunk);
   void unseal(Chunk& chunk);
   void rowsOf(const Chunk& chunk, std::vector<Row>& out) const;
+  /// Seals the chunk before the open last one when it is full: the last two chunks stay open.
+  void sealBehind();
 
   std::vector<Timestamp> timestamps_;
   std::vector<SequentialUID> uids_;
@@ -208,6 +234,9 @@ class LogEntries {
   size_t chunk_bytes_ = 0;
   uint64_t evicted_ = 0;
   ContentIdentity identity_;
+  /// The last kRowChangesKept rewrites, oldest first.
+  std::vector<RowChange> row_changes_;
+  std::unique_ptr<DecodedCache> cache_;
 };
 
 }  // namespace PJ

@@ -138,6 +138,8 @@ class LogDockWidget : public QWidget, public IDataWidget {
   std::vector<SavedSeriesPath> pending_;
   bool reload_all_ = false;
   CoalescingTrigger entries_landed_;
+  /// A source saw rows moved since they were indexed and queued one entries_landed_ request.
+  bool moved_update_queued_ = false;
 };
 
 }  // namespace PJ

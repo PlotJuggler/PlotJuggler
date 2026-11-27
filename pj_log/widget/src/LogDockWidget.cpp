@@ -4,6 +4,7 @@
 #include "pj_log/LogDockWidget.h"
 
 #include <QStringList>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cstdint>
@@ -41,12 +42,24 @@ LogLevel levelOf(sdk::Log::Level level) {
 }
 
 /// One topic's rows in the ObjectStore. Each read takes a LogSeriesView (a batch takes one for all its reads), so the
-/// panel never holds the series lock across event-loop turns. Reads see no rows once the series was rewritten since
-/// the dock indexed it (`rewrite` differs): the dock re-indexes it on its next update.
+/// panel never holds the series lock across event-loop turns. Rows a late entry or a removal moved since the dock
+/// indexed the series under `rewrite` read as absent (validEnd()); seeing any calls `on_moved`, which asks the dock for
+/// an update on the next event-loop turn (throttled like the landing updates).
 class StoreLogSource final : public LogRowSource {
  public:
-  StoreLogSource(const ObjectStore& objects, ObjectTopicId id, DisplayOffset offset, uint64_t rewrite)
-      : objects_(objects), id_(id), offset_(offset), rewrite_(rewrite) {}
+  StoreLogSource(
+      const ObjectStore& objects, ObjectTopicId id, DisplayOffset offset, uint64_t rewrite,
+      std::function<void()> on_moved)
+      : objects_(objects), id_(id), offset_(offset), rewrite_(rewrite), on_moved_(std::move(on_moved)) {}
+
+  [[nodiscard]] uint64_t validEnd() const override {
+    uint64_t end = 0;  // a series gone from the store holds no row
+    read([&](const LogEntries& entries) { end = entries.firstRowChangedSince(rewrite_); });
+    if (end != UINT64_MAX && on_moved_) {
+      on_moved_();
+    }
+    return end;
+  }
 
   [[nodiscard]] size_t size() const override {
     size_t size = 0;
@@ -99,7 +112,7 @@ class StoreLogSource final : public LogRowSource {
       return;
     }
     auto view = objects_.logView(id_);
-    pinned_ = view && (*view)->contentIdentity().rewrite == rewrite_ ? &**view : nullptr;
+    pinned_ = view ? &**view : nullptr;
     in_batch_ = true;
     struct Unpin {
       const StoreLogSource* self;
@@ -120,8 +133,7 @@ class StoreLogSource final : public LogRowSource {
       }
       return;
     }
-    auto view = objects_.logView(id_);
-    if (view && (*view)->contentIdentity().rewrite == rewrite_) {
+    if (auto view = objects_.logView(id_)) {
       f(**view);
     }
   }
@@ -130,6 +142,7 @@ class StoreLogSource final : public LogRowSource {
   ObjectTopicId id_;
   DisplayOffset offset_;
   uint64_t rewrite_;
+  std::function<void()> on_moved_;
   mutable const LogEntries* pinned_ = nullptr;
   mutable bool in_batch_ = false;
 };
@@ -351,7 +364,16 @@ void LogDockWidget::loadTopic(Topic& topic, bool full) {
   full = full || identity.removal != topic.identity.removal;
   const bool late = identity.rewrite != topic.identity.rewrite;
   auto source = std::make_shared<StoreLogSource>(
-      objects, topic.id, session_->displayOffset(topic.saved.dataset_id), identity.rewrite);
+      objects, topic.id, session_->displayOffset(topic.saved.dataset_id), identity.rewrite, [this] {
+        // Deferred: a read runs inside a paint or inside a batch holding a LogSeriesView, and an update takes a view.
+        if (!moved_update_queued_) {
+          moved_update_queued_ = true;
+          QTimer::singleShot(0, this, [this] {
+            moved_update_queued_ = false;
+            entries_landed_.request();
+          });
+        }
+      });
   if (full) {
     view_->setTopicRows(topic.id.id, std::move(source));
   } else {
