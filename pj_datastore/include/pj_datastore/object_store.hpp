@@ -333,6 +333,8 @@ class ObjectStore {
     struct SeriesSnapshot {
       std::deque<ObjectEntry> entries;
       std::vector<Timestamp> entry_timestamps;
+      /// A log series' rows (then `entries` is empty).
+      std::unique_ptr<LogEntries> log;
       RetentionBudget budget;
       size_t memory_bytes = 0;
     };

@@ -118,7 +118,8 @@ class LogEntries {
   /// serializeBuiltinObject() of the row's log.
   [[nodiscard]] std::vector<uint8_t> canonicalBytesAt(size_t index) const;
 
-  /// Bytes held: columns, chunks and the dictionary.
+  /// Bytes the retained rows need: their index entries, chunks and the dictionary (vector capacity slack is not
+  /// counted). What a byte retention budget is checked against.
   [[nodiscard]] size_t memoryBytes() const noexcept;
 
   // --- Mutation ---

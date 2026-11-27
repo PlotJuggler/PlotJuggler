@@ -443,9 +443,10 @@ std::vector<uint8_t> LogEntries::canonicalBytesAt(size_t index) const {
 }
 
 size_t LogEntries::memoryBytes() const noexcept {
-  return timestamps_.capacity() * sizeof(Timestamp) + uids_.capacity() * sizeof(SequentialUID) +
-         uid_order_.capacity() * sizeof(uint32_t) + chunks_.capacity() * (sizeof(Chunk) + sizeof(size_t)) +
-         chunk_bytes_ + dictionary_bytes_;
+  // What the retained rows need: vector slack left by front evictions is not charged, or a byte budget could never be
+  // met by evicting.
+  return size() * (sizeof(Timestamp) + sizeof(SequentialUID)) + uid_order_.size() * sizeof(uint32_t) +
+         chunks_.size() * (sizeof(Chunk) + sizeof(size_t)) + chunk_bytes_ + dictionary_bytes_;
 }
 
 // --- Mutation ---

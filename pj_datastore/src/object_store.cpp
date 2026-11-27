@@ -781,7 +781,7 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
   plan.reserve(topics_.size());
 
   for (auto& [src_id, src_series] : topics_) {
-    if (src_series->ordered.empty()) {
+    if (onEntries(*src_series, [](const auto& entries) { return entries.empty(); })) {
       continue;
     }
     ObjectSeries* dst_series = nullptr;
@@ -797,6 +797,10 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
           "flushTo: destination has no topic '" + src_series->descriptor.topic_name + "' for dataset " +
           std::to_string(src_series->descriptor.dataset_id));
     }
+    if (static_cast<bool>(dst_series->log) != static_cast<bool>(src_series->log)) {
+      return unexpected(
+          "flushTo: topic '" + src_series->descriptor.topic_name + "' has another storage in the destination");
+    }
     plan.push_back({src_series.get(), dst_series});
   }
 
@@ -805,6 +809,14 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
   for (auto& step : plan) {
     drainSeriesReaders(*step.src);
     drainSeriesReaders(*step.dst);
+    if (step.src->log) {
+      step.dst->log->appendReuidFrom(*step.src->log);
+      step.dst->memory_bytes = step.dst->log->memoryBytes();
+      step.src->memory_bytes = 0;
+      dropCache(*step.src, graveyard);
+      applyRetention(*step.dst, step.dst->log->empty() ? 0 : step.dst->log->backTimestamp(), graveyard);
+      continue;
+    }
     step.dst->ordered.appendReuidFrom(step.src->ordered);
     step.dst->memory_bytes += step.src->memory_bytes;
     step.src->memory_bytes = 0;
@@ -858,9 +870,9 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
       primary_series->descriptor.metadata_json = staged_series->descriptor.metadata_json;
     } else {
       primary_tid = ObjectTopicId{next_id_++};
-      auto series = std::make_unique<ObjectSeries>();
-      series->descriptor = staged_series->descriptor;
-      series->descriptor.dataset_id = primary_id;
+      ObjectTopicDescriptor descriptor = staged_series->descriptor;
+      descriptor.dataset_id = primary_id;
+      auto series = makeSeries(std::move(descriptor));
       primary_series = series.get();
       topics_.emplace_back(primary_tid, std::move(series));
       series_index_.emplace(primary_tid.id, primary_series);
@@ -869,7 +881,16 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
     drainSeriesReaders(*primary_series);
     drainSeriesReaders(*staged_series);
     clearEntriesLocked(*primary_series, graveyard);
-    primary_series->ordered.adoptReuidFrom(staged_series->ordered);
+    if (staged_series->log) {
+      // The reload may have changed the topic's storage along with its metadata.
+      if (!primary_series->log) {
+        primary_series->log = std::make_unique<LogEntries>();
+      }
+      primary_series->log->adoptReuidFrom(*staged_series->log);
+    } else {
+      primary_series->log.reset();
+      primary_series->ordered.adoptReuidFrom(staged_series->ordered);
+    }
     primary_series->memory_bytes = staged_series->memory_bytes;
     result.remapped.emplace_back(sid, primary_tid);
     staged_series->memory_bytes = 0;
@@ -973,6 +994,9 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
         report.added_topics.push_back(source_id);
       } else {
         Group& group = groups[group_it->second];
+        if (static_cast<bool>(group.destination->log) != static_cast<bool>(source_series->log)) {
+          return unexpected("mergeDatasets: topic '" + name + "' is stored differently in the datasets");
+        }
         group.sources.push_back(Contributor{.topic_id = source_id, .series = source_series, .shift = src.raw_shift_ns});
         report.remapped.emplace_back(source_id, group.destination_id);
       }
@@ -982,7 +1006,7 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
   for (Group& group : groups) {
     bool has_source_entries = false;
     for (const Contributor& contributor : group.sources) {
-      if (!contributor.series->ordered.empty()) {
+      if (!onEntries(*contributor.series, [](const auto& entries) { return entries.empty(); })) {
         has_source_entries = true;
         break;
       }
@@ -997,7 +1021,7 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
 
     drainSeriesReaders(*group.destination);
     if (group.destination_needs_reparent) {
-      if (group.destination->ordered.shift(group.destination_shift)) {
+      if (onEntries(*group.destination, [&](auto& entries) { return entries.shift(group.destination_shift); })) {
         dropCache(*group.destination, graveyard);
       }
       group.destination->descriptor.dataset_id = anchor_id;
@@ -1006,21 +1030,39 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
     std::vector<Contributor> non_empty_sources;
     non_empty_sources.reserve(group.sources.size());
     for (const Contributor& contributor : group.sources) {
-      if (contributor.series->ordered.empty()) {
+      if (onEntries(*contributor.series, [](const auto& entries) { return entries.empty(); })) {
         continue;
       }
       drainSeriesReaders(*contributor.series);
-      if (contributor.series->ordered.shift(contributor.shift)) {
+      if (onEntries(*contributor.series, [&](auto& entries) { return entries.shift(contributor.shift); })) {
         dropCache(*contributor.series, graveyard);
       }
       non_empty_sources.push_back(contributor);
     }
 
+    const auto newest_of = [](const ObjectSeries& series) {
+      return onEntries(series, [](const auto& entries) { return entries.empty() ? 0 : entries.backTimestamp(); });
+    };
     if (non_empty_sources.empty()) {
-      group.destination->ordered.reuidAll();
+      onEntries(*group.destination, [](auto& entries) { entries.reuidAll(); });
       dropCache(*group.destination, graveyard);
-      const Timestamp newest = group.destination->ordered.empty() ? 0 : group.destination->ordered.backTimestamp();
-      applyRetention(*group.destination, newest, graveyard);
+      applyRetention(*group.destination, newest_of(*group.destination), graveyard);
+      continue;
+    }
+
+    if (group.destination->log) {
+      std::vector<LogEntries*> logs;
+      logs.reserve(non_empty_sources.size());
+      for (const Contributor& contributor : non_empty_sources) {
+        logs.push_back(contributor.series->log.get());
+      }
+      group.destination->log->mergeReuidFrom(logs);
+      group.destination->memory_bytes = group.destination->log->memoryBytes();
+      dropCache(*group.destination, graveyard);
+      for (const Contributor& contributor : non_empty_sources) {
+        clearEntriesLocked(*contributor.series, graveyard);
+      }
+      applyRetention(*group.destination, newest_of(*group.destination), graveyard);
       continue;
     }
 
@@ -1104,8 +1146,12 @@ ObjectStore::ObjectDatasetSnapshot ObjectStore::detachDataset(DatasetId dataset_
     snapshot.prior_object_topic_ids.push_back(tid);
     drainSeriesReaders(*series);
     ObjectDatasetSnapshot::SeriesSnapshot series_snapshot;
-    // uid_order is not kept: reattachDataset() rebuilds it.
-    series->ordered.detachInto(series_snapshot.entries, series_snapshot.entry_timestamps);
+    if (series->log) {
+      series_snapshot.log = std::exchange(series->log, std::make_unique<LogEntries>());
+    } else {
+      // uid_order is not kept: reattachDataset() rebuilds it.
+      series->ordered.detachInto(series_snapshot.entries, series_snapshot.entry_timestamps);
+    }
     series_snapshot.budget = series->budget;
     series_snapshot.memory_bytes = series->memory_bytes;
     clearEntriesLocked(*series, graveyard);
@@ -1158,7 +1204,11 @@ void ObjectStore::reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& 
       }
       continue;
     }
-    series->ordered.restoreRebuild(std::move(series_snapshot.entries), std::move(series_snapshot.entry_timestamps));
+    if (series_snapshot.log) {
+      series->log = std::move(series_snapshot.log);
+    } else {
+      series->ordered.restoreRebuild(std::move(series_snapshot.entries), std::move(series_snapshot.entry_timestamps));
+    }
     series->budget = series_snapshot.budget;
     series->memory_bytes = series_snapshot.memory_bytes;
   }

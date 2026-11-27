@@ -170,5 +170,125 @@ TEST(ObjectStoreLog, RetentionByCountAndTimeOnLogSeries) {
   EXPECT_EQ(store.timeRange(topic).first, 50);
 }
 
+std::vector<std::string> messagesOf(const ObjectStore& store, ObjectTopicId topic) {
+  std::vector<std::string> out;
+  auto view = store.logView(topic);
+  if (view) {
+    (*view)->messages(0, (*view)->size(), [&out](size_t, std::string_view m) { out.emplace_back(m); });
+  }
+  return out;
+}
+
+TEST(ObjectStoreLog, ByteBudgetEvictsWholeChunksAndBumpsEvicted) {
+  ObjectStore store;
+  const ObjectTopicId topic = registerLog(store);
+  const size_t rows = 4 * LogEntries::kChunkRows;
+  for (size_t i = 0; i < rows; ++i) {
+    ASSERT_TRUE(store.pushOwned(topic, Timestamp(i), bytesOf(makeLog("message number " + std::to_string(i)))));
+  }
+  const size_t full = store.memoryUsage(topic);
+  store.setRetentionBudget(topic, RetentionBudget{.max_memory_bytes = full / 2});
+  ASSERT_TRUE(store.pushOwned(topic, Timestamp(rows), bytesOf(makeLog("one more"))));
+  EXPECT_LE(store.memoryUsage(topic), full / 2);
+  auto view = store.logView(topic);
+  ASSERT_TRUE(view.has_value());
+  EXPECT_GT((*view)->evicted(), 0u);
+  EXPECT_EQ((*view)->evicted() + (*view)->size(), rows + 1);
+  EXPECT_EQ((*view)->recordAt(0).log.message, "message number " + std::to_string((*view)->evicted()));
+}
+
+TEST(ObjectStoreLog, FlushToAppendsLogRows) {
+  ObjectStore primary;
+  ObjectStore secondary;
+  const ObjectTopicId to = registerLog(primary);
+  const ObjectTopicId from = registerLog(secondary);
+  ASSERT_TRUE(primary.pushOwned(to, 10, bytesOf(makeLog("p10"))));
+  ASSERT_TRUE(primary.pushOwned(to, 30, bytesOf(makeLog("p30"))));
+  ASSERT_TRUE(secondary.pushOwned(from, 20, bytesOf(makeLog("s20"))));
+  ASSERT_TRUE(secondary.pushOwned(from, 40, bytesOf(makeLog("s40"))));
+  ASSERT_TRUE(secondary.flushTo(primary));
+  EXPECT_EQ(messagesOf(primary, to), (std::vector<std::string>{"p10", "s20", "p30", "s40"}));
+  EXPECT_EQ(secondary.entryCount(from), 0u);
+  EXPECT_EQ(primary.memoryUsage(to), (*primary.logView(to))->memoryBytes());
+}
+
+TEST(ObjectStoreLog, ReplaceDatasetFromSwapsRows) {
+  ObjectStore primary;
+  ObjectStore staged;
+  const ObjectTopicId shown = registerLog(primary, 1);
+  ASSERT_TRUE(primary.pushOwned(shown, 10, bytesOf(makeLog("old load"))));
+  const ObjectTopicId reloaded = registerLog(staged, 7);
+  ASSERT_TRUE(staged.pushOwned(reloaded, 5, bytesOf(makeLog("new a"))));
+  ASSERT_TRUE(staged.pushOwned(reloaded, 6, bytesOf(makeLog("new b"))));
+  auto result = primary.replaceDatasetFrom(staged, 7, 1);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(messagesOf(primary, shown), (std::vector<std::string>{"new a", "new b"}));
+  EXPECT_EQ(staged.entryCount(reloaded), 0u);
+}
+
+TEST(ObjectStoreLog, ReplaceThatChangesTheStorageKindSwapsIt) {
+  ObjectStore primary;
+  ObjectStore staged;
+  auto shown = primary.registerTopic(
+      {.dataset_id = 1,
+       .topic_name = "/rosout",
+       .metadata_json = R"({"builtin_object_type":"kLog","payload_encoding":"cdr"})"});
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_TRUE(primary.pushOwned(*shown, 1, {1, 2, 3}));
+  const ObjectTopicId reloaded = registerLog(staged, 7);
+  ASSERT_TRUE(staged.pushOwned(reloaded, 5, bytesOf(makeLog("canonical now"))));
+  ASSERT_TRUE(primary.replaceDatasetFrom(staged, 7, 1).has_value());
+  EXPECT_EQ(messagesOf(primary, *shown), (std::vector<std::string>{"canonical now"}));
+}
+
+TEST(ObjectStoreLog, MergeDatasetsInterleavesShiftedLogs) {
+  ObjectStore store;
+  const ObjectTopicId anchor = registerLog(store, 1);
+  const ObjectTopicId source = registerLog(store, 2);
+  ASSERT_TRUE(store.pushOwned(anchor, 1000, bytesOf(makeLog("a1000", 1001))));
+  ASSERT_TRUE(store.pushOwned(anchor, 3000, bytesOf(makeLog("a3000"))));
+  ASSERT_TRUE(store.pushOwned(source, 500, bytesOf(makeLog("s500", 505))));
+  ASSERT_TRUE(store.pushOwned(source, 2000, bytesOf(makeLog("s2000"))));
+  auto report = store.mergeDatasets(1, {DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 1000}}, nullptr);
+  ASSERT_TRUE(report.has_value());
+  EXPECT_EQ(messagesOf(store, anchor), (std::vector<std::string>{"a1000", "s500", "a3000", "s2000"}));
+  auto view = store.logView(anchor);
+  ASSERT_TRUE(view.has_value());
+  EXPECT_EQ((*view)->timestamps(), (std::vector<Timestamp>{1000, 1500, 3000, 3000}));
+  EXPECT_EQ((*view)->ownStamp(0), 1001);
+  EXPECT_EQ((*view)->ownStamp(1), 1505);
+  view.reset();
+  EXPECT_EQ(store.entryCount(source), 0u);
+}
+
+TEST(ObjectStoreLog, MergeShiftMovesStoreStampAndKeepsZeroOwnStampUnshifted) {
+  ObjectStore store;
+  const ObjectTopicId anchor = registerLog(store, 1);
+  auto other = store.registerTopic({.dataset_id = 1, .topic_name = "/other", .metadata_json = kLogMetadata});
+  ASSERT_TRUE(other.has_value());
+  const ObjectTopicId moved = registerLog(store, 2, "/only_in_source");
+  ASSERT_TRUE(store.pushOwned(anchor, 1, bytesOf(makeLog("anchor"))));
+  ASSERT_TRUE(store.pushOwned(moved, 100, bytesOf(makeLog("no own stamp", 0))));
+  ASSERT_TRUE(store.mergeDatasets(1, {DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 50}}, nullptr).has_value());
+  auto view = store.logView(moved);
+  ASSERT_TRUE(view.has_value());
+  EXPECT_EQ((*view)->timestamps()[0], 150);
+  EXPECT_EQ((*view)->ownStamp(0), 0);
+  EXPECT_EQ((*view)->recordAt(0).log.timestamp_ns, 0);
+}
+
+TEST(ObjectStoreLog, DetachReattachRestoresLogRows) {
+  ObjectStore store;
+  const ObjectTopicId topic = registerLog(store);
+  ASSERT_TRUE(store.pushOwned(topic, 10, bytesOf(makeLog("kept a"))));
+  ASSERT_TRUE(store.pushOwned(topic, 20, bytesOf(makeLog("kept b"))));
+  auto snapshot = store.detachDataset(1);
+  EXPECT_EQ(store.entryCount(topic), 0u);
+  ASSERT_TRUE(store.pushOwned(topic, 30, bytesOf(makeLog("during the reload"))));
+  store.reattachDataset(1, std::move(snapshot));
+  EXPECT_EQ(messagesOf(store, topic), (std::vector<std::string>{"kept a", "kept b"}));
+  EXPECT_GT(store.memoryUsage(topic), 0u);
+}
+
 }  // namespace
 }  // namespace PJ
