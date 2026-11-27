@@ -17,9 +17,13 @@ OrderedEntries::OrderedEntries() {
   changed(Change::kRemoval);
 }
 
-void OrderedEntries::changed(Change change) noexcept {
+uint64_t nextContentRevision() noexcept {
   static std::atomic<uint64_t> next{1};
-  identity_.content = next.fetch_add(1, std::memory_order_relaxed);
+  return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+void OrderedEntries::changed(Change change) noexcept {
+  identity_.content = nextContentRevision();
   if (change != Change::kFollowable) {
     identity_.rewrite = identity_.content;
   }

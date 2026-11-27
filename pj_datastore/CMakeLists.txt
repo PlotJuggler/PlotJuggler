@@ -42,6 +42,7 @@ add_library(pj_datastore STATIC
   src/colormap_registry.cpp
   src/sequential_uid.cpp
   src/ordered_entries.cpp
+  src/log_entries.cpp
   src/object_store.cpp
   src/marker_topic_metadata.cpp
   src/resident_payload_pool.cpp
@@ -97,6 +98,7 @@ if(PJ_BUILD_TESTS)
     tests/sequential_uid_test.cpp
     tests/merge_test.cpp
     tests/ordered_entries_test.cpp
+    tests/log_entries_test.cpp
     tests/object_store_test.cpp
     tests/marker_topic_metadata_test.cpp
     tests/resident_payload_pool_test.cpp
