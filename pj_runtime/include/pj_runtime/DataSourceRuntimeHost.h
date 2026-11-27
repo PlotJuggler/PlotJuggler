@@ -127,6 +127,12 @@ class DataSourceRuntimeHost {
     return ingest_callback_failures_.load(std::memory_order_relaxed);
   }
 
+  /// Log messages the bound parser could not decode; each is skipped, the ingest goes on. Not a capture veto: the
+  /// recorded bytes replay to the same skip.
+  [[nodiscard]] uint64_t logDecodeFailures() const noexcept {
+    return log_decode_failures_.load(std::memory_order_relaxed);
+  }
+
   /// Messages whose bytes were offered to the record tap (eager pushes with a successful fetch), with or without a
   /// tap. A capture compares its ledger against it, so a tap dropped mid-stream shows as a mismatch, not a hole.
   [[nodiscard]] uint64_t tapEligibleMessages() const noexcept {
@@ -307,6 +313,10 @@ class DataSourceRuntimeHost {
     // expected and keeps the object.
     bool object_only = false;
     bool object_only_logged = false;  // worker thread; one trace per binding
+    // Set for a canonical kLog topic: the object parser, which decodes every message at ingest (worker thread only),
+    // so the store keeps decoded logs and readers need no parser.
+    std::unique_ptr<MessageParserHandle> log_parser;
+    bool log_decode_logged = false;  // worker thread; one warning per binding
     // Shared by the lazy closures of this binding's messages for fetch-failure logs; created on first use (worker).
     std::shared_ptr<const LazyFetchTopicContext> lazy_fetch_context;
 
@@ -413,6 +423,7 @@ class DataSourceRuntimeHost {
   /// keeps a misbehaving multi-threaded plugin defined rather than racy.
   std::atomic<bool> ingest_sealed_{false};
   std::atomic<uint64_t> ingest_callback_failures_{0};
+  std::atomic<uint64_t> log_decode_failures_{0};
   std::atomic<uint64_t> tap_eligible_messages_{0};
   /// Guards only the hook slots; hooks run on copies, never under it.
   mutable std::mutex hooks_mu_;

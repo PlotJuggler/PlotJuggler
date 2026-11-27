@@ -13,8 +13,8 @@
 #include <utility>
 
 #include "pj_base/builtin/log.hpp"
+#include "pj_datastore/log_entries.hpp"
 #include "pj_log/LogView.h"
-#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
@@ -31,12 +31,117 @@ constexpr auto kTopicTag = "topic"_L1;
 constexpr auto kHiddenTopicTag = "hidden_topic"_L1;
 
 bool isLogTopic(const ObjectStore& objects, ObjectTopicId topic_id) {
-  return objectTypeFromMetadata(objects.descriptor(topic_id).metadata_json) == sdk::BuiltinObjectType::kLog;
+  return objectTypeFromMetadata(objects.descriptor(topic_id).metadata_json) == sdk::BuiltinObjectType::kLog &&
+         objects.logView(topic_id).has_value();
 }
 
 LogLevel levelOf(sdk::Log::Level level) {
   return level <= sdk::Log::Level::kFatal ? static_cast<LogLevel>(level) : LogLevel::kUnknown;
 }
+
+/// One topic's rows in the ObjectStore, keyed by their UIDs. Each read takes a LogSeriesView (a batch takes one for all
+/// its reads), so the panel never holds the series lock across event-loop turns.
+class StoreLogSource final : public LogRowSource {
+ public:
+  StoreLogSource(const ObjectStore& objects, ObjectTopicId id, DisplayOffset offset)
+      : objects_(objects), id_(id), offset_(offset) {}
+
+  [[nodiscard]] size_t size() const override {
+    size_t size = 0;
+    read([&size](const LogEntries& entries) { size = entries.size(); });
+    return size;
+  }
+  [[nodiscard]] uint64_t key(size_t index) const override {
+    uint64_t key = 0;
+    read([&](const LogEntries& entries) { key = entries.uidAt(index).value; });
+    return key;
+  }
+  [[nodiscard]] std::optional<size_t> find(uint64_t key, size_t hint) const override {
+    std::optional<size_t> index;
+    read([&](const LogEntries& entries) {
+      index = hint < entries.size() && entries.uidAt(hint).value == key ? std::optional(hint)
+                                                                        : entries.indexOfUid(SequentialUID{key});
+    });
+    return index;
+  }
+  [[nodiscard]] std::vector<size_t> indicesAfter(uint64_t after) const override {
+    std::vector<size_t> indices;
+    read([&](const LogEntries& entries) { indices = entries.indicesAfterUid(SequentialUID{after}); });
+    return indices;
+  }
+  [[nodiscard]] double time(size_t index) const override {
+    double time = 0.0;
+    read([&](const LogEntries& entries) {
+      time = toAxisDouble(rawToDisplaySecondsAtOrAfter(entries.timestamps()[index], offset_));
+    });
+    return time;
+  }
+  [[nodiscard]] LogLevel level(size_t index) const override {
+    LogLevel level = LogLevel::kUnknown;
+    read([&](const LogEntries& entries) { level = levelOf(entries.level(index)); });
+    return level;
+  }
+  [[nodiscard]] uint32_t sourceId(size_t index) const override {
+    uint32_t id = 0;
+    read([&](const LogEntries& entries) { id = entries.sourceId(index); });
+    return id;
+  }
+  [[nodiscard]] uint32_t categoryId(size_t index) const override {
+    uint32_t id = 0;
+    read([&](const LogEntries& entries) { id = entries.categoryId(index); });
+    return id;
+  }
+  [[nodiscard]] int64_t ownStamp(size_t index) const override {
+    int64_t stamp = 0;
+    read([&](const LogEntries& entries) { stamp = entries.ownStamp(index); });
+    return stamp;
+  }
+  [[nodiscard]] std::string dictionaryText(uint32_t id) const override {
+    std::string text;
+    read([&](const LogEntries& entries) { text = std::string(entries.dictionaryText(id)); });
+    return text;
+  }
+  void messages(size_t first, size_t count, const MessageSink& sink) const override {
+    read([&](const LogEntries& entries) { entries.messages(first, count, sink); });
+  }
+  void batch(const std::function<void()>& body) const override {
+    if (in_batch_) {
+      body();
+      return;
+    }
+    auto view = objects_.logView(id_);
+    pinned_ = view ? &**view : nullptr;
+    in_batch_ = true;
+    struct Unpin {
+      const StoreLogSource* self;
+      ~Unpin() {
+        self->pinned_ = nullptr;
+        self->in_batch_ = false;
+      }
+    } unpin{this};
+    body();
+  }
+
+ private:
+  template <typename F>
+  void read(F&& f) const {
+    if (in_batch_) {
+      if (pinned_ != nullptr) {
+        f(*pinned_);
+      }
+      return;
+    }
+    if (auto view = objects_.logView(id_)) {
+      f(**view);
+    }
+  }
+
+  const ObjectStore& objects_;
+  ObjectTopicId id_;
+  DisplayOffset offset_;
+  mutable const LogEntries* pinned_ = nullptr;
+  mutable bool in_batch_ = false;
+};
 
 struct ParsedLogState {
   LogViewState view;
@@ -216,55 +321,34 @@ bool LogDockWidget::addTopic(ObjectTopicId topic_id) {
       Topic{
           .id = topic_id,
           .saved = savedIdentity(descriptor.dataset_id, QString::fromStdString(descriptor.topic_name)),
-          .cursor = {},
           .identity = {}});
   view_->setTopicLabel(topic_id.id, topic.saved.topic);
   loadTopic(topic, /*full=*/true);
   return true;
 }
 
-void LogDockWidget::loadTopic(Topic& topic, bool full) {
+bool LogDockWidget::loadTopic(Topic& topic, bool full) {
   const ObjectStore& objects = session_->objectStore();
-  // Read before the drain: a change racing in between shows up as a new identity on the next update.
-  const OrderedEntries::ContentIdentity identity = objects.contentIdentity(topic.id);
-  if (!full && identity == topic.identity) {
-    return;
-  }
-  // Inserts, late ones included, and front evictions keep `removal`: every entry they add lies after the cursor, and
-  // the rows the store evicted stay. A removed, replaced or shifted entry may be one the view holds.
-  full = full || identity.removal != topic.identity.removal;
-  topic.identity = identity;
-  if (full) {
-    topic.cursor = SequentialUID{};
-  }
-  std::vector<ResolvedObjectEntry> entries = objects.drainNewSince(topic.id, topic.cursor);
-  std::erase_if(entries, [](const ResolvedObjectEntry& entry) { return entry.fetch_failed; });
-  // Arrival order; the view wants time order.
-  std::ranges::stable_sort(entries, {}, &ResolvedObjectEntry::timestamp);
-  const DisplayOffset offset = session_->displayOffset(topic.saved.dataset_id);
-  std::vector<LogEntry> rows;
-  rows.reserve(entries.size());
-  const auto add_row = [&rows, offset](const ResolvedObjectEntry& entry, Expected<sdk::BuiltinObject> object) {
-    const sdk::Log* log = object ? object->get<sdk::Log>() : nullptr;
-    if (log == nullptr) {
-      return;  // an entry its parser rejects shows nothing
-    }
-    rows.push_back(
-        LogEntry{
-            .time = toAxisDouble(rawToDisplaySecondsAtOrAfter(entry.timestamp, offset)),
-            .stamp_ns = log->timestamp_ns,
-            .level = levelOf(log->level),
-            .source = log->source,
-            .category = log->category,
-            .message = log->message,
-        });
-  };
-  decodeStoredObjects(*session_, topic.id, sdk::BuiltinObjectType::kLog, entries, add_row);
-  if (full) {
-    view_->replaceEntries(topic.id.id, std::move(rows));
+  OrderedEntries::ContentIdentity identity;
+  if (auto view = objects.logView(topic.id)) {
+    identity = (**view).contentIdentity();
   } else {
-    view_->appendEntries(topic.id.id, std::move(rows));
+    return false;  // no longer stored as a log
   }
+  if (!full && identity == topic.identity) {
+    return true;
+  }
+  // A removal, a shift or a re-UID (a merge, a reload) moves rows the update cannot follow: index the topic anew.
+  full = full || identity.removal != topic.identity.removal;
+  auto source = std::make_shared<StoreLogSource>(objects, topic.id, session_->displayOffset(topic.saved.dataset_id));
+  if (full) {
+    view_->setTopicRows(topic.id.id, std::move(source));
+  } else {
+    view_->updateTopicRows(topic.id.id, std::move(source));
+  }
+  // Taken before the rows were read: a change in between shows as a new identity next update.
+  topic.identity = identity;
+  return true;
 }
 
 void LogDockWidget::refresh() {
@@ -272,8 +356,7 @@ void LogDockWidget::refresh() {
   const ObjectStore& objects = session_->objectStore();
   bool changed = false;
   for (auto it = topics_.begin(); it != topics_.end();) {
-    if (objects.isTopic(it->id, it->saved.dataset_id, it->saved.topic.toStdString())) {
-      loadTopic(*it, full);
+    if (objects.isTopic(it->id, it->saved.dataset_id, it->saved.topic.toStdString()) && loadTopic(*it, full)) {
       ++it;
       continue;
     }

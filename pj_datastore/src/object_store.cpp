@@ -11,6 +11,9 @@
 #include <utility>
 #include <vector>
 
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/builtin/log_codec.hpp"
 #include "pj_datastore/marker_topic_metadata.hpp"
 #include "pj_datastore/resident_payload_pool.hpp"
 #include "pj_datastore/saturating_time.hpp"
@@ -19,8 +22,7 @@ namespace PJ {
 
 namespace {
 
-size_t countBefore(const OrderedEntries& ordered, Timestamp threshold) {
-  const auto& stamps = ordered.timestamps();
+size_t countBefore(const std::vector<Timestamp>& stamps, Timestamp threshold) {
   return static_cast<size_t>(std::lower_bound(stamps.begin(), stamps.end(), threshold) - stamps.begin());
 }
 
@@ -42,6 +44,22 @@ ObjectEntry unstampedEntry(Timestamp timestamp, ObjectEntryPayload payload) {
 SharedBuffer ownedPayload(std::vector<uint8_t> bytes) {
   return std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
 }
+
+// The two storages share their index API, so the index-only reads run on either.
+template <typename Series, typename F>
+decltype(auto) onEntries(Series& series, F&& f) {
+  return series.log ? f(*series.log) : f(series.ordered);
+}
+
+Expected<sdk::Log> decodeLog(const std::vector<uint8_t>& bytes) {
+  auto log = deserializeLog(bytes.data(), bytes.size());
+  if (!log) {
+    return unexpected("kLog payload: " + log.error());
+  }
+  return log;
+}
+
+constexpr auto kLogTakesOwned = "kLog topics store decoded logs: push them owned";
 
 }  // namespace
 
@@ -68,9 +86,7 @@ Expected<ObjectTopicId> ObjectStore::registerTopic(ObjectTopicDescriptor descrip
   } else {
     id = ObjectTopicId{next_id_++};
   }
-  auto series = std::make_unique<ObjectSeries>();
-  series->descriptor = std::move(descriptor);
-  topics_.emplace_back(id, std::move(series));
+  topics_.emplace_back(id, makeSeries(std::move(descriptor)));
   series_index_.emplace(id.id, topics_.back().second.get());
   return id;
 }
@@ -88,9 +104,7 @@ Expected<ObjectTopicId> ObjectStore::findOrRegisterTopic(ObjectTopicDescriptor d
     }
   }
   ObjectTopicId id{next_id_++};
-  auto series = std::make_unique<ObjectSeries>();
-  series->descriptor = std::move(descriptor);
-  topics_.emplace_back(id, std::move(series));
+  topics_.emplace_back(id, makeSeries(std::move(descriptor)));
   series_index_.emplace(id.id, topics_.back().second.get());
   return id;
 }
@@ -159,17 +173,34 @@ void ObjectStore::forEachTopicRetained(
     RetainedRange retained;
     {
       std::shared_lock series_lock(series->mutex);
-      retained.entry_count = series->ordered.size();
-      if (retained.entry_count > 0) {
-        retained.first = series->ordered.frontTimestamp();
-        retained.last = series->ordered.backTimestamp();
-      }
+      onEntries(*series, [&retained](const auto& entries) {
+        retained.entry_count = entries.size();
+        if (retained.entry_count > 0) {
+          retained.first = entries.frontTimestamp();
+          retained.last = entries.backTimestamp();
+        }
+      });
     }
     visit(tid, series->descriptor, retained);
   }
 }
 
 // --- Write ---
+
+Status ObjectStore::pushLog(ObjectTopicId id, Timestamp timestamp, sdk::Log log) {
+  Graveyard graveyard;  // retention victims die after the locks below release
+  std::shared_lock store_lock(store_mutex_);
+  auto* series = findSeries(id);
+  if (series == nullptr) {
+    return unexpected("unknown topic");
+  }
+  if (!series->log) {
+    return unexpected("not a canonical kLog topic");
+  }
+  std::unique_lock lock(series->mutex);
+  insertLogLocked(*series, timestamp, std::move(log), graveyard);
+  return {};
+}
 
 Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload) {
   Graveyard graveyard;  // retention victims die after the locks below release
@@ -178,6 +209,17 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
   auto* series = findSeries(id);
   if (series == nullptr) {
     return unexpected("unknown topic");
+  }
+
+  if (series->log) {
+    // Decoded before taking the series lock, so readers do not wait on it.
+    auto log = decodeLog(payload);
+    if (!log) {
+      return unexpected(log.error());
+    }
+    std::unique_lock lock(series->mutex);
+    insertLogLocked(*series, timestamp, std::move(*log), graveyard);
+    return {};
   }
 
   // Allocated before taking the series lock, so readers of the series do not wait on the allocation.
@@ -196,6 +238,7 @@ Expected<std::vector<SequentialUID>> ObjectStore::pushOwnedBundle(std::vector<Ow
     ObjectSeries* series;
     OrderedEntries::Removal removal;
     ObjectEntry entry;
+    std::optional<sdk::Log> log;  ///< the decoded append of a log series
   };
   std::vector<Step> steps;
   std::vector<SequentialUID> created;
@@ -222,7 +265,20 @@ Expected<std::vector<SequentialUID>> ObjectStore::pushOwnedBundle(std::vector<Ow
       }
       // Phase 2 changes the timestamp vectors: wait out views still reading them.
       drainSeriesReaders(*series);
-      Step& step = steps.emplace_back(Step{.series = series, .removal = {}, .entry = {}});
+      Step& step = steps.emplace_back(Step{.series = series, .removal = {}, .entry = {}, .log = {}});
+      if (series->log) {
+        if (write.drop) {
+          step.removal = series->log->planRemoval(write.drop);
+        }
+        if (write.append) {
+          auto log = decodeLog(write.payload);
+          if (!log) {
+            return unexpected("object bundle rejected: " + log.error());
+          }
+          step.log = std::move(*log);
+        }
+        continue;  // nothing moves to the graveyard
+      }
       if (write.drop) {
         step.removal = series->ordered.planRemoval(write.drop);
       }
@@ -245,6 +301,15 @@ Expected<std::vector<SequentialUID>> ObjectStore::pushOwnedBundle(std::vector<Ow
   // done. Only an append that removes nothing still allocates, and it throws before changing its topic.
   for (size_t index = 0; index < writes.size(); ++index) {
     Step& step = steps[index];
+    if (step.series->log) {
+      if (writes[index].append) {
+        created[index] =
+            insertLogLocked(*step.series, writes[index].timestamp, std::move(*step.log), graveyard, &step.removal);
+      } else {
+        accountLogRemoved(*step.series, step.series->log->remove(step.removal), graveyard);
+      }
+      continue;
+    }
     if (writes[index].append) {
       created[index] = insertLocked(*step.series, std::move(step.entry), graveyard, &step.removal);
     } else {
@@ -267,8 +332,12 @@ Status ObjectStore::pushLazyWithSeed(ObjectTopicId id, Timestamp timestamp, sdk:
     // only costs those evictions.
     {
       std::shared_lock store_lock(store_mutex_);
-      if (findSeries(id) == nullptr) {
+      const ObjectSeries* series = findSeries(id);
+      if (series == nullptr) {
         return unexpected("unknown topic");
+      }
+      if (series->log) {
+        return unexpected(kLogTakesOwned);
       }
     }
     slot = resident_pool_->admit(std::move(seed));
@@ -283,6 +352,9 @@ Status ObjectStore::pushLazyEntry(ObjectTopicId id, Timestamp timestamp, ObjectE
   auto* series = findSeries(id);
   if (series == nullptr) {
     return unexpected("unknown topic");
+  }
+  if (series->log) {
+    return unexpected(kLogTakesOwned);
   }
 
   entry = unstampedEntry(timestamp, std::move(payload));
@@ -310,6 +382,21 @@ std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Times
 
   // Resolved from a snapshot after the series lock drops, so a slow lazy fetch never blocks this series' writers.
   // The snapshot owns every capture it needs, so an eviction mid-resolve is harmless.
+  if (series->log) {
+    // Rebuilt under the series lock: no fetch to wait on, and the bytes are the result's own.
+    std::shared_lock lock(series->mutex);
+    const auto idx = series->log->indexAtOrBefore(timestamp);
+    if (!idx.has_value()) {
+      return std::nullopt;
+    }
+    std::lock_guard cache_guard(series->cache_mutex);
+    if (series->cached_latest && series->cached_latest->sequential_uid == series->log->uidAt(*idx)) {
+      return *series->cached_latest;
+    }
+    ResolvedObjectEntry resolved = resolveLog(*series->log, *idx);
+    displaced = std::exchange(series->cached_latest, resolved);
+    return resolved;
+  }
   {
     std::shared_lock lock(series->mutex);
     const auto idx = series->ordered.indexAtOrBefore(timestamp);
@@ -361,6 +448,12 @@ std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, size_t inde
   ObjectEntry snapshot;
   {
     std::shared_lock lock(series->mutex);
+    if (series->log) {
+      if (index >= series->log->size()) {
+        return std::nullopt;
+      }
+      return resolveLog(*series->log, index);
+    }
     const ObjectEntry* entry = series->ordered.atIndex(index);
     if (entry == nullptr) {
       return std::nullopt;
@@ -385,6 +478,13 @@ std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, SequentialU
   ObjectEntry snapshot;
   {
     std::shared_lock lock(series->mutex);
+    if (series->log) {
+      const auto index = series->log->indexOfUid(sequential_uid);
+      if (!index) {
+        return std::nullopt;
+      }
+      return resolveLog(*series->log, *index);
+    }
     const ObjectEntry* entry = series->ordered.atUid(sequential_uid);
     if (entry == nullptr) {
       return std::nullopt;
@@ -403,7 +503,7 @@ std::optional<size_t> ObjectStore::indexAt(ObjectTopicId id, Timestamp timestamp
   }
 
   std::shared_lock lock(series->mutex);
-  return series->ordered.indexAtOrBefore(timestamp);
+  return onEntries(*series, [&](const auto& entries) { return entries.indexAtOrBefore(timestamp); });
 }
 
 std::optional<size_t> ObjectStore::indexOf(ObjectTopicId id, SequentialUID uid) const {
@@ -413,7 +513,7 @@ std::optional<size_t> ObjectStore::indexOf(ObjectTopicId id, SequentialUID uid) 
     return std::nullopt;
   }
   std::shared_lock lock(series->mutex);
-  return series->ordered.indexOfUid(uid);
+  return onEntries(*series, [&](const auto& entries) { return entries.indexOfUid(uid); });
 }
 
 OrderedEntries::ContentIdentity ObjectStore::contentIdentity(ObjectTopicId id) const {
@@ -423,7 +523,7 @@ OrderedEntries::ContentIdentity ObjectStore::contentIdentity(ObjectTopicId id) c
     return {};
   }
   std::shared_lock lock(series->mutex);
-  return series->ordered.contentIdentity();
+  return onEntries(*series, [&](const auto& entries) { return entries.contentIdentity(); });
 }
 
 SequentialUID ObjectStore::firstSequentialUID(ObjectTopicId id) const {
@@ -434,7 +534,7 @@ SequentialUID ObjectStore::firstSequentialUID(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  return series->ordered.firstUid();
+  return onEntries(*series, [&](const auto& entries) { return entries.firstUid(); });
 }
 
 std::vector<ResolvedObjectEntry> ObjectStore::drainNewSince(ObjectTopicId id, SequentialUID& cursor) const {
@@ -447,6 +547,40 @@ std::vector<ResolvedObjectEntry> ObjectStore::drainNewSince(ObjectTopicId id, Se
       return {};
     }
     const std::shared_lock<std::shared_mutex> lock(series->mutex);
+    if (series->log) {
+      // Arrival order may differ from row order; the rows decode in row order, one chunk at a time.
+      const LogEntries& log = *series->log;
+      std::vector<size_t> rows;
+      for (SequentialUID uid = log.nextUidAfter(cursor); uid.valid(); uid = log.nextUidAfter(uid)) {
+        rows.push_back(*log.indexOfUid(uid));
+      }
+      if (rows.empty()) {
+        return {};
+      }
+      const auto [lo, hi] = std::ranges::minmax(rows);
+      std::vector<ResolvedObjectEntry> by_row(hi - lo + 1);
+      std::vector<bool> wanted(hi - lo + 1, false);
+      for (const size_t row : rows) {
+        wanted[row - lo] = true;
+      }
+      log.records(lo, hi - lo + 1, [&](size_t row, LogRecord&& record) {
+        if (!wanted[row - lo]) {
+          return;
+        }
+        by_row[row - lo] = ResolvedObjectEntry{
+            .timestamp = record.timestamp,
+            .sequential_uid = record.uid,
+            .payload = sdk::makePayloadView(serializeLog(record.log)),
+        };
+      });
+      std::vector<ResolvedObjectEntry> out;
+      out.reserve(rows.size());
+      for (const size_t row : rows) {
+        out.push_back(std::move(by_row[row - lo]));
+      }
+      cursor = out.back().sequential_uid;
+      return out;
+    }
     batch.reserve(series->ordered.size());
     for (SequentialUID uid = series->ordered.nextUidAfter(cursor); uid.valid();
          uid = series->ordered.nextUidAfter(uid)) {
@@ -474,7 +608,7 @@ SequentialUID ObjectStore::maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const
     return {};
   }
   std::shared_lock lock(series->mutex);
-  return series->ordered.maxUidAtOrBefore(t);
+  return onEntries(*series, [&](const auto& entries) { return entries.maxUidAtOrBefore(t); });
 }
 
 std::optional<Timestamp> ObjectStore::oldestArrivalAfter(ObjectTopicId id, SequentialUID after) const {
@@ -484,7 +618,7 @@ std::optional<Timestamp> ObjectStore::oldestArrivalAfter(ObjectTopicId id, Seque
     return std::nullopt;
   }
   std::shared_lock lock(series->mutex);
-  return series->ordered.oldestTimestampAfterUid(after);
+  return onEntries(*series, [&](const auto& entries) { return entries.oldestTimestampAfterUid(after); });
 }
 
 std::optional<ObjectStore::TimeRangeEntry> ObjectStore::latestEntryIdAt(ObjectTopicId id, Timestamp timestamp) const {
@@ -495,6 +629,13 @@ std::optional<ObjectStore::TimeRangeEntry> ObjectStore::latestEntryIdAt(ObjectTo
   }
   // The entry latestAt() would pick, read as metadata only.
   std::shared_lock lock(series->mutex);
+  if (series->log) {
+    const auto idx = series->log->indexAtOrBefore(timestamp);
+    if (!idx.has_value()) {
+      return std::nullopt;
+    }
+    return TimeRangeEntry{series->log->uidAt(*idx), series->log->timestamps()[*idx]};
+  }
   const auto idx = series->ordered.indexAtOrBefore(timestamp);
   if (!idx.has_value()) {
     return std::nullopt;
@@ -513,7 +654,7 @@ std::vector<ObjectStore::TimeRangeEntry> ObjectStore::rangeByTime(ObjectTopicId 
     return {};
   }
   std::shared_lock lock(series->mutex);
-  return series->ordered.rangeByTime(lo, hi);
+  return onEntries(*series, [&](const auto& entries) { return entries.rangeByTime(lo, hi); });
 }
 
 size_t ObjectStore::entryCount(ObjectTopicId id) const {
@@ -524,7 +665,7 @@ size_t ObjectStore::entryCount(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  return series->ordered.size();
+  return onEntries(*series, [](const auto& entries) { return entries.size(); });
 }
 
 std::pair<Timestamp, Timestamp> ObjectStore::timeRange(ObjectTopicId id) const {
@@ -535,10 +676,12 @@ std::pair<Timestamp, Timestamp> ObjectStore::timeRange(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  if (series->ordered.empty()) {
-    return {0, 0};
-  }
-  return {series->ordered.frontTimestamp(), series->ordered.backTimestamp()};
+  return onEntries(*series, [](const auto& entries) -> std::pair<Timestamp, Timestamp> {
+    if (entries.empty()) {
+      return {0, 0};
+    }
+    return {entries.frontTimestamp(), entries.backTimestamp()};
+  });
 }
 
 EntryTimestampsView ObjectStore::entryTimestamps(ObjectTopicId id) const {
@@ -549,7 +692,8 @@ EntryTimestampsView ObjectStore::entryTimestamps(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  return {std::move(lock), &series->ordered.timestamps()};
+  const std::vector<Timestamp>* stamps = onEntries(*series, [](const auto& entries) { return &entries.timestamps(); });
+  return {std::move(lock), stamps};
 }
 
 std::vector<EntryTimestampsView> ObjectStore::entryTimestamps(std::vector<ObjectTopicId> ids) const {
@@ -561,7 +705,10 @@ std::vector<EntryTimestampsView> ObjectStore::entryTimestamps(std::vector<Object
   std::shared_lock store_lock(store_mutex_);
   for (const ObjectTopicId id : ids) {
     if (const auto* series = findSeries(id)) {
-      views.emplace_back(std::shared_lock(series->mutex), &series->ordered.timestamps());
+      std::shared_lock lock(series->mutex);
+      const std::vector<Timestamp>* stamps =
+          onEntries(*series, [](const auto& entries) { return &entries.timestamps(); });
+      views.emplace_back(std::move(lock), stamps);
     }
   }
   return views;
@@ -609,7 +756,8 @@ void ObjectStore::evictBefore(ObjectTopicId id, Timestamp threshold) {
     return;
   }
   std::unique_lock lock(series->mutex);
-  evictFront(*series, countBefore(series->ordered, threshold), graveyard);
+  evictFront(
+      *series, onEntries(*series, [&](const auto& e) { return countBefore(e.timestamps(), threshold); }), graveyard);
 }
 
 void ObjectStore::evictAllBefore(Timestamp threshold) {
@@ -617,7 +765,8 @@ void ObjectStore::evictAllBefore(Timestamp threshold) {
   std::shared_lock store_lock(store_mutex_);
   for (auto& [tid, series] : topics_) {
     std::unique_lock lock(series->mutex);
-    evictFront(*series, countBefore(series->ordered, threshold), graveyard);
+    evictFront(
+        *series, onEntries(*series, [&](const auto& e) { return countBefore(e.timestamps(), threshold); }), graveyard);
   }
 }
 
@@ -644,7 +793,7 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
   plan.reserve(topics_.size());
 
   for (auto& [src_id, src_series] : topics_) {
-    if (src_series->ordered.empty()) {
+    if (onEntries(*src_series, [](const auto& entries) { return entries.empty(); })) {
       continue;
     }
     ObjectSeries* dst_series = nullptr;
@@ -660,6 +809,10 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
           "flushTo: destination has no topic '" + src_series->descriptor.topic_name + "' for dataset " +
           std::to_string(src_series->descriptor.dataset_id));
     }
+    if (static_cast<bool>(dst_series->log) != static_cast<bool>(src_series->log)) {
+      return unexpected(
+          "flushTo: topic '" + src_series->descriptor.topic_name + "' has another storage in the destination");
+    }
     plan.push_back({src_series.get(), dst_series});
   }
 
@@ -668,6 +821,14 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
   for (auto& step : plan) {
     drainSeriesReaders(*step.src);
     drainSeriesReaders(*step.dst);
+    if (step.src->log) {
+      step.dst->log->appendReuidFrom(*step.src->log);
+      step.dst->memory_bytes = step.dst->log->memoryBytes();
+      step.src->memory_bytes = 0;
+      dropCache(*step.src, graveyard);
+      applyRetention(*step.dst, step.dst->log->empty() ? 0 : step.dst->log->backTimestamp(), graveyard);
+      continue;
+    }
     step.dst->ordered.appendReuidFrom(step.src->ordered);
     step.dst->memory_bytes += step.src->memory_bytes;
     step.src->memory_bytes = 0;
@@ -721,9 +882,9 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
       primary_series->descriptor.metadata_json = staged_series->descriptor.metadata_json;
     } else {
       primary_tid = ObjectTopicId{next_id_++};
-      auto series = std::make_unique<ObjectSeries>();
-      series->descriptor = staged_series->descriptor;
-      series->descriptor.dataset_id = primary_id;
+      ObjectTopicDescriptor descriptor = staged_series->descriptor;
+      descriptor.dataset_id = primary_id;
+      auto series = makeSeries(std::move(descriptor));
       primary_series = series.get();
       topics_.emplace_back(primary_tid, std::move(series));
       series_index_.emplace(primary_tid.id, primary_series);
@@ -732,7 +893,16 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
     drainSeriesReaders(*primary_series);
     drainSeriesReaders(*staged_series);
     clearEntriesLocked(*primary_series, graveyard);
-    primary_series->ordered.adoptReuidFrom(staged_series->ordered);
+    if (staged_series->log) {
+      // The reload may have changed the topic's storage along with its metadata.
+      if (!primary_series->log) {
+        primary_series->log = std::make_unique<LogEntries>();
+      }
+      primary_series->log->adoptReuidFrom(*staged_series->log);
+    } else {
+      primary_series->log.reset();
+      primary_series->ordered.adoptReuidFrom(staged_series->ordered);
+    }
     primary_series->memory_bytes = staged_series->memory_bytes;
     result.remapped.emplace_back(sid, primary_tid);
     staged_series->memory_bytes = 0;
@@ -836,6 +1006,9 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
         report.added_topics.push_back(source_id);
       } else {
         Group& group = groups[group_it->second];
+        if (static_cast<bool>(group.destination->log) != static_cast<bool>(source_series->log)) {
+          return unexpected("mergeDatasets: topic '" + name + "' is stored differently in the datasets");
+        }
         group.sources.push_back(Contributor{.topic_id = source_id, .series = source_series, .shift = src.raw_shift_ns});
         report.remapped.emplace_back(source_id, group.destination_id);
       }
@@ -845,7 +1018,7 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
   for (Group& group : groups) {
     bool has_source_entries = false;
     for (const Contributor& contributor : group.sources) {
-      if (!contributor.series->ordered.empty()) {
+      if (!onEntries(*contributor.series, [](const auto& entries) { return entries.empty(); })) {
         has_source_entries = true;
         break;
       }
@@ -860,7 +1033,7 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
 
     drainSeriesReaders(*group.destination);
     if (group.destination_needs_reparent) {
-      if (group.destination->ordered.shift(group.destination_shift)) {
+      if (onEntries(*group.destination, [&](auto& entries) { return entries.shift(group.destination_shift); })) {
         dropCache(*group.destination, graveyard);
       }
       group.destination->descriptor.dataset_id = anchor_id;
@@ -869,21 +1042,39 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
     std::vector<Contributor> non_empty_sources;
     non_empty_sources.reserve(group.sources.size());
     for (const Contributor& contributor : group.sources) {
-      if (contributor.series->ordered.empty()) {
+      if (onEntries(*contributor.series, [](const auto& entries) { return entries.empty(); })) {
         continue;
       }
       drainSeriesReaders(*contributor.series);
-      if (contributor.series->ordered.shift(contributor.shift)) {
+      if (onEntries(*contributor.series, [&](auto& entries) { return entries.shift(contributor.shift); })) {
         dropCache(*contributor.series, graveyard);
       }
       non_empty_sources.push_back(contributor);
     }
 
+    const auto newest_of = [](const ObjectSeries& series) {
+      return onEntries(series, [](const auto& entries) { return entries.empty() ? 0 : entries.backTimestamp(); });
+    };
     if (non_empty_sources.empty()) {
-      group.destination->ordered.reuidAll();
+      onEntries(*group.destination, [](auto& entries) { entries.reuidAll(); });
       dropCache(*group.destination, graveyard);
-      const Timestamp newest = group.destination->ordered.empty() ? 0 : group.destination->ordered.backTimestamp();
-      applyRetention(*group.destination, newest, graveyard);
+      applyRetention(*group.destination, newest_of(*group.destination), graveyard);
+      continue;
+    }
+
+    if (group.destination->log) {
+      std::vector<LogEntries*> logs;
+      logs.reserve(non_empty_sources.size());
+      for (const Contributor& contributor : non_empty_sources) {
+        logs.push_back(contributor.series->log.get());
+      }
+      group.destination->log->mergeReuidFrom(logs);
+      group.destination->memory_bytes = group.destination->log->memoryBytes();
+      dropCache(*group.destination, graveyard);
+      for (const Contributor& contributor : non_empty_sources) {
+        clearEntriesLocked(*contributor.series, graveyard);
+      }
+      applyRetention(*group.destination, newest_of(*group.destination), graveyard);
       continue;
     }
 
@@ -967,8 +1158,12 @@ ObjectStore::ObjectDatasetSnapshot ObjectStore::detachDataset(DatasetId dataset_
     snapshot.prior_object_topic_ids.push_back(tid);
     drainSeriesReaders(*series);
     ObjectDatasetSnapshot::SeriesSnapshot series_snapshot;
-    // uid_order is not kept: reattachDataset() rebuilds it.
-    series->ordered.detachInto(series_snapshot.entries, series_snapshot.entry_timestamps);
+    if (series->log) {
+      series_snapshot.log = std::exchange(series->log, std::make_unique<LogEntries>());
+    } else {
+      // uid_order is not kept: reattachDataset() rebuilds it.
+      series->ordered.detachInto(series_snapshot.entries, series_snapshot.entry_timestamps);
+    }
     series_snapshot.budget = series->budget;
     series_snapshot.memory_bytes = series->memory_bytes;
     clearEntriesLocked(*series, graveyard);
@@ -1021,7 +1216,11 @@ void ObjectStore::reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& 
       }
       continue;
     }
-    series->ordered.restoreRebuild(std::move(series_snapshot.entries), std::move(series_snapshot.entry_timestamps));
+    if (series_snapshot.log) {
+      series->log = std::move(series_snapshot.log);
+    } else {
+      series->ordered.restoreRebuild(std::move(series_snapshot.entries), std::move(series_snapshot.entry_timestamps));
+    }
     series->budget = series_snapshot.budget;
     series->memory_bytes = series_snapshot.memory_bytes;
   }
@@ -1029,6 +1228,9 @@ void ObjectStore::reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& 
 }
 
 void ObjectStore::clearEntriesLocked(ObjectSeries& series, Graveyard& graveyard) {
+  if (series.log) {
+    series.log->clear();
+  }
   series.ordered.moveEntriesInto(graveyard.entries);
   series.memory_bytes = 0;
   dropCache(series, graveyard);
@@ -1125,6 +1327,62 @@ SequentialUID ObjectStore::insertLocked(
   return uid;
 }
 
+SequentialUID ObjectStore::insertLogLocked(
+    ObjectSeries& series, Timestamp timestamp, sdk::Log&& log, Graveyard& graveyard,
+    const OrderedEntries::Removal* removal) {
+  const SequentialUID uid = SequentialUID::getNext();
+  std::vector<SequentialUID> removed;
+  if (removal != nullptr) {
+    removed = series.log->remove(*removal);
+  }
+  const OrderedEntries::PushOrder order = series.log->push(timestamp, uid, std::move(log));
+  accountLogRemoved(series, removed, graveyard);
+  if (order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
+    dropCache(series, graveyard);
+  }
+  applyRetention(series, series.log->backTimestamp(), graveyard);
+  return uid;
+}
+
+void ObjectStore::accountLogRemoved(
+    ObjectSeries& series, const std::vector<SequentialUID>& removed, Graveyard& graveyard) {
+  series.memory_bytes = series.log->memoryBytes();
+  if (removed.empty()) {
+    return;
+  }
+  std::lock_guard cache_guard(series.cache_mutex);
+  if (series.cached_latest && std::ranges::find(removed, series.cached_latest->sequential_uid) != removed.end()) {
+    graveyard.cached.push_back(std::move(*series.cached_latest));
+    series.cached_latest.reset();
+  }
+}
+
+ResolvedObjectEntry ObjectStore::resolveLog(const LogEntries& log, size_t index) {
+  return ResolvedObjectEntry{
+      .timestamp = log.timestamps()[index],
+      .sequential_uid = log.uidAt(index),
+      .payload = sdk::makePayloadView(log.canonicalBytesAt(index)),
+  };
+}
+
+std::unique_ptr<ObjectStore::ObjectSeries> ObjectStore::makeSeries(ObjectTopicDescriptor descriptor) {
+  auto series = std::make_unique<ObjectSeries>();
+  if (isCanonicalLogMetadata(descriptor.metadata_json)) {
+    series->log = std::make_unique<LogEntries>();
+  }
+  series->descriptor = std::move(descriptor);
+  return series;
+}
+
+std::optional<LogSeriesView> ObjectStore::logView(ObjectTopicId id) const {
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr || !series->log) {
+    return std::nullopt;
+  }
+  return LogSeriesView(std::shared_lock(series->mutex), series->log.get());
+}
+
 void ObjectStore::accountRemoved(ObjectSeries& series, Graveyard& graveyard, size_t first) {
   if (first == graveyard.entries.size()) {
     return;
@@ -1143,6 +1401,10 @@ void ObjectStore::accountRemoved(ObjectSeries& series, Graveyard& graveyard, siz
 
 void ObjectStore::evictFront(ObjectSeries& series, size_t count, Graveyard& graveyard) {
   if (count == 0) {
+    return;
+  }
+  if (series.log) {
+    accountLogRemoved(series, series.log->evictFront(count), graveyard);
     return;
   }
   // Reserved before anything is unlinked (the entries, and the cache value when it holds one of them), so an
@@ -1165,8 +1427,26 @@ void ObjectStore::evictFront(ObjectSeries& series, size_t count, Graveyard& grav
 void ObjectStore::applyRetention(ObjectSeries& series, Timestamp newest_ts, Graveyard& graveyard) {
   // Each limit counts the oldest entries it expires and evicts them in one pass, so a jump that expires most of a
   // series is linear, not quadratic.
+  if (series.log) {
+    LogEntries& log = *series.log;
+    if (series.budget.time_window_ns > 0) {
+      evictFront(
+          series, countBefore(log.timestamps(), saturatingSub(newest_ts, series.budget.time_window_ns)), graveyard);
+    }
+    // Byte budget: the oldest chunk at a time (a sealed chunk's bytes are freed only with its last row), so the series
+    // may sit up to one chunk over it.
+    while (series.budget.max_memory_bytes > 0 && !log.empty() && series.memory_bytes > series.budget.max_memory_bytes) {
+      evictFront(series, log.frontChunkRows(), graveyard);
+    }
+    if (series.budget.max_entries > 0 && log.size() > series.budget.max_entries) {
+      evictFront(series, log.size() - series.budget.max_entries, graveyard);
+    }
+    return;
+  }
   if (series.budget.time_window_ns > 0) {
-    evictFront(series, countBefore(series.ordered, saturatingSub(newest_ts, series.budget.time_window_ns)), graveyard);
+    evictFront(
+        series, countBefore(series.ordered.timestamps(), saturatingSub(newest_ts, series.budget.time_window_ns)),
+        graveyard);
   }
   if (series.budget.max_memory_bytes > 0) {
     size_t count = 0;

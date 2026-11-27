@@ -249,6 +249,24 @@ topic, to be selected by time and never expanded into columns. It does not decod
 metadata JSON is kept verbatim. The one exception: registering a legacy `__markers__/<key>` name stamps the plot-marker
 metadata on it.
 
+**kLog series.** A topic whose metadata is canonical kLog (`isCanonicalLogMetadata`: `builtin_object_type` "kLog" and
+no wire `payload_encoding`) is stored as a `LogEntries` series instead of payloads: each log is decoded once at push
+(`pushOwned` and bundles decode before taking the lock; `pushLazy` is refused) into columns. Stamps, UIDs and the UID
+order are whole-series vectors; the rest lives in chunks of `LogEntries::kChunkRows` rows. The last two chunks are
+open (plain rows), so a late entry close to the newest reseals nothing; the others are sealed: narrowed source/category
+ids into one dictionary, a level column (a constant when the chunk's rows agree), and the own-stamp offsets and the
+messages in one zstd frame (level 3). A late entry inside a sealed chunk reseals that chunk only; a front eviction
+drops whole chunks and only moves the first row of a sealed one. A read of a sealed chunk decompresses it once into a
+two-chunk cache of decoded chunks per series (its own mutex, keyed by a seal generation, so a reseal never reads stale
+rows): reads of nearby rows, the table view's among them, do not decompress again. A row's UID is its stable key (a
+late entry or a front eviction moves its index, never its UID): `indicesAfterUid(newest)` gives the rows pushed after
+a reader last looked, and `indexOfUid` finds a row again. The reads below serve a log series like any other, re-serializing canonical bytes per entry; typed reads go
+through `logView()`, a `LogSeriesView` that holds the topic's shared lock for its lifetime (one view at a time, and no
+store call while it lives, or a writer waiting for the lock deadlocks the thread). Retention applies as to any topic,
+the streaming window included.
+`flushTo()`, `replaceDatasetFrom()`, the merge and detach move `LogEntries` like entries, and refuse to mix a log series
+with a payload series.
+
 **Entries** are kept in non-decreasing timestamp order. An out-of-order push is inserted at its sorted position; equal
 timestamps keep arrival order.
 
@@ -349,5 +367,7 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
   writes and a derived series have no `finish()`: their last chunk stays unencoded until another follows it.
 - A chunk dropped whole by retention does not say how many rows it held: the rows it gained after a node last read
   it are not reported as a gap.
+- A kLog topic pushed lazily (a plugin's `push_lazy`) is refused: the store decodes logs at push, and a lazy entry has
+  no bytes yet. The plugin gets the store's error.
 - A row begun and never finished (an exception between `beginRow()` and `finishRow()`) keeps its topic's uncommitted
   rows out of every later commit, `finish()` included.

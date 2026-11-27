@@ -8,6 +8,7 @@
 #include <QWidget>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -24,16 +25,6 @@ class LogView;
 }
 
 namespace PJ {
-
-/// One log entry as a host hands it to LogView.
-struct LogEntry {
-  double time = 0.0;     ///< display-axis seconds: the Time column, the merge order and the tracker compare on it
-  int64_t stamp_ns = 0;  ///< the entry's own stamp, shown in the detail pane only
-  LogLevel level = LogLevel::kUnknown;
-  std::string source;
-  std::string category;  ///< empty: none
-  std::string message;
-};
 
 /// What the user set in the panel; a host persists it.
 struct LogViewState {
@@ -52,13 +43,12 @@ struct LogViewState {
 
 /// A log list over several topics merged by time: level toggles, source/category/message filters, a detail pane with
 /// Copy, the last entry at or before the tracker tinted, later entries greyed or hidden. Runtime-agnostic: the host
-/// decodes its data into LogEntry rows keyed by a topic id of its choosing, sets the tracker and the time format, and
-/// answers seekRequested().
+/// hands each topic, keyed by an id of its choosing, as a LogRowSource the view indexes and reads on demand (or as
+/// LogEntry lists the view keeps), sets the tracker and the time format, and answers seekRequested().
 ///
 /// Data calls: an entry list is in ascending time; appendEntries() merges it with what the topic holds, earlier entries
-/// included, after the topic's rows of equal time. Topic ids order rows of equal time. The view keeps at most
-/// log_view::LogStore::kDefaultCapacity rows, dropping the oldest. A selected row keeps its selection across every data
-/// call that leaves it in the store.
+/// included, after the topic's rows of equal time. Topic ids order rows of equal time. A selected row keeps its
+/// selection across every data call that leaves it in the store.
 ///
 /// While playing (setPlaying) the list follows the tracker and ignores scrolling; paused, a tracker move brings its row
 /// into view, except the move a double click on a row asked for.
@@ -73,6 +63,11 @@ class LogView : public QWidget {
   void setTopicLabel(uint32_t topic, const QString& label);
   void appendEntries(uint32_t topic, std::vector<LogEntry> entries);
   void replaceEntries(uint32_t topic, std::vector<LogEntry> entries);
+  /// Shows every row of @p source as topic @p topic, in place of what the topic showed.
+  void setTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source);
+  /// Follows @p source as topic @p topic: drops the rows it evicted and indexes the rows added since
+  /// (LogStore::update).
+  void updateTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source);
   /// Drops the topic and its rows.
   void removeTopic(uint32_t topic);
 
@@ -105,14 +100,16 @@ class LogView : public QWidget {
   void showEvent(QShowEvent* event) override;
 
  private:
-  /// Converts @p entries into rows of @p topic, interning their strings.
-  std::vector<log_view::LogRow> toRows(uint32_t topic, std::vector<LogEntry> entries);
+  /// Applies @p mutate to the store and follows its change, keeping the selection.
+  void changeStore(const std::function<log_view::StoreChange()>& mutate);
   /// Follows a store change in the model, the tracker and the selection; @p selected_key was taken before it.
   void followChange(
       const log_view::StoreChange& change, std::optional<size_t> selected,
       std::optional<log_view::LogStore::RowKey> selected_key);
   [[nodiscard]] log_view::LogFilter currentFilter() const;
   void applyFilters();
+  /// After the model applied a filter: the selection, the scroll position and the detail pane follow.
+  void onFilterApplied();
   void refreshTopics();
   void refreshOptionalColumns();
   [[nodiscard]] std::array<QToolButton*, log_view::kToggleLevelCount> levelToggles() const;
@@ -130,7 +127,10 @@ class LogView : public QWidget {
   log_view::LogStore store_;
   log_view::LogTableModel* model_ = nullptr;
   std::map<uint32_t, QString> topics_;
-  std::map<uint32_t, uint64_t> next_seq_;
+  /// The rows of the topics handed as LogEntry lists.
+  std::map<uint32_t, std::shared_ptr<VectorLogRowSource>> entry_sources_;
+  /// The row selected when applyFilters() ran, re-selected once the filter is applied.
+  std::optional<log_view::LogStore::RowKey> filter_selection_;
   QStringList hidden_topics_;
   QTimer text_timer_;
 

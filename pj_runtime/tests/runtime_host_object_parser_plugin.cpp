@@ -77,6 +77,26 @@ PJ::sdk::SchemaHandler makeFailingScalarHandler() {
   };
 }
 
+// A log schema: byte 0 is the level, the rest the message; an empty payload does not parse.
+PJ::sdk::SchemaHandler makeLogHandler() {
+  return PJ::sdk::SchemaHandler{
+      .object_type = PJ::sdk::BuiltinObjectType::kLog,
+      .parse_scalars = {},
+      .parse_object = [](PJ::Timestamp timestamp_ns,
+                         PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        if (payload.bytes.empty()) {
+          return PJ::unexpected(std::string("empty log message"));
+        }
+        PJ::sdk::Log log;
+        log.timestamp_ns = timestamp_ns + 1;
+        log.level = static_cast<PJ::sdk::Log::Level>(payload.bytes[0]);
+        log.message.assign(reinterpret_cast<const char*>(payload.bytes.data()) + 1, payload.bytes.size() - 1);
+        log.source = "mock_node";
+        return PJ::sdk::ObjectRecord{.ts = std::nullopt, .object = PJ::sdk::BuiltinObject(std::move(log))};
+      },
+  };
+}
+
 class RuntimeHostObjectParser : public PJ::MessageParserPluginBase {
  public:
   RuntimeHostObjectParser() {
@@ -85,6 +105,7 @@ class RuntimeHostObjectParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler("mock/embedded_ts_image", makeEmbeddedTimestampHandler(PJ::sdk::BuiltinObjectType::kImage));
     registerSchemaHandler("mock/object_only_image", makeObjectOnlyHandler());
     registerSchemaHandler("mock/failing_scalar_image", makeFailingScalarHandler());
+    registerSchemaHandler("mock/log", makeLogHandler());
   }
 
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {

@@ -14,7 +14,7 @@ namespace PJ {
 
 namespace {
 
-// ponytail: only kLog is shifted (the Log panel reads its stamp); shift other types when a view reads their stamp.
+// ponytail: only kLog is shifted (a widget shows a log's own stamp); shift other types when a view reads their stamp.
 bool shiftsStamp(sdk::BuiltinObjectType type, const ResolvedObjectEntry& entry) {
   return type == sdk::BuiltinObjectType::kLog && entry.payload_stamp_shift != 0;
 }
@@ -54,16 +54,6 @@ Expected<sdk::PayloadView> canonicalObjectPayload(
 }
 
 }  // namespace
-
-void decodeStoredObjects(
-    const SessionManager& session, ObjectTopicId topic, sdk::BuiltinObjectType type,
-    std::span<const ResolvedObjectEntry> entries,
-    const std::function<void(const ResolvedObjectEntry& entry, Expected<sdk::BuiltinObject> object)>& sink) {
-  const SessionManager::ParserBinding parser = session.parserBindingForObjectTopic(topic);
-  for (const ResolvedObjectEntry& entry : entries) {
-    sink(entry, decodeWith(parser, type, entry));
-  }
-}
 
 ObjectPayloadEncoder canonicalObjectEncoder(const SessionManager& session) {
   return [&session](const WireTarget& target, const ResolvedObjectEntry& entry) {

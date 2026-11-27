@@ -47,6 +47,10 @@ using LazyCallback = std::function<std::optional<sdk::PayloadView>()>;
 
 class ResidentSlot;  // pj_datastore/resident_payload_pool.hpp
 
+/// The next process-unique ContentIdentity revision, shared by every series storage (OrderedEntries, LogEntries), so a
+/// series whose storage is replaced never repeats a revision a reader holds.
+[[nodiscard]] uint64_t nextContentRevision() noexcept;
+
 /// A non-null `seed` serves reads without a fetch while the ResidentPayloadPool keeps it; once evicted, reads use
 /// `fetch` for good, which must reproduce the same bytes. Seeded bytes count against the pool, not the series budget.
 struct LazyPayload {

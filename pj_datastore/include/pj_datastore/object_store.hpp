@@ -21,6 +21,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/log_entries.hpp"
 #include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/ordered_entries.hpp"
 #include "pj_datastore/sequential_uid.hpp"
@@ -130,7 +131,29 @@ class EntryTimestampsView {
   const std::vector<Timestamp>* timestamps_ = nullptr;
 };
 
+/// A kLog series' columns, read in place (ObjectStore::logView()). Holds the series read lock while alive, with
+/// EntryTimestampsView's rules: keep it short, and never call the ObjectStore while holding it (deadlock).
+class LogSeriesView {
+ public:
+  LogSeriesView(std::shared_lock<std::shared_mutex> lock, const LogEntries* entries)
+      : lock_(std::move(lock)), entries_(entries) {}
+
+  const LogEntries& operator*() const {
+    return *entries_;
+  }
+  const LogEntries* operator->() const {
+    return entries_;
+  }
+
+ private:
+  std::shared_lock<std::shared_mutex> lock_;
+  const LogEntries* entries_ = nullptr;
+};
+
 /// Timestamped opaque payloads (images, point clouds, annotations) selected by time and never expanded into columns.
+/// A canonical kLog topic (isCanonicalLogMetadata()) is stored as LogEntries instead: its entries are decoded on push
+/// (owned pushes only; a lazy push is rejected) and generic reads return re-serialized canonical bytes with
+/// payload_stamp_shift 0, the own stamp already on the store clock.
 /// Thread-safe: a store-wide shared mutex, then one per topic. Locking and lifetime rules: docs/ARCHITECTURE.md,
 /// "ObjectStore".
 class ObjectStore {
@@ -180,6 +203,9 @@ class ObjectStore {
   // --- Write ---
 
   Status pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload);
+  /// pushOwned() of a decoded log, for a topic stored as LogEntries (logView() has a value); skips the codec round
+  /// trip. An error on any other topic.
+  Status pushLog(ObjectTopicId id, Timestamp timestamp, sdk::Log log);
 
   /// Publishes one entry to each of several distinct topics as one transaction, under the exclusive store lock.
   /// Phase one validates every write and runs every `drop`: an unknown or repeated topic, or an exception from a
@@ -254,6 +280,9 @@ class ObjectStore {
   /// in); unknown topics are skipped.
   std::vector<EntryTimestampsView> entryTimestamps(std::vector<ObjectTopicId> ids) const;
 
+  /// The columns of a kLog series; nullopt for any other topic.
+  [[nodiscard]] std::optional<LogSeriesView> logView(ObjectTopicId id) const;
+
   // --- Retention ---
 
   void setRetentionBudget(ObjectTopicId id, RetentionBudget budget);
@@ -307,6 +336,8 @@ class ObjectStore {
     struct SeriesSnapshot {
       std::deque<ObjectEntry> entries;
       std::vector<Timestamp> entry_timestamps;
+      /// A log series' rows (then `entries` is empty).
+      std::unique_ptr<LogEntries> log;
       RetentionBudget budget;
       size_t memory_bytes = 0;
     };
@@ -328,7 +359,10 @@ class ObjectStore {
  private:
   struct ObjectSeries {
     ObjectTopicDescriptor descriptor;
-    OrderedEntries ordered;
+    OrderedEntries ordered;  ///< empty when `log` is set
+    /// Set for a canonical kLog topic: its entries live here instead of `ordered`. Chosen from the metadata at
+    /// registration (and again when a reload replaces the metadata).
+    std::unique_ptr<LogEntries> log;
     RetentionBudget budget;
     size_t memory_bytes = 0;
     mutable std::shared_mutex mutex;
@@ -377,6 +411,14 @@ class ObjectStore {
   SequentialUID insertLocked(
       ObjectSeries& series, ObjectEntry&& entry, Graveyard& graveyard,
       const OrderedEntries::Removal* removal = nullptr);
+  // insertLocked() for a log series.
+  SequentialUID insertLogLocked(
+      ObjectSeries& series, Timestamp timestamp, sdk::Log&& log, Graveyard& graveyard,
+      const OrderedEntries::Removal* removal = nullptr);
+  // After a log series lost rows: recharges its bytes and drops the warm cache if it named one of @p removed.
+  static void accountLogRemoved(ObjectSeries& series, const std::vector<SequentialUID>& removed, Graveyard& graveyard);
+  static ResolvedObjectEntry resolveLog(const LogEntries& log, size_t index);
+  static std::unique_ptr<ObjectSeries> makeSeries(ObjectTopicDescriptor descriptor);
   // Removes the bytes of graveyard.entries[first..] from the series total and drops the warm cache if it holds one
   // of them. Allocation-free when graveyard.cached has room for one more.
   static void accountRemoved(ObjectSeries& series, Graveyard& graveyard, size_t first);

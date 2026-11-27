@@ -11,6 +11,18 @@ option(
 
 find_package(tsl-robin-map REQUIRED)
 find_package(nlohmann_json REQUIRED)  # marker_topic_metadata.cpp
+# log_entries.cpp: sealed log chunks. The browser build provides the targets itself (cmake/PjWasmDependencies.cmake).
+# zstd's config defines libzstd_static and/or libzstd_shared; the libzstd alias exists only from 1.5.6 (Nix ships
+# the shared one alone).
+if(NOT TARGET zstd::libzstd_static AND NOT TARGET zstd::libzstd_shared AND NOT TARGET zstd::libzstd)
+  find_package(zstd CONFIG REQUIRED)
+endif()
+foreach(_pj_zstd zstd::libzstd_static zstd::libzstd_shared zstd::libzstd)
+  if(TARGET ${_pj_zstd})
+    set(PJ_DATASTORE_ZSTD ${_pj_zstd})
+    break()
+  endif()
+endforeach()
 # Google Benchmark is skipped in the MemorySanitizer lane, which builds no benchmarks: requiring it would mean
 # instrumenting a library nothing there links, and its regex-backend detection fails against an instrumented libc++.
 if(PJ_BUILD_TESTS AND NOT PJ_ENABLE_MSAN)
@@ -42,6 +54,7 @@ add_library(pj_datastore STATIC
   src/colormap_registry.cpp
   src/sequential_uid.cpp
   src/ordered_entries.cpp
+  src/log_entries.cpp
   src/object_store.cpp
   src/marker_topic_metadata.cpp
   src/resident_payload_pool.cpp
@@ -69,6 +82,7 @@ target_link_libraries(pj_datastore
   PRIVATE
     tsl::robin_map
     nlohmann_json::nlohmann_json
+    ${PJ_DATASTORE_ZSTD}
     $<BUILD_INTERFACE:pj_internal_fmt>
     nanoarrow::nanoarrow
     nanoarrow::nanoarrow_ipc
@@ -97,6 +111,8 @@ if(PJ_BUILD_TESTS)
     tests/sequential_uid_test.cpp
     tests/merge_test.cpp
     tests/ordered_entries_test.cpp
+    tests/log_entries_test.cpp
+    tests/object_store_log_test.cpp
     tests/object_store_test.cpp
     tests/marker_topic_metadata_test.cpp
     tests/resident_payload_pool_test.cpp

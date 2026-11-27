@@ -37,7 +37,10 @@ LogTableModel::LogTableModel(
       store_(store),
       topic_label_(std::move(topic_label)),
       palette_source_(palette_source),
-      tracker_(std::numeric_limits<double>::max()) {}
+      tracker_(std::numeric_limits<double>::max()) {
+  slice_timer_.setInterval(0);
+  connect(&slice_timer_, &QTimer::timeout, this, &LogTableModel::continueFilter);
+}
 
 QString LogTableModel::levelName(LogLevel level) {
   const auto found = std::find_if(
@@ -70,7 +73,12 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
   if (old_index < pending_drop_ || old_index - pending_drop_ >= store_.size()) {
     return {};  // a row whose removal is being signalled
   }
-  const LogRow& row = store_.row(old_index - pending_drop_);
+  const bool wants_message = role == Qt::DisplayRole && index.column() == kMessage;
+  const LogRow row = store_.row(old_index - pending_drop_, wants_message);
+  if (!row.present) {
+    // Gone from its topic, not re-indexed yet: its time only.
+    return role == Qt::DisplayRole && index.column() == kTime ? QVariant(timeText(row)) : QVariant();
+  }
   switch (role) {
     case Qt::DisplayRole:
       switch (index.column()) {
@@ -146,17 +154,72 @@ QVariant LogTableModel::headerData(int section, Qt::Orientation orientation, int
 }
 
 void LogTableModel::setFilter(const LogFilter& filter) {
+  if (store_.size() > kFilterSliceRows) {
+    pending_filter_ = filter;
+    pending_.clear();
+    pending_position_ = 0;
+    slice_timer_.start();
+    return;
+  }
+  slice_timer_.stop();
+  pending_filter_.reset();
   beginResetModel();
   filter_ = filter;
   filtered_.clear();
   CompiledFilter(filter_, store_).collect(0, store_.size(), filtered_);
   revealed_ = revealedCount(store_, filtered_, tracker_);
   endResetModel();
+  emit filterApplied();
+}
+
+void LogTableModel::continueFilter() {
+  if (!pending_filter_) {
+    slice_timer_.stop();
+    return;
+  }
+  pending_position_ =
+      CompiledFilter(*pending_filter_, store_).collect(pending_position_, store_.size(), kFilterSliceRows, pending_);
+  if (pending_position_ < store_.size()) {
+    return;
+  }
+  slice_timer_.stop();
+  beginResetModel();
+  filter_ = *std::exchange(pending_filter_, std::nullopt);
+  filtered_ = std::move(pending_);
+  pending_.clear();
+  revealed_ = revealedCount(store_, filtered_, tracker_);
+  endResetModel();
+  emit filterApplied();
+}
+
+void LogTableModel::followPending(const StoreChange& change) {
+  if (!pending_filter_) {
+    return;
+  }
+  if (change.reset) {
+    pending_.clear();
+    pending_position_ = 0;
+    return;
+  }
+  // Like filtered_: rows from old_tail on are re-scanned, evicted ones leave, the rest shift.
+  std::erase_if(
+      pending_, [&change](uint32_t index) { return index >= change.old_tail || index < change.dropped_front; });
+  for (auto& index : pending_) {
+    index -= static_cast<uint32_t>(change.dropped_front);
+  }
+  const size_t kept_end = change.old_tail > change.dropped_front ? change.old_tail - change.dropped_front : 0;
+  const size_t scanned = pending_position_ > change.dropped_front ? pending_position_ - change.dropped_front : 0;
+  pending_position_ = std::min(scanned, kept_end);
 }
 
 void LogTableModel::applyStoreChange(const StoreChange& change) {
+  followPending(change);
   if (change.reset) {
-    setFilter(filter_);
+    beginResetModel();
+    filtered_.clear();
+    revealed_ = 0;
+    endResetModel();
+    setFilter(pending_filter_ ? *pending_filter_ : filter_);
     return;
   }
   // The store has already changed. Removal signals go first; until the indices are shifted, data() reads

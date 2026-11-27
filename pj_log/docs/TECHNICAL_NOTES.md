@@ -102,9 +102,28 @@ After, a late refresh costs what an in-order one does (1.9 ms median at 10 000 m
 entries, and the rebuild is the model re-filtering the tail from the earliest late row, about 50 ms of rows. The panel
 keeps every row, like the in-order runs.
 
-What the code does: `LogDockWidget::loadTopic` re-reads a topic only on a `removal` move or a display-offset change.
-Re-test when the retention defaults change, with lateness of seconds (the rebuilt tail grows with it), or when the
-panel's `LogStore` capacity is reached.
+Re-measured 2026-11-27 against the index (the panel reads the store, own stamps 0-5 ms before the store stamp), with
+the copying panel of the same day for comparison:
+
+| msgs/s | order | panel | GUI CPU % | refreshes (rebuilds) | refresh ms median | p95 | max | rows shown at the end |
+|-------:|-------|-------|----------:|---------------------:|------------------:|----:|----:|----------------------:|
+| 10 000 | in order | copy | 3.5 | 41 (0) | 2.0 | 2.7 | 2.7 | 100 000 |
+| 10 000 | in order | index | 3.2 | 41 (21) | 1.1 | 1.6 | 1.8 | 49 999 |
+| 10 000 | late <= 50 ms | copy | 3.2 | 41 (40) | 2.0 | 2.7 | 2.8 | 100 000 |
+| 10 000 | late <= 50 ms | index by row number | 1.4 | 41 (39) | 1.2 | 1.7 | 1.9 | 49 779 |
+| 10 000 | late <= 50 ms | index by UID | 2.9 | 41 (40) | 1.2 | 1.8 | 1.9 | 49 769 |
+
+The index shows what the 5 s window retains (the copy kept every row), and its in-order rebuilds are the rows that
+window evicts leaving the model.
+
+The row-number index re-indexed the tail from the oldest late entry on and, until then, painted the rows after a
+late entry without text; the UID index (same day) merges only the new rows and paints every row with its text. Its
+refresh costs the same; its GUI CPU is twice the row-number index's and below the copy's (whether the blank rows
+explain the difference is reasoning, not profiled).
+
+What the code does now: `LogDockWidget::loadTopic` indexes the entries with a UID above the newest indexed, late ones
+included, and the whole topic only on a `removal` move or a display-offset change; the panel holds no rows, so rows
+the store evicts leave it. Re-test when the retention defaults change.
 
 ## One-off costs at 1e5 entries
 
@@ -113,10 +132,36 @@ panel's `LogStore` capacity is reached.
 - One filter change over 1e5 rows (what the debounce timer's `applyFilters` runs, plus the paint): 21 ms to set
   "timeout", 12.5 ms to clear it (medians of 5).
 
-What the code does: both re-walk every row on the GUI thread in one go. Re-test with larger logs.
+Measured when the panel copied each entry. What the code does now: an accept indexes every row on the GUI thread in
+one go (reading times and ids, not messages); a filter change over more than `LogTableModel::kFilterSliceRows` rows
+runs one slice per event-loop turn. Re-test with larger logs.
+
+## Large logs
+
+Measured 2026-11-27 (`log_panel_benchmark --only bigload`, Release, offscreen, one topic, own stamps 0-5 ms before the
+store stamp; the "copy" build is the same benchmark against the panel that copied every row, capped at 1'000'000):
+
+| rows | panel | panel RSS | accept | level toggle | filter "timeout" | clear | 10 screens scrolled | longest GUI event |
+|-----:|-------|----------:|-------:|-------------:|-----------------:|------:|--------------------:|------------------:|
+| 1e6 | copy | 265 MiB | 641 ms | 21 ms | 73 ms | 23 ms | 32.6 ms | the whole filter, in one call |
+| 1e6 | index by row number | 74 MiB | 111 ms | 47 ms | 186 ms | 51 ms | 33.6 ms | 12 ms filtering, 18 ms on clear |
+| 1e6 | index by UID | 82 MiB | 142 ms | 36 ms | 179 ms | 36 ms | 35.2 ms | 10 ms filtering, 17 ms on clear |
+| 1e7 | index by row number | 594 MiB | 1229 ms | 502 ms | 1894 ms | 581 ms | 35.3 ms | 18 ms filtering, 106-165 ms on completion |
+
+Wall times of a filter run until the list shows its result; the index filters in slices of
+`LogTableModel::kFilterSliceRows`, so the GUI stays responsive meanwhile. 100 000-row slices took up to 22 ms with a
+message needle, 50 000-row slices 12 ms. Scrolling costs what the copy did: the rows shown read from the store's
+decoded-chunk cache, one decompression per chunk scrolled into view.
+
+The completion event grows with the rows the result holds (18 ms for 5 % of 1e7, 165 ms for all of them), as does the
+panel's RSS beyond the index (16 bytes a row when it was measured, 24 now) and the filtered list (4): about 42 bytes
+a row. Reasoning, not
+profiled: `QTreeView` keeps one layout item per row and rebuilds them on each model reset; a `QTableView` or a
+`QListView` with uniform rows keeps none.
+
+What the code does: slices of 50 000 rows, a UID-keyed index (the 1e7 rows were measured with the row-number index).
+Re-test at 1e7 rows, when the list widget changes, or with logs whose messages are much longer.
 
 ## Not measured
 
-- Logs of 1e6 entries and `LogStore`'s capacity (`LogStore::kDefaultCapacity`): `LogView` constructs its store with
-  the default and has no knob to lower it, and the runs stop at 1e5 entries.
 - The app stylesheet, a real display and its compositor, and the browser build.

@@ -7,39 +7,52 @@ pj_app (MainWindow, TopicDemandController, PendingDisplayBinder)
    │ creates, wires demand and time format
    ▼
 LogDockWidget (IDataWidget) ── SessionManager / CatalogModel / PlaybackEngine (pj_runtime)
-   │ LogEntry rows per topic id, tracker, seek answers
+   │ a LogRowSource per topic id (over ObjectStore::logView), tracker, seek answers
    ▼
-LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (core, Qt-free)
+LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (core, Qt-free) ── LogRowSource per topic
 ```
 
-- **`LogStore`** holds every row of every topic in one sequence ordered by (time, topic id, arrival). Repeated strings
-  (source, category) are interned. Mutations (`insert`, `removeWire`, `replaceWire`) return a `StoreChange` that says
-  which rows were evicted, kept and added, so the model updates without a reset. Beyond its capacity the oldest rows
-  are evicted.
+- **`LogRowSource`** is one topic's rows, read on demand: size, a stable key per row (`find(key, hint)` gives its
+  index now, `indicesAfter(key)` the rows added since), time, level, source/category dictionary ids, own stamp, and
+  messages in batches. `batch()` pins
+  one state for a run of reads (the dock's source holds one `LogSeriesView` for it). `VectorLogRowSource` owns rows,
+  for hosts that hand `LogEntry` lists and for tests.
+- **`LogStore`** is the merged index: one `RowRef` (time, topic id, key) per row, ordered by (time, topic id, key).
+  `update` drops the rows the source evicted (they sort at or before its oldest row, so only that prefix is checked)
+  and merges in the rows keyed above the newest it indexed; `prune`, `removeWire` and `replaceWire` complete it. Each
+  returns a `StoreChange` that says which rows were evicted, kept and added, so the model updates without a reset.
+  Source and category ids map to panel string ids once per new id. Rows are read from the source by key on demand
+  (the store's `LogEntries` caches what it decodes; a sequential reader passes the next index as a hint, so a filter
+  pass looks nothing up); a row its source evicted before the dock's next update reads as absent (no text).
 - **`CompiledFilter`** resolves a `LogFilter` (enabled levels, case-insensitive source/category/message substrings,
-  hidden topics) against one store; `LogLevel::kUnknown` rows always pass the level test.
-- **`LogTableModel`** shows the filtered rows; the last row at or before the tracker is tinted, later ones are greyed
+  hidden topics) against one store: the source and category needles are evaluated once per panel string, and the
+  rows are read one topic at a time in one batch, messages in one call over the topic's rows in range.
+  `LogLevel::kUnknown` rows always pass the level test. `collect` takes a row budget and returns where it stopped.
+- **`LogTableModel`** shows the filtered rows; a filter over more than `kFilterSliceRows` rows runs one slice per
+  event-loop turn, the previous result shown until the new one is complete (`filterApplied`). The last row at or before the tracker is tinted, later ones are greyed
   or hidden (`FutureRows`). A Warn, Error or Fatal level colours the Level cell only. Colours come from
   `FrameworkTokens`.
 - **`LogView`** is the list, the toolbar (level toggles, filters, Topics menu, future-rows choice) and the detail pane
   with Copy. The Source and Category columns and their filter fields show while a row in the store fills them
-  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. It is runtime-agnostic: the host hands it `LogEntry` rows, sets the tracker and the `TimeLabelFormat`,
-  and answers `seekRequested`. It keeps the selection across every data call that leaves the selected row in the
+  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. It is runtime-agnostic: the host hands it a `LogRowSource` per topic (`setTopicRows`, `updateTopicRows`) or
+  `LogEntry` rows, sets the tracker and the `TimeLabelFormat`, and answers `seekRequested`. It keeps the selection across every data call that leaves the selected row in the
   store.
 - **`LogDockWidget`** is the panel the dock system hosts (`IDataWidget`, kind and XML tag `log`).
 
 ## Data flow
 
-The dock reads each `kLog` topic from the session's ObjectStore and decodes it through `decodeStoredObjects`
-(`pj_runtime/CanonicalObjectPayload.h`), which applies the entry's stamp shift. Rows carry display-axis seconds
+The dock accepts canonical `kLog` topics, which the ObjectStore keeps as `LogEntries` (decoded once at ingest), and
+indexes them through a `StoreLogSource`: each read takes an `ObjectStore::logView` (a batch, one for all its reads).
+A row's key is its entry's UID, which a late entry or a front eviction leaves alone. Rows carry display-axis seconds
 (`rawToDisplaySecondsAtOrAfter` of the entry's store stamp, so a seek to a row reveals it); the detail pane also shows
-the log's own stamp.
+the log's own stamp (on the store clock, so a merge shift moves it too).
 
 Entries landing (`dataPublished`, `ingestEnded`, `derivedEntriesPublished`) bring an update at once, then at most one
-per `kEntriesLandedIntervalMs`: each topic appends what `drainNewSince` returns after its cursor, late entries
-included (`LogStore::insert` merges them into place), or is re-read when an entry the panel may hold was removed or
-changed (`contentIdentity().removal`: a reload, a merge). A display-offset change re-reads every topic. The panel keeps
-the rows the store's retention evicted: its own `LogStore` capacity bounds it. A topic that leaves the store (removed, reparented by a merge) goes back to pending and binds again by the identity it
+per `kEntriesLandedIntervalMs`. Each update reads the topic's identity; unless `removal` moved (a removal, a reload,
+a merge) or the display offset changed, which re-index the whole topic, it drops the rows the store evicted and indexes
+the entries with a UID above the newest indexed, late ones in their place. A topic no longer stored as `LogEntries`
+leaves the panel and waits as pending. Rows the store's retention evicts leave the panel: a live
+log keeps what the streaming window keeps, like every other topic. A topic that leaves the store (removed, reparented by a merge) goes back to pending and binds again by the identity it
 was added with (its dataset's id, source and path, kept from when the dataset was loaded). A topic or dataset the user
 deletes leaves the panel instead (`discardTopic` / `discardDataset`, called by the shell before the store drops it).
 A pending topic that resolves to a topic shown already counts as resolved.
@@ -59,6 +72,12 @@ Advertised topics with no storage yet (a placeholder drop) wait as pending, and 
 
 ## Known gaps
 
-- A re-read (a removal in the store, a display-offset change) replaces a topic's rows with what the store still
-  retains: the rows retention evicted are lost then.
-- Every row is held in memory up to `LogStore`'s capacity; the oldest are dropped beyond it.
+- The index costs 24 bytes a row (`RowRef`), on top of what the store holds; the `QTreeView` adds about 42 bytes a row
+  shown and a relayout of every shown row when a filter completes (164 ms at 1e7 rows, TECHNICAL_NOTES "Large logs").
+- A topic evicting rows that sort after another topic's rows makes the model re-filter every row from the first one
+  evicted (`StoreChange` expresses only a leading eviction).
+- A late entry shows from the dock's next update on (up to `kEntriesLandedIntervalMs`); after a reload, every row reads
+  as absent until it.
+- A row read with no hint (a painted cell, the detail pane) is a UID lookup, O(log n) in the topic's rows.
+- Only canonical kLog topics are accepted: a kLog topic stored with a wire `payload_encoding` (not a LogEntries series)
+  is refused.
