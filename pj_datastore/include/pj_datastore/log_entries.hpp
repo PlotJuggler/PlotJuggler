@@ -126,6 +126,28 @@ class LogEntries {
   /// @p uid is the series maximum (the store mints it right before), as for OrderedEntries::push().
   PushOrder push(Timestamp timestamp, SequentialUID uid, const sdk::Log& log);
 
+  // The mutators below mirror OrderedEntries' (same ordering and identity semantics). Nothing dies with a removed row
+  // (no closure, no anchor), so they return the removed UIDs, in row order, instead of a graveyard.
+
+  std::vector<SequentialUID> evictFront(size_t count);
+  [[nodiscard]] Removal planRemoval(const EntryPredicate& drop) const;
+  std::vector<SequentialUID> remove(const Removal& plan);
+  std::pair<PushOrder, std::vector<SequentialUID>> removeAndPush(
+      const Removal& plan, Timestamp timestamp, SequentialUID uid, const sdk::Log& log);
+  /// Keeps evicted().
+  void clear();
+  /// Moves the store stamps by @p delta; the own stamps move with them (rows without one stay without).
+  bool shift(Timestamp delta);
+  void reuidAll();
+  void rebuildUidOrder();
+  /// flushTo(): adds @p src's rows with fresh UIDs, each after this series' rows of equal stamp, and empties @p src.
+  void appendReuidFrom(LogEntries& src);
+  /// replaceDatasetFrom(): takes @p src's rows with fresh UIDs (this series' rows go) and empties @p src.
+  void adoptReuidFrom(LogEntries& src);
+  /// mergeDatasets(): this series' rows and every source's, stably by stamp in that order, all with fresh UIDs; empties
+  /// the sources.
+  void mergeReuidFrom(const std::vector<LogEntries*>& sources);
+
  private:
   struct Row {
     uint8_t level = 0;
@@ -136,6 +158,7 @@ class LogEntries {
     std::string message;
   };
   struct Chunk;
+  struct Cursor;
   /// "No own stamp": an own stamp exactly this far from the store stamp reads as none.
   static constexpr int64_t kNoOwnStamp = std::numeric_limits<int64_t>::min();
 
@@ -148,6 +171,15 @@ class LogEntries {
   /// (chunk, offset in it) of row @p index.
   [[nodiscard]] std::pair<size_t, size_t> locate(size_t index) const;
   void appendRow(Row&& row);
+  /// Appends at the back without touching uid_order_: the caller rebuilds it.
+  void appendRaw(Timestamp timestamp, SequentialUID uid, Row&& row);
+  /// Drops the rows from @p keep on, returning them in order.
+  std::vector<LogRecord> truncate(size_t keep);
+  /// Re-keys @p row's dictionary ids from @p from's dictionary into this one's.
+  void remap(const LogEntries& from, Row& row, std::vector<uint32_t>& cache);
+  /// Removes the rows whose plan position is kRemoved from the payload chunks.
+  void compactChunks(const Removal& plan);
+  static size_t rowBytes(const Row& row);
   void insertRow(size_t index, Row&& row);
   void rebuildChunkStarts();
   void seal(Chunk& chunk);

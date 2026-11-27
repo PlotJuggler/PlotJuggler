@@ -8,7 +8,10 @@
 
 #include <gtest/gtest.h>
 
+#include <functional>
+#include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "pj_base/builtin/builtin_object_codec.hpp"
@@ -122,6 +125,252 @@ TEST(LogEntries, SourcesShareDictionaryIds) {
   EXPECT_EQ(log.dictionaryText(log.sourceId(0)), "nav");
   EXPECT_EQ(log.categoryId(0), 0u);
   EXPECT_EQ(log.dictionaryText(0), "");
+}
+
+// --- Mutations, driven alike on both storages ---
+
+// An OrderedEntries and a LogEntries with the same rows; the ordered payload carries the message, so the two can be
+// compared row by row after a mutation moves rows around.
+struct Twin {
+  OrderedEntries ordered;
+  LogEntries log;
+
+  void push(Timestamp ts, const std::string& message) {
+    const SequentialUID uid = SequentialUID::getNext();
+    ObjectEntry entry = entryAt(ts, uid);
+    entry.payload = std::make_shared<const std::vector<uint8_t>>(message.begin(), message.end());
+    ordered.push(std::move(entry));
+    log.push(ts, uid, makeLog(message));
+  }
+
+  static std::string orderedMessage(const ObjectEntry& entry) {
+    const auto& bytes = *std::get<SharedBuffer>(entry.payload);
+    return {bytes.begin(), bytes.end()};
+  }
+
+  void expectSame(const std::string& scenario) const {
+    ASSERT_EQ(log.size(), ordered.size()) << scenario;
+    EXPECT_EQ(log.timestamps(), ordered.timestamps()) << scenario;
+    for (size_t i = 0; i < log.size(); ++i) {
+      EXPECT_EQ(log.uidAt(i), ordered.entryAt(i).sequential_uid) << scenario << " row " << i;
+      EXPECT_EQ(log.recordAt(i).log.message, orderedMessage(ordered.entryAt(i))) << scenario << " row " << i;
+    }
+    std::vector<SequentialUID> log_walk;
+    std::vector<SequentialUID> ordered_walk;
+    for (SequentialUID u = log.firstUid(); u.valid(); u = log.nextUidAfter(u)) {
+      log_walk.push_back(u);
+    }
+    for (SequentialUID u = ordered.firstUid(); u.valid(); u = ordered.nextUidAfter(u)) {
+      ordered_walk.push_back(u);
+    }
+    EXPECT_EQ(log_walk, ordered_walk) << scenario;
+  }
+};
+
+struct Moved {
+  bool content;
+  bool rewrite;
+  bool removal;
+  bool operator==(const Moved&) const = default;
+};
+Moved moved(const OrderedEntries::ContentIdentity& before, const OrderedEntries::ContentIdentity& after) {
+  return {before.content != after.content, before.rewrite != after.rewrite, before.removal != after.removal};
+}
+
+void fill(Twin& twin) {
+  for (const Timestamp ts : {10, 40, 20, 60, 20, 80, 100, 30}) {
+    twin.push(ts, "m" + std::to_string(ts) + "-" + std::to_string(twin.log.size()));
+  }
+}
+
+std::vector<SequentialUID> uidsOf(const std::vector<ObjectEntry>& entries) {
+  std::vector<SequentialUID> out;
+  for (const ObjectEntry& entry : entries) {
+    out.push_back(entry.sequential_uid);
+  }
+  return out;
+}
+
+TEST(LogEntries, MutatorsMatchOrderedEntries) {
+  struct Scenario {
+    std::string name;
+    std::function<std::vector<SequentialUID>(OrderedEntries&)> on_ordered;
+    std::function<std::vector<SequentialUID>(LogEntries&)> on_log;
+  };
+  const EntryPredicate every_twentieth = [](Timestamp t, SequentialUID) { return t % 20 == 0; };
+  const std::vector<Scenario> scenarios = {
+      {"evictFront",
+       [](OrderedEntries& o) {
+         std::vector<ObjectEntry> removed;
+         o.evictFront(2, removed);
+         return uidsOf(removed);
+       },
+       [](LogEntries& l) { return l.evictFront(2); }},
+      {"remove",
+       [&](OrderedEntries& o) {
+         std::vector<ObjectEntry> removed;
+         o.remove(o.planRemoval(every_twentieth), removed);
+         return uidsOf(removed);
+       },
+       [&](LogEntries& l) { return l.remove(l.planRemoval(every_twentieth)); }},
+      {"removeAndPush",
+       [&](OrderedEntries& o) {
+         std::vector<ObjectEntry> removed;
+         ObjectEntry entry = entryAt(50, SequentialUID::getNext());
+         const std::string message = "pushed";
+         entry.payload = std::make_shared<const std::vector<uint8_t>>(message.begin(), message.end());
+         // Same UID on both sides: the log scenario reads it back from the ordered one.
+         o.removeAndPush(o.planRemoval(every_twentieth), std::move(entry), removed);
+         return uidsOf(removed);
+       },
+       nullptr},
+      {"clear",
+       [](OrderedEntries& o) {
+         o.clear();
+         return std::vector<SequentialUID>{};
+       },
+       [](LogEntries& l) {
+         l.clear();
+         return std::vector<SequentialUID>{};
+       }},
+      {"shift",
+       [](OrderedEntries& o) {
+         o.shift(100);
+         return std::vector<SequentialUID>{};
+       },
+       [](LogEntries& l) {
+         l.shift(100);
+         return std::vector<SequentialUID>{};
+       }},
+  };
+  for (const Scenario& scenario : scenarios) {
+    Twin twin;
+    fill(twin);
+    const auto ordered_before = twin.ordered.contentIdentity();
+    const auto log_before = twin.log.contentIdentity();
+    std::vector<SequentialUID> ordered_removed = scenario.on_ordered(twin.ordered);
+    std::vector<SequentialUID> log_removed;
+    if (scenario.on_log) {
+      log_removed = scenario.on_log(twin.log);
+    } else {
+      // removeAndPush: push the entry the ordered side just took, with its UID.
+      const size_t at = *twin.ordered.indexAtOrBefore(50);
+      auto result = twin.log.removeAndPush(
+          twin.log.planRemoval(every_twentieth), 50, twin.ordered.entryAt(at).sequential_uid, makeLog("pushed"));
+      log_removed = std::move(result.second);
+    }
+    EXPECT_EQ(log_removed, ordered_removed) << scenario.name;
+    EXPECT_EQ(moved(log_before, twin.log.contentIdentity()), moved(ordered_before, twin.ordered.contentIdentity()))
+        << scenario.name;
+    twin.expectSame(scenario.name);
+  }
+}
+
+TEST(LogEntries, ReuidAndRebuildMatchOrderedEntries) {
+  Twin twin;
+  fill(twin);
+  const auto ordered_before = twin.ordered.contentIdentity();
+  const auto log_before = twin.log.contentIdentity();
+  twin.ordered.reuidAll();
+  twin.log.reuidAll();
+  EXPECT_EQ(moved(log_before, twin.log.contentIdentity()), moved(ordered_before, twin.ordered.contentIdentity()));
+  ASSERT_EQ(twin.log.timestamps(), twin.ordered.timestamps());
+  for (size_t i = 1; i < twin.log.size(); ++i) {
+    EXPECT_LT(twin.log.uidAt(i - 1), twin.log.uidAt(i)) << i;
+  }
+  EXPECT_EQ(twin.log.firstUid(), twin.log.uidAt(0));
+}
+
+TEST(LogEntries, AppendReuidFromMatchesOrderedEntries) {
+  Twin destination;
+  fill(destination);
+  Twin source;
+  for (const Timestamp ts : {25, 60, 120}) {
+    source.push(ts, "s" + std::to_string(ts));
+  }
+  const auto ordered_before = destination.ordered.contentIdentity();
+  const auto log_before = destination.log.contentIdentity();
+  destination.ordered.appendReuidFrom(source.ordered);
+  destination.log.appendReuidFrom(source.log);
+  EXPECT_TRUE(source.log.empty());
+  EXPECT_EQ(
+      moved(log_before, destination.log.contentIdentity()),
+      moved(ordered_before, destination.ordered.contentIdentity()));
+  ASSERT_EQ(destination.log.timestamps(), destination.ordered.timestamps());
+  for (size_t i = 0; i < destination.log.size(); ++i) {
+    EXPECT_EQ(destination.log.recordAt(i).log.message, Twin::orderedMessage(destination.ordered.entryAt(i))) << i;
+  }
+  // The destination's rows keep their UIDs; the moved rows' are fresh and above them.
+  EXPECT_EQ(destination.log.indexOfUid(destination.ordered.entryAt(0).sequential_uid), 0u);
+}
+
+TEST(LogEntries, AdoptReuidFromTakesEveryRow) {
+  LogEntries destination;
+  destination.push(1, SequentialUID::getNext(), makeLog("old"));
+  LogEntries source;
+  source.push(5, SequentialUID::getNext(), makeLog("new", "a"));
+  source.push(6, SequentialUID::getNext(), makeLog("newer", "b"));
+  destination.adoptReuidFrom(source);
+  EXPECT_TRUE(source.empty());
+  ASSERT_EQ(destination.size(), 2u);
+  EXPECT_EQ(destination.recordAt(0).log, makeLog("new", "a"));
+  EXPECT_EQ(destination.recordAt(1).log, makeLog("newer", "b"));
+}
+
+TEST(LogEntries, EvictedCountIsMonotonic) {
+  LogEntries log;
+  for (Timestamp ts = 1; ts <= 5; ++ts) {
+    log.push(ts, SequentialUID::getNext(), makeLog("m"));
+  }
+  (void)log.evictFront(2);
+  (void)log.evictFront(1);
+  EXPECT_EQ(log.evicted(), 3u);
+  log.clear();
+  EXPECT_EQ(log.evicted(), 3u);
+}
+
+TEST(LogEntries, ShiftMovesOwnStampsButNotMissingOnes) {
+  LogEntries log;
+  log.push(100, SequentialUID::getNext(), makeLog("a", "n", sdk::Log::Level::kInfo, 105));
+  log.push(200, SequentialUID::getNext(), makeLog("b", "n", sdk::Log::Level::kInfo, 0));
+  EXPECT_TRUE(log.shift(1000));
+  EXPECT_EQ(log.timestamps()[0], 1100);
+  EXPECT_EQ(log.ownStamp(0), 1105);
+  EXPECT_EQ(log.ownStamp(1), 0);
+  EXPECT_EQ(log.recordAt(0).log.timestamp_ns, 1105);
+  EXPECT_EQ(log.recordAt(1).log.timestamp_ns, 0);
+}
+
+TEST(LogEntries, AppendFromRemapsDictionaries) {
+  LogEntries destination;
+  destination.push(1, SequentialUID::getNext(), makeLog("x", "b"));
+  LogEntries source;
+  source.push(2, SequentialUID::getNext(), makeLog("y", "a", sdk::Log::Level::kInfo, 0, "cat"));
+  destination.appendReuidFrom(source);
+  ASSERT_EQ(destination.size(), 2u);
+  EXPECT_EQ(destination.dictionaryText(destination.sourceId(0)), "b");
+  EXPECT_EQ(destination.dictionaryText(destination.sourceId(1)), "a");
+  EXPECT_EQ(destination.dictionaryText(destination.categoryId(1)), "cat");
+}
+
+TEST(LogEntries, MergeSortedIsStableByTimestamp) {
+  LogEntries first;
+  first.push(10, SequentialUID::getNext(), makeLog("first@10"));
+  first.push(30, SequentialUID::getNext(), makeLog("first@30"));
+  LogEntries second;
+  second.push(10, SequentialUID::getNext(), makeLog("second@10"));
+  second.push(20, SequentialUID::getNext(), makeLog("second@20"));
+  first.mergeReuidFrom({&second});
+  const LogEntries& merged = first;
+  ASSERT_EQ(merged.size(), 4u);
+  EXPECT_EQ(merged.recordAt(0).log.message, "first@10");
+  EXPECT_EQ(merged.recordAt(1).log.message, "second@10");
+  EXPECT_EQ(merged.recordAt(2).log.message, "second@20");
+  EXPECT_EQ(merged.recordAt(3).log.message, "first@30");
+  EXPECT_TRUE(second.empty());
+  for (size_t i = 1; i < merged.size(); ++i) {
+    EXPECT_LT(merged.uidAt(i - 1), merged.uidAt(i));
+  }
 }
 
 }  // namespace
