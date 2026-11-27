@@ -140,7 +140,11 @@ LogView::LogView(QWidget* parent)
   });
 }
 
-LogView::~LogView() = default;
+LogView::~LogView() {
+  // The list reads store_ through the model, and store_ dies before ~QWidget closes a top-level view and lays the
+  // list out again: the list goes first.
+  delete ui_->logView;
+}
 
 void LogView::setTopicLabel(uint32_t topic, const QString& label) {
   if (topics_.contains(topic) && topics_.at(topic) == label) {

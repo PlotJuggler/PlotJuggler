@@ -235,7 +235,8 @@ TEST(ObjectStoreLog, FlushToAppendsLogRows) {
   ASSERT_TRUE(secondary.flushTo(primary));
   EXPECT_EQ(messagesOf(primary, to), (std::vector<std::string>{"p10", "s20", "p30", "s40"}));
   EXPECT_EQ(secondary.entryCount(from), 0u);
-  EXPECT_EQ(primary.memoryUsage(to), (*primary.logView(to))->memoryBytes());
+  const size_t view_bytes = (*primary.logView(to))->memoryBytes();  // the view ends here: never call the store under it
+  EXPECT_EQ(primary.memoryUsage(to), view_bytes);
 }
 
 TEST(ObjectStoreLog, ReplaceDatasetFromSwapsRows) {
