@@ -24,6 +24,7 @@
 #include "dock_test_support.h"
 #include "in_process_widget_plugin.h"
 #include "pj_base/builtin/log_codec.hpp"
+#include "pj_base/builtin/robot_description_codec.hpp"
 #include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_custom_widgets/MissingWidgetPlaceholder.h"
 #include "pj_plugins/host/message_parser_handle.hpp"
@@ -45,7 +46,7 @@ using pj_cw_test::kSecond;
 using pj_cw_test::otherQtVtable;
 using pj_cw_test::PluginStats;
 
-constexpr std::string_view kLogSchema = "test_log";
+constexpr std::string_view kTextSchema = "test_text";
 
 /// Runs the event loop for `duration`, so timers due within it fire.
 void turnEventLoopFor(std::chrono::milliseconds duration) {
@@ -54,36 +55,41 @@ void turnEventLoopFor(std::chrono::milliseconds duration) {
   loop.exec();
 }
 
-/// A parser whose wire message is plain text, decoded into a kLog of that message: the store holds
-/// what a ROS source would (the message, not the canonical object). "bad" does not decode.
-class TextLogParser : public MessageParserPluginBase {
+/// A parser whose wire message is plain text, decoded into a kRobotDescription of that text: the store holds
+/// what a source with a lazy object topic would (the message, not the canonical object). "bad" does not decode.
+class TextDescriptionParser : public MessageParserPluginBase {
  public:
-  TextLogParser() {
+  TextDescriptionParser() {
     sdk::SchemaHandler handler;
-    handler.object_type = sdk::BuiltinObjectType::kLog;
+    handler.object_type = sdk::BuiltinObjectType::kRobotDescription;
     handler.parse_object = [](Timestamp ts, sdk::PayloadView payload) -> Expected<sdk::ObjectRecord> {
       const std::string text(reinterpret_cast<const char*>(payload.bytes.data()), payload.bytes.size());
       if (text == "bad") {
         return unexpected(std::string("corrupt message"));
       }
-      sdk::Log log;
-      log.timestamp_ns = ts;
-      log.message = text;
-      log.category = "spin";
-      return sdk::ObjectRecord{ts, sdk::BuiltinObject{log}};
+      sdk::RobotDescription description;
+      description.timestamp_ns = ts;
+      description.text = text;
+      return sdk::ObjectRecord{ts, sdk::BuiltinObject{std::move(description)}};
     };
-    registerSchemaHandler(kLogSchema, std::move(handler));
+    registerSchemaHandler(kTextSchema, std::move(handler));
   }
 };
 
-std::unique_ptr<MessageParserHandle> makeTextLogParser() {
+std::unique_ptr<MessageParserHandle> makeTextDescriptionParser() {
   static constexpr const char* kManifest =
-      R"({"id":"text-log-parser","name":"Text Log Parser","version":"1.0.0","encoding":["mock"]})";
-  auto handle = std::make_unique<MessageParserHandle>(
-      MessageParserPluginBase::vtableWithCreate([]() noexcept -> void* { return new TextLogParser(); }, kManifest));
+      R"({"id":"text-description-parser","name":"Text Description Parser","version":"1.0.0","encoding":["mock"]})";
+  auto handle = std::make_unique<MessageParserHandle>(MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new TextDescriptionParser(); }, kManifest));
   EXPECT_TRUE(handle->valid());
-  EXPECT_TRUE(handle->bindSchema(kLogSchema, {}).has_value());
+  EXPECT_TRUE(handle->bindSchema(kTextSchema, {}).has_value());
   return handle;
+}
+
+std::string descriptionText(const pj_cw_test::ValueCopy& value) {
+  const auto description = deserializeRobotDescription(value.bytes.data(), value.bytes.size());
+  EXPECT_TRUE(description.has_value()) << (description ? std::string() : description.error());
+  return description ? description->text : std::string();
 }
 
 std::string logMessage(const pj_cw_test::ValueCopy& value) {
@@ -139,13 +145,15 @@ class CustomWidgetDockTest : public ::testing::Test {
     return doc.documentElement();
   }
 
-  /// A kLog object topic whose entries are the wire messages `messages`, at t = 1, 2, 3... s, decoded
-  /// by a bound TextLogParser when `with_parser`.
-  ObjectTopicId addLogTopic(const std::vector<std::string>& messages, bool with_parser = true) {
+  /// A kRobotDescription object topic whose entries are the wire messages `messages`, at t = 1, 2, 3... s, decoded by
+  /// a bound TextDescriptionParser.
+  ObjectTopicId addParsedTextTopic(const std::vector<std::string>& messages) {
     ObjectStore& objects = app_->sessionManager().objectStore();
     auto topic = objects.registerTopic(
         ObjectTopicDescriptor{
-            .dataset_id = dataset_, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+            .dataset_id = dataset_,
+            .topic_name = "/robot_description",
+            .metadata_json = R"({"builtin_object_type":"kRobotDescription"})"});
     EXPECT_TRUE(topic.has_value());
     for (std::size_t i = 0; i < messages.size(); ++i) {
       EXPECT_TRUE(objects
@@ -154,8 +162,23 @@ class CustomWidgetDockTest : public ::testing::Test {
                           std::vector<uint8_t>(messages[i].begin(), messages[i].end()))
                       .has_value());
     }
-    if (with_parser) {
-      app_->sessionManager().registerObjectTopicParser(*topic, makeTextLogParser());
+    app_->sessionManager().registerObjectTopicParser(*topic, makeTextDescriptionParser());
+    return *topic;
+  }
+
+  /// A kLog object topic of decoded logs `messages`, at t = 1, 2, 3... s, as a source's ingest stores them.
+  ObjectTopicId addLogTopic(const std::vector<std::string>& messages) {
+    ObjectStore& objects = app_->sessionManager().objectStore();
+    auto topic = objects.registerTopic(
+        ObjectTopicDescriptor{
+            .dataset_id = dataset_, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+    EXPECT_TRUE(topic.has_value());
+    for (std::size_t i = 0; i < messages.size(); ++i) {
+      const Timestamp stamp = static_cast<int64_t>(i + 1) * kSecond;
+      sdk::Log log;
+      log.timestamp_ns = stamp;
+      log.message = messages[i];
+      EXPECT_TRUE(objects.pushLog(*topic, stamp, std::move(log)).has_value());
     }
     return *topic;
   }
@@ -306,7 +329,34 @@ TEST_F(CustomWidgetDockTest, ObjectWireDeliversBytesAndTypeName) {
 TEST_F(CustomWidgetDockTest, AParserBackedObjectWireDeliversCanonicalBytesToUpdateAndHistory) {
   auto dock = makeBound(u"viewer"_s);
   ASSERT_TRUE(dock->applySettings(u"{\"history\":true}"_s));
-  const ObjectTopicId topic = addLogTopic({"booting", "bad", "ready"});
+  const ObjectTopicId topic = addParsedTextTopic({"booting", "bad", "ready"});
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(topic, sdk::BuiltinObjectType::kRobotDescription, u"/robot_description"_s));
+
+  dock->onTrackerTime(1.5);
+  ASSERT_EQ(g.last_values.size(), 1U);
+  EXPECT_EQ(g.last_values[0].kind, PJ_WIDGET_VALUE_OBJECT);
+  EXPECT_EQ(g.last_values[0].type_name, "kRobotDescription");
+  EXPECT_EQ(descriptionText(g.last_values[0]), "booting");
+
+  ASSERT_TRUE(g.history_ok);
+  EXPECT_EQ(g.history_total, 3U) << "the range's count, the entry it skipped included";
+  ASSERT_EQ(g.history_values.size(), 2U) << "the entry that does not decode is skipped";
+  EXPECT_EQ(descriptionText(g.history_values[0]), "booting");
+  EXPECT_EQ(descriptionText(g.history_values[1]), "ready");
+  EXPECT_DOUBLE_EQ(g.history_values[1].time, 3.0);
+
+  dock->onTrackerTime(2.5);
+  ASSERT_EQ(g.last_values.size(), 1U);
+  EXPECT_EQ(g.last_values[0].kind, PJ_WIDGET_VALUE_NONE) << "a current sample that does not decode is no value";
+
+  dock->onTrackerTime(3.5);
+  EXPECT_EQ(descriptionText(g.last_values[0]), "ready");
+}
+
+TEST_F(CustomWidgetDockTest, ALogWireDeliversTheStoredLogsToUpdateAndHistory) {
+  auto dock = makeBound(u"viewer"_s);
+  ASSERT_TRUE(dock->applySettings(u"{\"history\":true}"_s));
+  const ObjectTopicId topic = addLogTopic({"booting", "ready"});
   ASSERT_TRUE(dock->tryAcceptObjectTopic(topic, sdk::BuiltinObjectType::kLog, u"/rosout"_s));
 
   dock->onTrackerTime(1.5);
@@ -316,27 +366,14 @@ TEST_F(CustomWidgetDockTest, AParserBackedObjectWireDeliversCanonicalBytesToUpda
   EXPECT_EQ(logMessage(g.last_values[0]), "booting");
 
   ASSERT_TRUE(g.history_ok);
-  EXPECT_EQ(g.history_total, 3U) << "the range's count, the entry it skipped included";
-  ASSERT_EQ(g.history_values.size(), 2U) << "the entry that does not decode is skipped";
+  EXPECT_EQ(g.history_total, 2U);
+  ASSERT_EQ(g.history_values.size(), 2U);
   EXPECT_EQ(logMessage(g.history_values[0]), "booting");
   EXPECT_EQ(logMessage(g.history_values[1]), "ready");
-  EXPECT_DOUBLE_EQ(g.history_values[1].time, 3.0);
+  EXPECT_DOUBLE_EQ(g.history_values[1].time, 2.0);
 
   dock->onTrackerTime(2.5);
-  ASSERT_EQ(g.last_values.size(), 1U);
-  EXPECT_EQ(g.last_values[0].kind, PJ_WIDGET_VALUE_NONE) << "a current sample that does not decode is no value";
-
-  dock->onTrackerTime(3.5);
   EXPECT_EQ(logMessage(g.last_values[0]), "ready");
-}
-
-TEST_F(CustomWidgetDockTest, AnObjectWireWithoutParserDeliversItsStoredBytes) {
-  auto dock = makeBound(u"viewer"_s);
-  const ObjectTopicId topic = addLogTopic({"opaque"}, /*with_parser=*/false);
-  ASSERT_TRUE(dock->tryAcceptObjectTopic(topic, sdk::BuiltinObjectType::kLog, u"/rosout"_s));
-  dock->onTrackerTime(1.0);
-  ASSERT_EQ(g.last_values.size(), 1U);
-  EXPECT_EQ(g.last_values[0].bytes, (std::vector<uint8_t>{'o', 'p', 'a', 'q', 'u', 'e'}));
 }
 
 TEST_F(CustomWidgetDockTest, EveryWidgetIsOfferedThePlaybackServiceForTheLifeOfItsInstance) {
