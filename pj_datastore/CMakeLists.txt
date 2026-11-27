@@ -109,6 +109,7 @@ if(PJ_BUILD_TESTS)
     tests/merge_test.cpp
     tests/ordered_entries_test.cpp
     tests/log_entries_test.cpp
+    tests/object_store_log_test.cpp
     tests/object_store_test.cpp
     tests/marker_topic_metadata_test.cpp
     tests/resident_payload_pool_test.cpp
