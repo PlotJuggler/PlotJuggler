@@ -65,9 +65,9 @@ class LogView : public QWidget {
   void replaceEntries(uint32_t topic, std::vector<LogEntry> entries);
   /// Shows every row of @p source as topic @p topic, in place of what the topic showed.
   void setTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source);
-  /// Follows @p source as topic @p topic: drops the rows it evicted and the rows numbered from @p from_row on, then
-  /// indexes its rows [from_row, to_row).
-  void updateTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row);
+  /// Follows @p source as topic @p topic: drops the rows it evicted and indexes the rows added since
+  /// (LogStore::update).
+  void updateTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source);
   /// Drops the topic and its rows.
   void removeTopic(uint32_t topic);
 

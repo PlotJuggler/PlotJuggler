@@ -13,6 +13,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/builtin/log_codec.hpp"
 #include "pj_datastore/marker_topic_metadata.hpp"
 #include "pj_datastore/resident_payload_pool.hpp"
 #include "pj_datastore/saturating_time.hpp"
@@ -51,15 +52,11 @@ decltype(auto) onEntries(Series& series, F&& f) {
 }
 
 Expected<sdk::Log> decodeLog(const std::vector<uint8_t>& bytes) {
-  auto object = deserializeBuiltinObject(sdk::BuiltinObjectType::kLog, bytes.data(), bytes.size());
-  if (!object) {
-    return unexpected("kLog payload: " + object.error());
+  auto log = deserializeLog(bytes.data(), bytes.size());
+  if (!log) {
+    return unexpected("kLog payload: " + log.error());
   }
-  const sdk::Log* log = object->get<sdk::Log>();
-  if (log == nullptr) {
-    return unexpected("kLog payload: not a log");
-  }
-  return *log;
+  return log;
 }
 
 constexpr auto kLogTakesOwned = "kLog topics store decoded logs: push them owned";
@@ -190,6 +187,21 @@ void ObjectStore::forEachTopicRetained(
 
 // --- Write ---
 
+Status ObjectStore::pushLog(ObjectTopicId id, Timestamp timestamp, sdk::Log log) {
+  Graveyard graveyard;  // retention victims die after the locks below release
+  std::shared_lock store_lock(store_mutex_);
+  auto* series = findSeries(id);
+  if (series == nullptr) {
+    return unexpected("unknown topic");
+  }
+  if (!series->log) {
+    return unexpected("not a canonical kLog topic");
+  }
+  std::unique_lock lock(series->mutex);
+  insertLogLocked(*series, timestamp, std::move(log), graveyard);
+  return {};
+}
+
 Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload) {
   Graveyard graveyard;  // retention victims die after the locks below release
   ObjectEntry entry;    // ours until inserted: if the insertion fails, it dies after the locks
@@ -206,7 +218,7 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
       return unexpected(log.error());
     }
     std::unique_lock lock(series->mutex);
-    insertLogLocked(*series, timestamp, *log, graveyard);
+    insertLogLocked(*series, timestamp, std::move(*log), graveyard);
     return {};
   }
 
@@ -291,7 +303,8 @@ Expected<std::vector<SequentialUID>> ObjectStore::pushOwnedBundle(std::vector<Ow
     Step& step = steps[index];
     if (step.series->log) {
       if (writes[index].append) {
-        created[index] = insertLogLocked(*step.series, writes[index].timestamp, *step.log, graveyard, &step.removal);
+        created[index] =
+            insertLogLocked(*step.series, writes[index].timestamp, std::move(*step.log), graveyard, &step.removal);
       } else {
         accountLogRemoved(*step.series, step.series->log->remove(step.removal), graveyard);
       }
@@ -554,11 +567,10 @@ std::vector<ResolvedObjectEntry> ObjectStore::drainNewSince(ObjectTopicId id, Se
         if (!wanted[row - lo]) {
           return;
         }
-        auto bytes = serializeBuiltinObject(sdk::BuiltinObject(std::move(record.log)));
         by_row[row - lo] = ResolvedObjectEntry{
             .timestamp = record.timestamp,
             .sequential_uid = record.uid,
-            .payload = bytes ? sdk::makePayloadView(std::move(*bytes)) : sdk::PayloadView{},
+            .payload = sdk::makePayloadView(serializeLog(record.log)),
         };
       });
       std::vector<ResolvedObjectEntry> out;
@@ -1316,18 +1328,14 @@ SequentialUID ObjectStore::insertLocked(
 }
 
 SequentialUID ObjectStore::insertLogLocked(
-    ObjectSeries& series, Timestamp timestamp, const sdk::Log& log, Graveyard& graveyard,
+    ObjectSeries& series, Timestamp timestamp, sdk::Log&& log, Graveyard& graveyard,
     const OrderedEntries::Removal* removal) {
   const SequentialUID uid = SequentialUID::getNext();
   std::vector<SequentialUID> removed;
-  OrderedEntries::PushOrder order{};
   if (removal != nullptr) {
-    auto result = series.log->removeAndPush(*removal, timestamp, uid, log);
-    order = result.first;
-    removed = std::move(result.second);
-  } else {
-    order = series.log->push(timestamp, uid, log);
+    removed = series.log->remove(*removal);
   }
+  const OrderedEntries::PushOrder order = series.log->push(timestamp, uid, std::move(log));
   accountLogRemoved(series, removed, graveyard);
   if (order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
     dropCache(series, graveyard);
@@ -1425,10 +1433,10 @@ void ObjectStore::applyRetention(ObjectSeries& series, Timestamp newest_ts, Grav
       evictFront(
           series, countBefore(log.timestamps(), saturatingSub(newest_ts, series.budget.time_window_ns)), graveyard);
     }
-    // Byte budget: whole chunks at a time (a sealed chunk's bytes are freed only with its last row), so the series may
-    // sit up to one chunk over it.
+    // Byte budget: the oldest chunk at a time (a sealed chunk's bytes are freed only with its last row), so the series
+    // may sit up to one chunk over it.
     while (series.budget.max_memory_bytes > 0 && !log.empty() && series.memory_bytes > series.budget.max_memory_bytes) {
-      evictFront(series, std::min(log.size(), LogEntries::kChunkRows), graveyard);
+      evictFront(series, log.frontChunkRows(), graveyard);
     }
     if (series.budget.max_entries > 0 && log.size() > series.budget.max_entries) {
       evictFront(series, log.size() - series.budget.max_entries, graveyard);

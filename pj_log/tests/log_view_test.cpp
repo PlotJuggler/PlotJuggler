@@ -16,6 +16,7 @@
 #include <QToolButton>
 #include <QTreeView>
 #include <QWheelEvent>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -256,6 +257,17 @@ TEST_F(LogViewTest, FutureRowsGreyOrHidden) {
   EXPECT_EQ(model()->rowCount(), 81);
   track(200.0);
   EXPECT_EQ(model()->rowCount(), 101);
+}
+
+TEST_F(LogViewTest, EntriesAppendedAfterASourceReplaceItsRows) {
+  view_.setTopicLabel(0, "/rosout");
+  auto source = std::make_shared<PJ::VectorLogRowSource>();
+  source->merge({entry(1.0, "one"), entry(2.0, "two"), entry(3.0, "three")});
+  view_.setTopicRows(0, source);
+  ASSERT_EQ(view_.store().size(), 3u);
+  view_.appendEntries(0, {entry(4.0, "appended")});  // a new source with its own keys
+  ASSERT_EQ(view_.store().size(), 1u);
+  EXPECT_EQ(view_.store().row(0).message, "appended");
 }
 
 TEST_F(LogViewTest, LevelColoursAndFirstLine) {

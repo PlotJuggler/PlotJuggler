@@ -15,7 +15,7 @@ namespace {
 
 constexpr uint32_t kUnmapped = UINT32_MAX;
 
-/// Merge order: time, then wire, then row number within the wire.
+/// Merge order: time, then wire, then key within the wire.
 bool before(const RowRef& a, const RowRef& b) {
   if (a.time != b.time) {
     return a.time < b.time;
@@ -23,7 +23,7 @@ bool before(const RowRef& a, const RowRef& b) {
   if (a.wire != b.wire) {
     return a.wire < b.wire;
   }
-  return a.row < b.row;
+  return a.key < b.key;
 }
 
 char lowerAscii(char c) {
@@ -101,7 +101,9 @@ uint32_t LogStore::panelId(uint32_t wire, uint32_t id) const {
 }
 
 void LogStore::mapIds(Wire& state, const LogRowSource& source, size_t index) {
-  for (const uint32_t id : {source.sourceId(index), source.categoryId(index)}) {
+  const uint32_t source_id = source.sourceId(index);
+  const uint32_t category_id = source.categoryId(index);
+  for (const uint32_t id : {source_id, category_id}) {
     if (id >= state.ids.size()) {
       state.ids.resize(id + 1, kUnmapped);
     }
@@ -109,96 +111,90 @@ void LogStore::mapIds(Wire& state, const LogRowSource& source, size_t index) {
       state.ids[id] = id == 0 ? 0 : intern(source.dictionaryText(id));
     }
   }
-  state.any_source = state.any_source || source.sourceId(index) != 0;
-  state.any_category = state.any_category || source.categoryId(index) != 0;
+  state.any_source = state.any_source || source_id != 0;
+  state.any_category = state.any_category || category_id != 0;
 }
 
-StoreChange LogStore::apply(uint32_t wire, Wire& state, uint64_t evicted, uint64_t cut, std::vector<RowRef> fresh) {
+StoreChange LogStore::apply(uint32_t wire, Wire& state, const LogRowSource& source, std::vector<RowRef> fresh) {
   StoreChange change = StoreChange::none(refs_.size());
-  // The rows to drop: below `evicted` (the oldest of the wire) and from `cut` on (the newest).
-  const uint64_t keep_begin = std::clamp(evicted, state.begin, state.end);
-  const uint64_t keep_end = std::clamp(cut, keep_begin, state.end);
-  const uint64_t front_gone = keep_begin - state.begin;
-  const uint64_t back_gone = state.end - keep_end;
-  if (front_gone + back_gone > 0) {
-    const auto gone = [&](const RowRef& ref) {
-      return ref.wire == wire && (ref.row < keep_begin || ref.row >= keep_end);
-    };
+  // A source evicts its oldest rows, so the indexed rows it evicted are the wire's first ones in the index: everything
+  // of the wire before its first row still held is gone (a late row can be older, but it is not indexed yet). The
+  // scan starts at the wire's oldest indexed time, so other wires' older rows are not walked.
+  size_t from = static_cast<size_t>(std::distance(
+      refs_.begin(),
+      std::lower_bound(refs_.begin(), refs_.end(), RowRef{.time = state.oldest, .wire = 0, .key = 0}, before)));
+  size_t stop = from;
+  while (stop < refs_.size() && (refs_[stop].wire != wire || !source.find(refs_[stop].key, 0).has_value())) {
+    ++stop;
+  }
+  state.oldest = stop < refs_.size() ? refs_[stop].time : std::numeric_limits<double>::infinity();
+  const auto mine = [wire](const RowRef& ref) { return ref.wire == wire; };
+  if (from == 0) {
     // The leading run leaves from the front (a deque pops it without moving the rest).
     size_t lead = 0;
-    while (lead < refs_.size() && gone(refs_[lead])) {
+    while (lead < stop && mine(refs_[lead])) {
       ++lead;
     }
     refs_.erase(refs_.begin(), refs_.begin() + static_cast<std::ptrdiff_t>(lead));
     change.dropped_front = lead;
-    if (front_gone + back_gone > lead) {
-      // The first other gone row: the oldest rows sit near the front, the newest near the back.
-      size_t first = 0;
-      if (lead > 0 || front_gone > 0) {
-        while (!gone(refs_[first])) {
-          ++first;
-        }
-      } else {
-        first = refs_.size();
-        for (uint64_t left = back_gone; left > 0; --first) {
-          left -= gone(refs_[first - 1]) ? 1 : 0;
-        }
-      }
-      refs_.erase(std::remove_if(refs_.begin() + static_cast<std::ptrdiff_t>(first), refs_.end(), gone), refs_.end());
-      change.old_tail = first + lead;
-    }
+    stop -= lead;
   }
-  state.begin = keep_begin;
-  state.end = keep_end;
-  if (state.begin == state.end && !fresh.empty()) {
-    state.begin = state.end = fresh.front().row;
+  size_t first = from;
+  while (first < stop && !mine(refs_[first])) {
+    ++first;
+  }
+  if (first < stop) {
+    const auto end = refs_.begin() + static_cast<std::ptrdiff_t>(stop);
+    refs_.erase(std::remove_if(refs_.begin() + static_cast<std::ptrdiff_t>(first), end, mine), end);
+    change.old_tail = first + change.dropped_front;
   }
   if (!fresh.empty()) {
-    state.end = static_cast<uint64_t>(fresh.back().row) + 1;
-    const auto first = std::lower_bound(refs_.begin(), refs_.end(), fresh.front(), before);
-    const auto position = static_cast<size_t>(std::distance(refs_.begin(), first));
+    std::ranges::sort(fresh, before);
+    state.oldest = std::min(state.oldest, fresh.front().time);
+    const auto at = std::lower_bound(refs_.begin(), refs_.end(), fresh.front(), before);
+    const auto position = static_cast<size_t>(std::distance(refs_.begin(), at));
     change.old_tail = std::min(change.old_tail, position + change.dropped_front);
     if (position == refs_.size()) {
       refs_.insert(refs_.end(), fresh.begin(), fresh.end());
     } else {
       // Merge the new rows with the tail they interleave with; the head stays where it is.
-      std::vector<RowRef> tail(first, refs_.end());
-      refs_.erase(first, refs_.end());
+      std::vector<RowRef> tail(at, refs_.end());
+      refs_.erase(at, refs_.end());
       std::merge(tail.begin(), tail.end(), fresh.begin(), fresh.end(), std::back_inserter(refs_), before);
     }
   }
   return change;
 }
 
-StoreChange LogStore::insert(
-    uint32_t wire, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row) {
+StoreChange LogStore::update(uint32_t wire, std::shared_ptr<const LogRowSource> source) {
   Wire& state = wires_[wire];
   state.source = std::move(source);
   const LogRowSource& src = *state.source;
-  uint64_t evicted = 0;
-  std::vector<RowRef> fresh;
+  StoreChange change;
   src.batch([&] {
-    evicted = src.evicted();
-    const uint64_t first = std::max(from_row, evicted);
-    const uint64_t last = std::min({to_row, evicted + src.size(), src.validEnd()});
-    if (first < last) {
-      fresh.reserve(last - first);
-    }
-    for (uint64_t row = first; row < last; ++row) {
-      const auto index = static_cast<size_t>(row - evicted);
-      fresh.push_back(RowRef{.time = src.time(index), .wire = wire, .row = static_cast<uint32_t>(row)});
+    std::vector<RowRef> fresh;
+    const std::vector<size_t> added = src.indicesAfter(state.newest);
+    fresh.reserve(added.size());
+    for (const size_t index : added) {
+      const uint64_t key = src.key(index);
+      fresh.push_back(RowRef{.time = src.time(index), .wire = wire, .key = key});
+      state.newest = std::max(state.newest, key);
       mapIds(state, src, index);
     }
+    change = apply(wire, state, src, std::move(fresh));
   });
-  return apply(wire, state, evicted, from_row, std::move(fresh));
+  return change;
 }
 
-StoreChange LogStore::dropFront(uint32_t wire, uint64_t evicted) {
+StoreChange LogStore::prune(uint32_t wire) {
   const auto found = wires_.find(wire);
-  if (found == wires_.end()) {
+  if (found == wires_.end() || !found->second.source) {
     return StoreChange::none(refs_.size());
   }
-  return apply(wire, found->second, evicted, UINT64_MAX, {});
+  const LogRowSource& src = *found->second.source;
+  StoreChange change;
+  src.batch([&] { change = apply(wire, found->second, src, {}); });
+  return change;
 }
 
 StoreChange LogStore::removeWire(uint32_t wire) {
@@ -212,7 +208,7 @@ StoreChange LogStore::removeWire(uint32_t wire) {
 
 StoreChange LogStore::replaceWire(uint32_t wire, std::shared_ptr<const LogRowSource> source) {
   StoreChange change = removeWire(wire);
-  change.then(insert(wire, std::move(source), 0, UINT64_MAX));
+  change.then(update(wire, std::move(source)));
   return change;
 }
 
@@ -227,11 +223,11 @@ LogRow LogStore::row(size_t index, bool with_message) const {
   }
   const LogRowSource& src = *found->second.source;
   src.batch([&] {
-    const uint64_t evicted = src.evicted();
-    if (ref.row < evicted || ref.row - evicted >= src.size() || ref.row >= src.validEnd()) {
-      return;  // gone from the source, or moved since it was indexed
+    const auto found_at = src.find(ref.key, SIZE_MAX);
+    if (!found_at) {
+      return;  // evicted since the last update
     }
-    const auto at = static_cast<size_t>(ref.row - evicted);
+    const size_t at = *found_at;
     out.present = true;
     out.level = src.level(at);
     out.stamp_ns = src.ownStamp(at);
@@ -246,14 +242,14 @@ LogRow LogStore::row(size_t index, bool with_message) const {
 
 LogStore::RowKey LogStore::keyOf(size_t index) const {
   const RowRef& ref = refs_[index];
-  const RowRef probe{.time = ref.time, .wire = ref.wire, .row = 0};
+  const RowRef probe{.time = ref.time, .wire = ref.wire, .key = 0};
   const auto end = refs_.begin() + static_cast<std::ptrdiff_t>(index);
   const auto first = std::lower_bound(refs_.begin(), end, probe, before);
   return RowKey{ref.time, ref.wire, static_cast<size_t>(std::distance(first, end))};
 }
 
 std::optional<size_t> LogStore::indexOf(const RowKey& key) const {
-  const RowRef probe{.time = key.time, .wire = key.wire, .row = 0};
+  const RowRef probe{.time = key.time, .wire = key.wire, .key = 0};
   const auto first = std::lower_bound(refs_.begin(), refs_.end(), probe, before);
   const size_t index = static_cast<size_t>(std::distance(refs_.begin(), first)) + key.rank;
   if (index >= refs_.size() || refs_[index].time != key.time || refs_[index].wire != key.wire) {
@@ -289,14 +285,13 @@ bool CompiledFilter::idPasses(std::vector<char>& passes, uint32_t id, const std:
   if (needle.empty()) {
     return true;
   }
-  auto& memo = passes;
-  if (id >= memo.size()) {
-    memo.resize(id + 1, -1);
+  if (id >= passes.size()) {
+    passes.resize(id + 1, -1);
   }
-  if (memo[id] < 0) {
-    memo[id] = containsCaseInsensitive(store_.text(id), needle) ? 1 : 0;
+  if (passes[id] < 0) {
+    passes[id] = containsCaseInsensitive(store_.text(id), needle) ? 1 : 0;
   }
-  return memo[id] == 1;
+  return passes[id] == 1;
 }
 
 size_t CompiledFilter::collect(size_t from, size_t to, size_t budget_rows, std::vector<uint32_t>& out) const {
@@ -319,46 +314,51 @@ size_t CompiledFilter::collect(size_t from, size_t to, size_t budget_rows, std::
       continue;
     }
     src->batch([&] {
-      const uint64_t evicted = src->evicted();
-      const size_t held = src->size();
-      const uint64_t valid_end = src->validEnd();
-      std::vector<size_t> candidates;  // positions passing everything but the text
+      size_t hint = 0;  // a wire's positions are its rows in order
+      struct Candidate {
+        size_t position;
+        size_t at;  ///< its index in the source
+      };
+      std::vector<Candidate> candidates;  // positions passing everything but the text
       for (const size_t position : positions) {
-        const uint64_t row = store_.ref(position).row;
-        if (row < evicted || row - evicted >= held || row >= valid_end) {
+        const auto found_at = src->find(store_.ref(position).key, hint);
+        if (!found_at) {
           continue;
         }
-        const auto at = static_cast<size_t>(row - evicted);
+        const size_t at = *found_at;
+        hint = at + 1;
         const auto level = static_cast<size_t>(src->level(at));
         if (level < levels_.size() && !levels_[level]) {
           continue;
         }
-        if (!idPasses(source_passes_, store_.panelId(wire, src->sourceId(at)), source_needle_) ||
-            !idPasses(category_passes_, store_.panelId(wire, src->categoryId(at)), category_needle_)) {
+        if ((!source_needle_.empty() &&
+             !idPasses(source_passes_, store_.panelId(wire, src->sourceId(at)), source_needle_)) ||
+            (!category_needle_.empty() &&
+             !idPasses(category_passes_, store_.panelId(wire, src->categoryId(at)), category_needle_))) {
           continue;
         }
-        candidates.push_back(position);
+        candidates.push_back({position, at});
       }
       if (candidates.empty()) {
         return;
       }
       if (needle_.empty()) {
-        for (const size_t position : candidates) {
-          pass[position - from] = 1;
+        for (const Candidate& candidate : candidates) {
+          pass[candidate.position - from] = 1;
         }
         return;
       }
-      const auto rowOf = [&](size_t position) { return static_cast<size_t>(store_.ref(position).row - evicted); };
-      const size_t first = rowOf(candidates.front());
+      std::ranges::sort(candidates, {}, &Candidate::at);  // one pass over the source, in its order
+      const size_t first = candidates.front().at;
       size_t next = 0;
-      src->messages(first, rowOf(candidates.back()) - first + 1, [&](size_t index, std::string_view message) {
-        if (next >= candidates.size() || rowOf(candidates[next]) != index) {
+      src->messages(first, candidates.back().at - first + 1, [&](size_t index, std::string_view message) {
+        if (next >= candidates.size() || candidates[next].at != index) {
           return;
         }
         const bool escaped = message.find('\x1b') != std::string_view::npos;
         if (escaped ? containsCaseInsensitive(shownText(message), needle_)
                     : containsCaseInsensitive(message, needle_)) {
-          pass[candidates[next] - from] = 1;
+          pass[candidates[next].position - from] = 1;
         }
         ++next;
       });

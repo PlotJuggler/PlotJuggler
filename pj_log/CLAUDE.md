@@ -8,19 +8,16 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 
 ## Invariants
 
-- **The panel holds no copy of a log.** `LogStore` is an index (`RowRef`: time, topic, row number) over each topic's
+- **The panel holds no copy of a log.** `LogStore` is an index (`RowRef`: time, topic, row key) over each topic's
   `LogRowSource`; the dock's source reads the session's `LogEntries` through `ObjectStore::logView`, and the panel
   decodes only what it shows or filters. Copying rows back in brings back the memory ceiling the index removed (a
   1'000'000-row cap dropped the start of large logs).
-- **An update re-indexes only what changed:** the new rows, the rows from the oldest late entry on when
-  `contentIdentity().rewrite` moved, and the whole topic only when `removal` moved or the display offset changed.
-  Re-indexing on each landing makes a progressive load quadratic in the log size
-  ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md), "Streaming"). The snapshot (identity, row range, newest UID)
-  is taken under one view before the panel reads rows; a change after it shows as a new identity next update. Until
-  then the rows it moved read as absent (`LogRowSource::validEnd`, from `LogEntries::firstRowChangedSince`), never as
-  their new neighbour's text.
-- **A source's `on_moved` never updates synchronously:** a read runs inside a paint or inside a batch holding a
-  `LogSeriesView`, and an update takes a view (deadlock) and changes the model (mid-paint).
+- **Rows are found by key, never by index:** a row's key (the store entry's UID) stays while the row exists, and a row
+  added later has a higher key, whereas a late entry moves every index after it. An update adds the rows keyed above
+  the newest indexed, late ones included, and drops the ones the source evicted; only a `removal` move (a removal, a
+  shift, a re-UID: reload, merge) or a display-offset change re-indexes a topic whole. Re-indexing on each landing
+  makes a progressive load quadratic in the log size ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md),
+  "Streaming"). Keying by index again shows a neighbour's text, time and level under a row after a late entry.
 - **Never hold a `LogSeriesView` while taking another** (or calling the store): a `LogRowSource::batch` reads its own
   topic only. Holding one while acquiring a second deadlocks against a writer waiting for the store lock. This is why
   `RowRef` carries the row's time: merging and the tracker never read another topic.
@@ -43,8 +40,8 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 ## Layout
 
 - `core/` (`pj_log_core`, Qt-free): `LogRowSource.h` (`LogLevel`, `LogEntry`, the `LogRowSource` read seam,
-  `VectorLogRowSource`), `LogStore.h` (`RowRef`, `LogRow`, `StoreChange`, the merged `LogStore` index and its message
-  cache, `LogFilter` / `CompiledFilter`, the level names, `stripTerminalEscapes`).
+  `VectorLogRowSource`), `LogStore.h` (`RowRef`, `LogRow`, `StoreChange`, the merged `LogStore` index,
+  `LogFilter` / `CompiledFilter`, the level names, `stripTerminalEscapes`).
 - `widget/` (`pj_log`): `LogTableModel.h` (the table model over the filtered rows, tracker tint, future rows),
   `LogView.h` + `src/LogView.ui` (the list, filters and detail pane), `LogDockWidget.h` (the `IDataWidget`: indexes
   canonical `kLog` topics of the session, persistence, pending topics).

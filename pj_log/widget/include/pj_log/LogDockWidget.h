@@ -106,10 +106,7 @@ class LogDockWidget : public QWidget, public IDataWidget {
   struct Topic {
     ObjectTopicId id;
     SavedSeriesPath saved;  ///< its layout identity (no field), taken while its dataset is loaded
-    /// The newest UID indexed: entries after it are the ones a late insert added.
-    SequentialUID cursor;
     OrderedEntries::ContentIdentity identity;
-    uint64_t end = 0;  ///< absolute number past the last row indexed
   };
 
   [[nodiscard]] bool shows(ObjectTopicId topic_id) const;
@@ -119,9 +116,9 @@ class LogDockWidget : public QWidget, public IDataWidget {
   /// Adds `topic_id` and reads its history; false when it is not a kLog topic or already shown. Emits nothing: the
   /// caller emits topicsChanged.
   bool addTopic(ObjectTopicId topic_id);
-  /// Brings one topic's index up to date: the new rows, the rows from a late entry on, or everything when `full` or a
-  /// row it indexed was removed.
-  void loadTopic(Topic& topic, bool full);
+  /// Brings one topic's index up to date: the rows added since, or everything when `full` or a row it indexed was
+  /// removed. False when the topic is no longer stored as a log (the caller drops it).
+  bool loadTopic(Topic& topic, bool full);
   /// Follows the store: drops topics that vanished (back to pending), loads new entries, everything on `reload_all_`.
   void refresh();
   /// Binds @p pending, adding its topic; true when it resolves, to a topic shown already too.
@@ -138,8 +135,6 @@ class LogDockWidget : public QWidget, public IDataWidget {
   std::vector<SavedSeriesPath> pending_;
   bool reload_all_ = false;
   CoalescingTrigger entries_landed_;
-  /// A source saw rows moved since they were indexed and queued one entries_landed_ request.
-  bool moved_update_queued_ = false;
 };
 
 }  // namespace PJ

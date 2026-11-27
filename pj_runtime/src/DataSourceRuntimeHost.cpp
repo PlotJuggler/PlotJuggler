@@ -15,7 +15,8 @@
 #include <utility>
 #include <vector>
 
-#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/sdk/object_topic_metadata.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/source/record_envelope.hpp"
@@ -747,10 +748,17 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
         } else {
           // Known limitation: a same-provider retype to another builtin type keeps the original metadata_json until the
           // stream restarts.
-          object_topic_id = existing;
-          if (object_kind == sdk::BuiltinObjectType::kLog &&
-              isCanonicalLogMetadata(self->object_store_.descriptor(*existing).metadata_json)) {
-            log_parser = std::make_unique<MessageParserHandle>(std::move(selection.object->parser));
+          const bool stored_as_log = isCanonicalLogMetadata(self->object_store_.descriptor(*existing).metadata_json);
+          if (stored_as_log && object_kind != sdk::BuiltinObjectType::kLog) {
+            // The topic stores decoded logs and takes nothing else: fail closed, as for a provider change.
+            qCWarning(lcIngest).noquote()
+                << "[parser-bind] topic" << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                << "stores logs; not binding it as" << sdk::name(object_kind).data() << "— binding remains scalar-only";
+          } else {
+            object_topic_id = existing;
+            if (stored_as_log) {
+              log_parser = std::make_unique<MessageParserHandle>(std::move(selection.object->parser));
+            }
           }
         }
       } else {
@@ -758,9 +766,9 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
         // (objectPayloadFormatFromMetadata). A log is decoded here and stored canonical, so it carries no wire format.
         const bool decode_at_ingest = object_kind == sdk::BuiltinObjectType::kLog;
         const std::string metadata_json =
-            decode_at_ingest ? nlohmann::json{{"builtin_object_type", sdk::name(object_kind)}}.dump()
+            decode_at_ingest ? nlohmann::json{{sdk::kBuiltinObjectTypeMetadataKey, sdk::name(object_kind)}}.dump()
                              : nlohmann::json{
-                                   {"builtin_object_type", sdk::name(object_kind)},
+                                   {sdk::kBuiltinObjectTypeMetadataKey, sdk::name(object_kind)},
                                    {"payload_encoding", std::string(encoding)},
                                    {"payload_schema", std::string(type_name)},
                                }
@@ -979,18 +987,10 @@ bool DataSourceRuntimeHost::cbPushMessage(
     if (binding.log_parser != nullptr) {
       auto record = binding.log_parser->parseObjectFunctional(
           timestamp_ns, Span<const uint8_t>(payload.data, static_cast<size_t>(payload.size)));
-      std::optional<std::vector<uint8_t>> bytes;
-      std::string error;
-      if (!record) {
-        error = record.error();
-      } else if (record->object.get<sdk::Log>() == nullptr) {
-        error = "the parser returned another object type";
-      } else if (auto serialized = serializeBuiltinObject(record->object); serialized) {
-        bytes = std::move(*serialized);
-      } else {
-        error = serialized.error();
-      }
-      if (!bytes) {
+      // const: a parser may share the decoded object (BuiltinObject copies share), so the log is copied, not moved.
+      const sdk::Log* log = record ? std::as_const(record->object).get<sdk::Log>() : nullptr;
+      if (log == nullptr) {
+        const std::string error = record ? "the parser returned another object type" : record.error();
         self->log_decode_failures_.fetch_add(1, std::memory_order_relaxed);
         if (!binding.log_decode_logged) {
           binding.log_decode_logged = true;
@@ -999,10 +999,9 @@ bool DataSourceRuntimeHost::cbPushMessage(
         }
         return true;
       }
-      if (auto status =
-              self->object_store_target_.load()->pushOwned(*binding.object_topic_id, timestamp_ns, std::move(*bytes));
+      if (auto status = self->object_store_target_.load()->pushLog(*binding.object_topic_id, timestamp_ns, *log);
           !status) {
-        return self->fail(out_error, ("ObjectStore.pushOwned failed: " + status.error()).c_str());
+        return self->fail(out_error, ("ObjectStore.pushLog failed: " + status.error()).c_str());
       }
       return true;
     }

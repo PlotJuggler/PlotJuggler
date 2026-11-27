@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -26,12 +27,11 @@ namespace log_view {
 struct RowRef {
   double time = 0.0;  ///< display-axis seconds, copied from the source so ordering never reads it
   uint32_t wire = 0;  ///< topic id; orders rows of equal time
-  /// The row's absolute number in its source. ponytail: 32 bits, a topic past 2^32 rows in one session wraps.
-  uint32_t row = 0;
+  uint64_t key = 0;   ///< the row's LogRowSource::key()
 };
 
-/// A row read from its source. `present` is false when the source no longer has it (evicted, or replaced and not
-/// re-indexed yet): every other field but `time` and `wire` is then empty.
+/// A row read from its source. `present` is false when the source no longer has it (evicted before the panel's next
+/// update): every other field but `time` and `wire` is then empty.
 struct LogRow {
   double time = 0.0;
   int64_t stamp_ns = 0;  ///< the entry's own stamp, shown as metadata only
@@ -69,9 +69,8 @@ struct StoreChange {
   }
 };
 
-/// Merged index of every topic's rows, ordered by (time, wire, row); the rows stay in their LogRowSource and are read
-/// on demand (a source caches what it decodes). Each topic's index covers a contiguous range of its source's absolute
-/// rows. GUI thread only.
+/// Merged index of every topic's rows, ordered by (time, wire, key); the rows stay in their LogRowSource and are read
+/// on demand by key (a source caches what it decodes). GUI thread only.
 class LogStore {
  public:
   LogStore();
@@ -85,11 +84,12 @@ class LogStore {
   [[nodiscard]] bool hasSources() const;
   [[nodiscard]] bool hasCategories() const;
 
-  /// Indexes @p source as topic @p wire: drops the rows it evicted and the rows numbered from @p from_row on (they
-  /// changed), then adds its rows [from_row, to_row) (clamped to what it holds). @p source replaces the one held.
-  StoreChange insert(uint32_t wire, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row);
-  /// Drops the rows of @p wire numbered below @p evicted.
-  StoreChange dropFront(uint32_t wire, uint64_t evicted);
+  /// Brings topic @p wire up to date with @p source (which replaces the one held): drops the rows it evicted and adds
+  /// the rows whose key is above every key indexed so far. A host whose source removed or re-keyed rows elsewhere
+  /// replaces the wire instead.
+  StoreChange update(uint32_t wire, std::shared_ptr<const LogRowSource> source);
+  /// Drops the rows of @p wire its source evicted.
+  StoreChange prune(uint32_t wire);
   /// Drop every row of @p wire.
   StoreChange removeWire(uint32_t wire);
   /// Drop the rows of @p wire and index all of @p source in their place.
@@ -105,15 +105,10 @@ class LogStore {
   [[nodiscard]] LogRow row(size_t index, bool with_message = true) const;
   /// The source of @p wire, or null.
   [[nodiscard]] const LogRowSource* source(uint32_t wire) const;
-  /// Absolute number past the last row of @p wire indexed (0 for an unknown wire).
-  [[nodiscard]] uint64_t wireEnd(uint32_t wire) const {
-    const auto found = wires_.find(wire);
-    return found != wires_.end() ? found->second.end : 0;
-  }
   /// Panel string id of @p wire's dictionary id @p id (0 when the topic never indexed it).
   [[nodiscard]] uint32_t panelId(uint32_t wire, uint32_t id) const;
 
-  /// Identity of a row that survives a reload of its wire: row numbers restart on a reload.
+  /// Identity of a row that survives a reload of its wire: keys restart on a reload.
   struct RowKey {
     double time = 0.0;
     uint32_t wire = 0;
@@ -128,14 +123,15 @@ class LogStore {
     std::shared_ptr<const LogRowSource> source;
     /// Source dictionary id -> panel string id; kUnmapped where never seen.
     std::vector<uint32_t> ids;
-    uint64_t begin = 0;  ///< the rows indexed are [begin, end)
-    uint64_t end = 0;
+    uint64_t newest = 0;  ///< the highest key indexed
+    /// No indexed row of the wire is older (its first indexed row's time after the last update).
+    double oldest = -std::numeric_limits<double>::infinity();
     bool any_source = false;
     bool any_category = false;
   };
-  /// Drops the rows of @p wire outside [evicted, cut), then merges @p fresh (the wire's rows from the new end, in
-  /// order).
-  StoreChange apply(uint32_t wire, Wire& state, uint64_t evicted, uint64_t cut, std::vector<RowRef> fresh);
+  /// Drops the rows of @p wire its source no longer has and merges @p fresh (new rows of the wire, in order). Inside a
+  /// batch of the wire's source.
+  StoreChange apply(uint32_t wire, Wire& state, const LogRowSource& source, std::vector<RowRef> fresh);
   void mapIds(Wire& state, const LogRowSource& source, size_t index);
 
   std::deque<RowRef> refs_;

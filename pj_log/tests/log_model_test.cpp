@@ -61,13 +61,13 @@ struct Feed {
   }
   StoreChange add(uint32_t wire, std::vector<LogEntry> entries) {
     auto& src = source(wire);
-    const uint64_t from = src->merge(std::move(entries));
-    return store.insert(wire, src, from, src->evicted() + src->size());
+    src->merge(std::move(entries));
+    return store.update(wire, src);
   }
   StoreChange evict(uint32_t wire, size_t count) {
     auto& src = source(wire);
     src->dropFront(count);
-    return store.dropFront(wire, src->evicted());
+    return store.prune(wire);
   }
   StoreChange replace(uint32_t wire, std::vector<LogEntry> entries) {
     sources[wire] = std::make_shared<VectorLogRowSource>();

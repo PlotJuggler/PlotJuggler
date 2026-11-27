@@ -255,11 +255,10 @@ TEST(LogEntries, MutatorsMatchOrderedEntries) {
     if (scenario.on_log) {
       log_removed = scenario.on_log(twin.log);
     } else {
-      // removeAndPush: push the entry the ordered side just took, with its UID.
+      // removeAndPush: remove, then push the entry the ordered side just took, with its UID.
       const size_t at = *twin.ordered.indexAtOrBefore(50);
-      auto result = twin.log.removeAndPush(
-          twin.log.planRemoval(every_twentieth), 50, twin.ordered.entryAt(at).sequential_uid, makeLog("pushed"));
-      log_removed = std::move(result.second);
+      log_removed = twin.log.remove(twin.log.planRemoval(every_twentieth));
+      twin.log.push(50, twin.ordered.entryAt(at).sequential_uid, makeLog("pushed"));
     }
     EXPECT_EQ(log_removed, ordered_removed) << scenario.name;
     EXPECT_EQ(moved(log_before, twin.log.contentIdentity()), moved(ordered_before, twin.ordered.contentIdentity()))
@@ -528,19 +527,20 @@ TEST(LogEntries, FrontEvictionOfASealedChunkDecompressesNothing) {
   });
 }
 
-TEST(LogEntries, FirstRowChangedSinceAnIndexedRevision) {
+TEST(LogEntries, IndicesAfterUidFindTheRowsPushedSince) {
   LogEntries log = fillWith(rosoutLike(100));
   (void)log.evictFront(10);
-  const uint64_t indexed = log.contentIdentity().rewrite;
-  EXPECT_EQ(log.firstRowChangedSince(indexed), UINT64_MAX);
+  const SequentialUID indexed = log.lastUid();
+  EXPECT_TRUE(log.indicesAfterUid(indexed).empty());
   log.push(Timestamp(99'000), SequentialUID::getNext(), makeLog("in order"));
-  EXPECT_EQ(log.firstRowChangedSince(indexed), UINT64_MAX);                // an append changes no row
-  log.push(Timestamp(50'500), SequentialUID::getNext(), makeLog("late"));  // after row 50, at index 41
-  EXPECT_EQ(log.firstRowChangedSince(indexed), 51u);
-  log.push(Timestamp(30'500), SequentialUID::getNext(), makeLog("later still"));
-  EXPECT_EQ(log.firstRowChangedSince(indexed), 31u);
-  (void)log.shift(1);
-  EXPECT_EQ(log.firstRowChangedSince(indexed), 0u);  // every row moved
+  log.push(Timestamp(50'500), SequentialUID::getNext(), makeLog("late"));         // after row 50, at index 41
+  log.push(Timestamp(30'500), SequentialUID::getNext(), makeLog("later still"));  // at index 21
+  const std::vector<size_t> fresh = log.indicesAfterUid(indexed);
+  ASSERT_EQ(fresh, (std::vector<size_t>{21, 42, 92}));
+  EXPECT_EQ(log.recordAt(21).log.message, "later still");
+  EXPECT_EQ(log.recordAt(42).log.message, "late");
+  EXPECT_EQ(log.recordAt(92).log.message, "in order");
+  EXPECT_TRUE(log.indexOfUid(log.uidAt(10)).has_value());
 }
 
 }  // namespace

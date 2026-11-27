@@ -197,6 +197,32 @@ TEST(ObjectStoreLog, ByteBudgetEvictsWholeChunksAndBumpsEvicted) {
   EXPECT_EQ((*view)->recordAt(0).log.message, "message number " + std::to_string((*view)->evicted()));
 }
 
+TEST(ObjectStoreLog, ByteBudgetFreesAPartlyEvictedChunkWithoutEvictingMore) {
+  ObjectStore store;
+  const ObjectTopicId topic = registerLog(store);
+  const size_t rows = 4 * LogEntries::kChunkRows;
+  for (size_t i = 0; i < rows; ++i) {
+    ASSERT_TRUE(store.pushOwned(topic, Timestamp(i), bytesOf(makeLog("message number " + std::to_string(i)))));
+  }
+  store.setRetentionBudget(topic, RetentionBudget{.max_entries = rows - 100});
+  ASSERT_TRUE(store.pushOwned(topic, Timestamp(rows), bytesOf(makeLog("one more"))));
+  ASSERT_EQ((*store.logView(topic))->evicted(), 101u);  // the first sealed chunk is partly evicted
+  store.setRetentionBudget(topic, RetentionBudget{.max_memory_bytes = store.memoryUsage(topic) - 1});
+  ASSERT_TRUE(store.pushOwned(topic, Timestamp(rows + 1), bytesOf(makeLog("and another"))));
+  // Freeing the first chunk is enough: its rows go, not a whole chunk's count more.
+  EXPECT_EQ((*store.logView(topic))->evicted(), LogEntries::kChunkRows);
+}
+
+TEST(ObjectStoreLog, BundleAppendWithoutDropOnAFilledLogTopic) {
+  ObjectStore store;
+  const ObjectTopicId topic = registerLog(store);
+  ASSERT_TRUE(store.pushOwned(topic, 10, bytesOf(makeLog("old"))));
+  std::vector<OwnedObjectWrite> writes;
+  writes.push_back(OwnedObjectWrite{.topic = topic, .timestamp = 20, .payload = bytesOf(makeLog("new")), .drop = {}});
+  ASSERT_TRUE(store.pushOwnedBundle(std::move(writes)).has_value());
+  EXPECT_EQ(messagesOf(store, topic), (std::vector<std::string>{"old", "new"}));
+}
+
 TEST(ObjectStoreLog, FlushToAppendsLogRows) {
   ObjectStore primary;
   ObjectStore secondary;

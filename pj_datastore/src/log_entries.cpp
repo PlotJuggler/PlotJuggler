@@ -14,7 +14,9 @@
 #include <numeric>
 
 #include "pj_base/builtin/builtin_object.hpp"
-#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/builtin/log_codec.hpp"
+#include "pj_base/sdk/object_topic_metadata.hpp"
+#include "pj_datastore/encoding.hpp"
 #include "pj_datastore/saturating_time.hpp"
 
 namespace PJ {
@@ -24,8 +26,9 @@ bool isCanonicalLogMetadata(std::string_view metadata_json) {
   if (!metadata.is_object()) {
     return false;
   }
-  const auto type = metadata.find("builtin_object_type");
-  if (type == metadata.end() || !type->is_string() || type->get<std::string>() != "kLog") {
+  const auto type = metadata.find(sdk::kBuiltinObjectTypeMetadataKey);
+  if (type == metadata.end() || !type->is_string() ||
+      sdk::parseBuiltinObjectType(type->get<std::string>()) != sdk::BuiltinObjectType::kLog) {
     return false;
   }
   const auto encoding = metadata.find("payload_encoding");
@@ -33,11 +36,6 @@ bool isCanonicalLogMetadata(std::string_view metadata_json) {
 }
 
 namespace {
-
-/// Bytes per id that hold every id up to @p max_id.
-uint8_t idWidth(uint32_t max_id) {
-  return max_id <= UINT8_MAX ? 1 : max_id <= UINT16_MAX ? 2 : 4;
-}
 
 uint32_t readId(const std::vector<uint8_t>& packed, uint8_t width, size_t index) {
   uint32_t id = 0;
@@ -130,38 +128,14 @@ LogEntries::LogEntries(LogEntries&&) noexcept = default;
 LogEntries& LogEntries::operator=(LogEntries&&) noexcept = default;
 LogEntries::~LogEntries() = default;
 
-void LogEntries::changed(Change change, uint64_t first_row) noexcept {
+void LogEntries::changed(Change change) noexcept {
   identity_.content = nextContentRevision();
   if (change != Change::kFollowable) {
     identity_.rewrite = identity_.content;
-    if (row_changes_.size() == kRowChangesKept) {
-      row_changes_.erase(row_changes_.begin());
-    }
-    try {
-      row_changes_.push_back({identity_.rewrite, change == Change::kInsert ? first_row : 0});
-    } catch (...) {
-      row_changes_.clear();  // forgetting reads as "every row changed", which is safe
-    }
   }
   if (change == Change::kRemoval) {
     identity_.removal = identity_.content;
   }
-}
-
-uint64_t LogEntries::firstRowChangedSince(uint64_t rewrite) const {
-  if (rewrite == identity_.rewrite) {
-    return UINT64_MAX;
-  }
-  if (row_changes_.empty() || row_changes_.front().revision > rewrite) {
-    return 0;  // the changes after it are no longer all kept
-  }
-  uint64_t first = UINT64_MAX;
-  for (const RowChange& change : row_changes_) {
-    if (change.revision > rewrite) {
-      first = std::min(first, change.first_row);
-    }
-  }
-  return first;
 }
 
 uint64_t LogEntries::decompressions() const noexcept {
@@ -215,7 +189,7 @@ uint32_t LogEntries::intern(std::string_view text) {
   if (text.empty()) {
     return 0;
   }
-  const auto it = dictionary_ids_.find(std::string(text));
+  const auto it = dictionary_ids_.find(text);
   if (it != dictionary_ids_.end()) {
     return it->second;
   }
@@ -226,13 +200,13 @@ uint32_t LogEntries::intern(std::string_view text) {
   return id;
 }
 
-LogEntries::Row LogEntries::toRow(Timestamp timestamp, const sdk::Log& log) {
+LogEntries::Row LogEntries::toRow(Timestamp timestamp, sdk::Log&& log) {
   Row row;
   row.level = static_cast<uint8_t>(log.level);
   row.source = intern(log.source);
   row.category = intern(log.category);
   row.stamp_offset = log.timestamp_ns == 0 ? kNoOwnStamp : saturatingSub(log.timestamp_ns, timestamp);
-  row.message = log.message;
+  row.message = std::move(log.message);
   return row;
 }
 
@@ -318,8 +292,8 @@ void LogEntries::seal(Chunk& chunk) {
     max_source = std::max(max_source, r.source);
     max_category = std::max(max_category, r.category);
   }
-  sealed.source_width = idWidth(max_source);
-  sealed.category_width = idWidth(max_category);
+  sealed.source_width = encoding::indexBytesFor(size_t{max_source} + 1);
+  sealed.category_width = encoding::indexBytesFor(size_t{max_category} + 1);
   sealed.sources.resize(rows.size() * sealed.source_width);
   sealed.categories.resize(rows.size() * sealed.category_width);
   for (size_t k = 0; k < rows.size(); ++k) {
@@ -458,6 +432,23 @@ SequentialUID LogEntries::nextUidAfter(SequentialUID after) const {
   return k == size() ? SequentialUID{} : uids_[orderAt(k)];
 }
 
+size_t LogEntries::frontChunkRows() const noexcept {
+  return chunks_.empty() ? 0 : chunks_.front().size();
+}
+
+SequentialUID LogEntries::lastUid() const {
+  return empty() ? SequentialUID{} : uids_[orderAt(size() - 1)];
+}
+
+std::vector<size_t> LogEntries::indicesAfterUid(SequentialUID after) const {
+  std::vector<size_t> out;
+  for (size_t k = uidRank(after, true); k < size(); ++k) {
+    out.push_back(orderAt(k));
+  }
+  std::ranges::sort(out);
+  return out;
+}
+
 SequentialUID LogEntries::maxUidAtOrBefore(Timestamp t) const {
   const auto end =
       static_cast<size_t>(std::upper_bound(timestamps_.begin(), timestamps_.end(), t) - timestamps_.begin());
@@ -569,9 +560,7 @@ LogRecord LogEntries::recordAt(size_t index) const {
 }
 
 std::vector<uint8_t> LogEntries::canonicalBytesAt(size_t index) const {
-  auto bytes = serializeBuiltinObject(sdk::BuiltinObject(recordAt(index).log));
-  assert(bytes.has_value());
-  return bytes ? std::move(*bytes) : std::vector<uint8_t>{};
+  return serializeLog(recordAt(index).log);
 }
 
 size_t LogEntries::memoryBytes() const noexcept {
@@ -583,9 +572,9 @@ size_t LogEntries::memoryBytes() const noexcept {
 
 // --- Mutation ---
 
-LogEntries::PushOrder LogEntries::push(Timestamp timestamp, SequentialUID uid, const sdk::Log& log) {
+LogEntries::PushOrder LogEntries::push(Timestamp timestamp, SequentialUID uid, sdk::Log log) {
   assert(size() < UINT32_MAX);
-  Row row = toRow(timestamp, log);
+  Row row = toRow(timestamp, std::move(log));
   if (timestamps_.empty() || timestamp >= timestamps_.back()) {
     timestamps_.push_back(timestamp);
     uids_.push_back(uid);
@@ -608,7 +597,7 @@ LogEntries::PushOrder LogEntries::push(Timestamp timestamp, SequentialUID uid, c
     }
   }
   uid_order_.push_back(static_cast<uint32_t>(idx));
-  changed(Change::kInsert, evicted_ + idx);
+  changed(Change::kInsert);
   return PushOrder::kOutOfOrderInsert;
 }
 
@@ -803,10 +792,10 @@ LogEntries::Removal LogEntries::planRemoval(const EntryPredicate& drop) const {
 }
 
 std::vector<SequentialUID> LogEntries::remove(const Removal& plan) {
-  assert(plan.new_position.size() == size());
   if (plan.count == 0) {
     return {};
   }
+  assert(plan.new_position.size() == size());
   std::vector<SequentialUID> removed;
   removed.reserve(plan.count);
   compactChunks(plan);
@@ -833,12 +822,6 @@ std::vector<SequentialUID> LogEntries::remove(const Removal& plan) {
   }
   changed(Change::kRemoval);
   return removed;
-}
-
-std::pair<LogEntries::PushOrder, std::vector<SequentialUID>> LogEntries::removeAndPush(
-    const Removal& plan, Timestamp timestamp, SequentialUID uid, const sdk::Log& log) {
-  std::vector<SequentialUID> removed = remove(plan);
-  return {push(timestamp, uid, log), std::move(removed)};
 }
 
 void LogEntries::clear() {
@@ -904,7 +887,7 @@ void LogEntries::appendReuidFrom(LogEntries& src) {
     while (t < tail.size() || !moved.done()) {
       // Ours first on equal stamps, as std::inplace_merge keeps the first run first.
       if (moved.done() || (t < tail.size() && tail[t].timestamp <= moved.timestamp())) {
-        Row row = toRow(tail[t].timestamp, tail[t].log);
+        Row row = toRow(tail[t].timestamp, std::move(tail[t].log));
         appendRaw(tail[t].timestamp, tail[t].uid, std::move(row));
         ++t;
       } else {

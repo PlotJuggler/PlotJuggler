@@ -4,7 +4,6 @@
 #include "pj_log/LogDockWidget.h"
 
 #include <QStringList>
-#include <QTimer>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cstdint>
@@ -16,7 +15,6 @@
 #include "pj_base/builtin/log.hpp"
 #include "pj_datastore/log_entries.hpp"
 #include "pj_log/LogView.h"
-#include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
@@ -41,35 +39,35 @@ LogLevel levelOf(sdk::Log::Level level) {
   return level <= sdk::Log::Level::kFatal ? static_cast<LogLevel>(level) : LogLevel::kUnknown;
 }
 
-/// One topic's rows in the ObjectStore. Each read takes a LogSeriesView (a batch takes one for all its reads), so the
-/// panel never holds the series lock across event-loop turns. Rows a late entry or a removal moved since the dock
-/// indexed the series under `rewrite` read as absent (validEnd()); seeing any calls `on_moved`, which asks the dock for
-/// an update on the next event-loop turn (throttled like the landing updates).
+/// One topic's rows in the ObjectStore, keyed by their UIDs. Each read takes a LogSeriesView (a batch takes one for all
+/// its reads), so the panel never holds the series lock across event-loop turns.
 class StoreLogSource final : public LogRowSource {
  public:
-  StoreLogSource(
-      const ObjectStore& objects, ObjectTopicId id, DisplayOffset offset, uint64_t rewrite,
-      std::function<void()> on_moved)
-      : objects_(objects), id_(id), offset_(offset), rewrite_(rewrite), on_moved_(std::move(on_moved)) {}
-
-  [[nodiscard]] uint64_t validEnd() const override {
-    uint64_t end = 0;  // a series gone from the store holds no row
-    read([&](const LogEntries& entries) { end = entries.firstRowChangedSince(rewrite_); });
-    if (end != UINT64_MAX && on_moved_) {
-      on_moved_();
-    }
-    return end;
-  }
+  StoreLogSource(const ObjectStore& objects, ObjectTopicId id, DisplayOffset offset)
+      : objects_(objects), id_(id), offset_(offset) {}
 
   [[nodiscard]] size_t size() const override {
     size_t size = 0;
     read([&size](const LogEntries& entries) { size = entries.size(); });
     return size;
   }
-  [[nodiscard]] uint64_t evicted() const override {
-    uint64_t evicted = 0;
-    read([&evicted](const LogEntries& entries) { evicted = entries.evicted(); });
-    return evicted;
+  [[nodiscard]] uint64_t key(size_t index) const override {
+    uint64_t key = 0;
+    read([&](const LogEntries& entries) { key = entries.uidAt(index).value; });
+    return key;
+  }
+  [[nodiscard]] std::optional<size_t> find(uint64_t key, size_t hint) const override {
+    std::optional<size_t> index;
+    read([&](const LogEntries& entries) {
+      index = hint < entries.size() && entries.uidAt(hint).value == key ? std::optional(hint)
+                                                                        : entries.indexOfUid(SequentialUID{key});
+    });
+    return index;
+  }
+  [[nodiscard]] std::vector<size_t> indicesAfter(uint64_t after) const override {
+    std::vector<size_t> indices;
+    read([&](const LogEntries& entries) { indices = entries.indicesAfterUid(SequentialUID{after}); });
+    return indices;
   }
   [[nodiscard]] double time(size_t index) const override {
     double time = 0.0;
@@ -141,8 +139,6 @@ class StoreLogSource final : public LogRowSource {
   const ObjectStore& objects_;
   ObjectTopicId id_;
   DisplayOffset offset_;
-  uint64_t rewrite_;
-  std::function<void()> on_moved_;
   mutable const LogEntries* pinned_ = nullptr;
   mutable bool in_batch_ = false;
 };
@@ -325,65 +321,34 @@ bool LogDockWidget::addTopic(ObjectTopicId topic_id) {
       Topic{
           .id = topic_id,
           .saved = savedIdentity(descriptor.dataset_id, QString::fromStdString(descriptor.topic_name)),
-          .cursor = {},
           .identity = {}});
   view_->setTopicLabel(topic_id.id, topic.saved.topic);
   loadTopic(topic, /*full=*/true);
   return true;
 }
 
-void LogDockWidget::loadTopic(Topic& topic, bool full) {
+bool LogDockWidget::loadTopic(Topic& topic, bool full) {
   const ObjectStore& objects = session_->objectStore();
   OrderedEntries::ContentIdentity identity;
-  uint64_t end = 0;
-  uint64_t late_from = 0;
-  SequentialUID newest;
-  {
-    // One view for a consistent snapshot, released before the panel reads rows (each read takes its own).
-    auto view = objects.logView(topic.id);
-    if (!view) {
-      return;
-    }
-    const LogEntries& entries = **view;
-    identity = entries.contentIdentity();
-    if (!full && identity == topic.identity) {
-      return;
-    }
-    end = entries.evicted() + entries.size();
-    newest = entries.maxUidAtOrBefore(std::numeric_limits<Timestamp>::max());
-    // A late entry moves the rows after it: they are re-indexed from the oldest late one on. Rows of equal stamp it
-    // landed after keep their number, so the rows strictly older are the unchanged prefix.
-    if (const auto oldest = entries.oldestTimestampAfterUid(topic.cursor); oldest.has_value()) {
-      const auto& stamps = entries.timestamps();
-      late_from = entries.evicted() +
-                  static_cast<uint64_t>(std::distance(stamps.begin(), std::ranges::lower_bound(stamps, *oldest)));
-    } else {
-      late_from = entries.evicted();
-    }
+  if (auto view = objects.logView(topic.id)) {
+    identity = (**view).contentIdentity();
+  } else {
+    return false;  // no longer stored as a log
   }
+  if (!full && identity == topic.identity) {
+    return true;
+  }
+  // A removal, a shift or a re-UID (a merge, a reload) moves rows the update cannot follow: index the topic anew.
   full = full || identity.removal != topic.identity.removal;
-  const bool late = identity.rewrite != topic.identity.rewrite;
-  auto source = std::make_shared<StoreLogSource>(
-      objects, topic.id, session_->displayOffset(topic.saved.dataset_id), identity.rewrite, [this] {
-        // Deferred: a read runs inside a paint or inside a batch holding a LogSeriesView, and an update takes a view.
-        if (!moved_update_queued_) {
-          moved_update_queued_ = true;
-          QTimer::singleShot(0, this, [this] {
-            moved_update_queued_ = false;
-            entries_landed_.request();
-          });
-        }
-      });
+  auto source = std::make_shared<StoreLogSource>(objects, topic.id, session_->displayOffset(topic.saved.dataset_id));
   if (full) {
     view_->setTopicRows(topic.id.id, std::move(source));
   } else {
-    view_->updateTopicRows(topic.id.id, std::move(source), late ? std::min(late_from, topic.end) : topic.end, end);
+    view_->updateTopicRows(topic.id.id, std::move(source));
   }
+  // Taken before the rows were read: a change in between shows as a new identity next update.
   topic.identity = identity;
-  topic.cursor = newest;
-  // What the panel indexed: less than `end` when the series was rewritten after the snapshot, which shows as a new
-  // identity on the next update.
-  topic.end = view_->store().wireEnd(topic.id.id);
+  return true;
 }
 
 void LogDockWidget::refresh() {
@@ -391,8 +356,7 @@ void LogDockWidget::refresh() {
   const ObjectStore& objects = session_->objectStore();
   bool changed = false;
   for (auto it = topics_.begin(); it != topics_.end();) {
-    if (objects.isTopic(it->id, it->saved.dataset_id, it->saved.topic.toStdString())) {
-      loadTopic(*it, full);
+    if (objects.isTopic(it->id, it->saved.dataset_id, it->saved.topic.toStdString()) && loadTopic(*it, full)) {
       ++it;
       continue;
     }

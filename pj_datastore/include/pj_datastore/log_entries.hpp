@@ -98,6 +98,12 @@ class LogEntries {
   [[nodiscard]] SequentialUID firstUid() const;
   [[nodiscard]] SequentialUID nextUidAfter(SequentialUID after) const;
   [[nodiscard]] SequentialUID maxUidAtOrBefore(Timestamp t) const;
+  /// The series maximum UID, in O(1); invalid when empty.
+  [[nodiscard]] SequentialUID lastUid() const;
+  /// Rows of the oldest chunk still held: evicting them frees it.
+  [[nodiscard]] size_t frontChunkRows() const noexcept;
+  /// Indices of the rows whose UID is above @p after (the rows pushed since that UID was the newest), ascending.
+  [[nodiscard]] std::vector<size_t> indicesAfterUid(SequentialUID after) const;
   [[nodiscard]] std::optional<Timestamp> oldestTimestampAfterUid(SequentialUID after) const;
 
   // --- Columns ---
@@ -108,9 +114,6 @@ class LogEntries {
   [[nodiscard]] uint32_t categoryId(size_t index) const;
   [[nodiscard]] std::string_view dictionaryText(uint32_t id) const {
     return dictionary_[id];
-  }
-  [[nodiscard]] size_t dictionarySize() const noexcept {
-    return dictionary_.size();
   }
   /// The log's own stamp on the store clock (it moves with shift()); 0 when the log had none.
   [[nodiscard]] Timestamp ownStamp(size_t index) const;
@@ -124,10 +127,6 @@ class LogEntries {
   /// serializeBuiltinObject() of the row's log.
   [[nodiscard]] std::vector<uint8_t> canonicalBytesAt(size_t index) const;
 
-  /// Absolute number of the first row whose content or number changed since the revision @p rewrite (a past
-  /// `contentIdentity().rewrite`): rows numbered below it read as they did then. UINT64_MAX when none changed; 0 when
-  /// every row may have (a removal, a shift, a re-UID, or @p rewrite too old to tell).
-  [[nodiscard]] uint64_t firstRowChangedSince(uint64_t rewrite) const;
   /// Sealed chunks decompressed so far (decoded-chunk cache misses).
   [[nodiscard]] uint64_t decompressions() const noexcept;
 
@@ -138,7 +137,7 @@ class LogEntries {
   // --- Mutation ---
 
   /// @p uid is the series maximum (the store mints it right before), as for OrderedEntries::push().
-  PushOrder push(Timestamp timestamp, SequentialUID uid, const sdk::Log& log);
+  PushOrder push(Timestamp timestamp, SequentialUID uid, sdk::Log log);
 
   // The mutators below mirror OrderedEntries' (same ordering and identity semantics). Nothing dies with a removed row
   // (no closure, no anchor), so they return the removed UIDs, in row order, instead of a graveyard.
@@ -146,8 +145,6 @@ class LogEntries {
   std::vector<SequentialUID> evictFront(size_t count);
   [[nodiscard]] Removal planRemoval(const EntryPredicate& drop) const;
   std::vector<SequentialUID> remove(const Removal& plan);
-  std::pair<PushOrder, std::vector<SequentialUID>> removeAndPush(
-      const Removal& plan, Timestamp timestamp, SequentialUID uid, const sdk::Log& log);
   /// Keeps evicted().
   void clear();
   /// Moves the store stamps by @p delta; the own stamps move with them (rows without one stay without).
@@ -175,23 +172,16 @@ class LogEntries {
   struct Cursor;
   struct Decoded;
   struct DecodedCache;
-  /// A rewrite revision and the first absolute row it changed (0: every row).
-  struct RowChange {
-    uint64_t revision = 0;
-    uint64_t first_row = 0;
-  };
-  static constexpr size_t kRowChangesKept = 64;
   /// "No own stamp": an own stamp exactly this far from the store stamp reads as none.
   static constexpr int64_t kNoOwnStamp = std::numeric_limits<int64_t>::min();
 
   enum class Change { kFollowable, kInsert, kRemoval };
-  /// @p first_row: for kInsert, the absolute number of the first row the insert moved.
-  void changed(Change change, uint64_t first_row = 0) noexcept;
+  void changed(Change change) noexcept;
   /// The decoded rows of sealed chunk @p chunk, from the cache or decompressed now.
   [[nodiscard]] std::shared_ptr<const Decoded> decoded(const Chunk& chunk) const;
 
   uint32_t intern(std::string_view text);
-  [[nodiscard]] Row toRow(Timestamp timestamp, const sdk::Log& log);
+  [[nodiscard]] Row toRow(Timestamp timestamp, sdk::Log&& log);
   [[nodiscard]] sdk::Log toLog(Timestamp timestamp, const Row& row) const;
   /// (chunk, offset in it) of row @p index.
   [[nodiscard]] std::pair<size_t, size_t> locate(size_t index) const;
@@ -229,13 +219,17 @@ class LogEntries {
   std::vector<size_t> chunk_starts_;
   /// Shared by sources and categories; id 0 is "".
   std::vector<std::string> dictionary_;
-  std::unordered_map<std::string, uint32_t> dictionary_ids_;
+  struct StringHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view text) const noexcept {
+      return std::hash<std::string_view>{}(text);
+    }
+  };
+  std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> dictionary_ids_;
   size_t dictionary_bytes_ = 0;
   size_t chunk_bytes_ = 0;
   uint64_t evicted_ = 0;
   ContentIdentity identity_;
-  /// The last kRowChangesKept rewrites, oldest first.
-  std::vector<RowChange> row_changes_;
   std::unique_ptr<DecodedCache> cache_;
 };
 

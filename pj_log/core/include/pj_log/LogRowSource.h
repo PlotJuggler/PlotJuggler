@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -30,9 +31,10 @@ struct LogEntry {
   std::string message;
 };
 
-/// One topic's rows, in ascending time. A row has an absolute number, evicted() + its index, that never changes while
-/// the row exists; rows leave only from the front (evicted() grows) unless the host says otherwise (LogStore's insert
-/// from a row, or a replace). Reads may come from any call of the panel on the GUI thread.
+/// One topic's rows, in ascending time. A row has a key that never changes while the row exists (its index does: a late
+/// row moves the rows after it); a row added later has a key above every earlier one. Rows leave only from the front
+/// (the oldest) unless the host says otherwise (a replace). Reads may come from any call of the panel on the GUI
+/// thread.
 class LogRowSource {
  public:
   using MessageSink = std::function<void(size_t index, std::string_view message)>;
@@ -40,7 +42,13 @@ class LogRowSource {
   virtual ~LogRowSource() = default;
 
   [[nodiscard]] virtual size_t size() const = 0;
-  [[nodiscard]] virtual uint64_t evicted() const = 0;
+  /// Never 0 (the "no row yet" cursor).
+  [[nodiscard]] virtual uint64_t key(size_t index) const = 0;
+  /// Index of the row with @p key, nullopt when gone. @p hint is tried first (a sequential reader passes the index
+  /// after the last one found).
+  [[nodiscard]] virtual std::optional<size_t> find(uint64_t key, size_t hint) const = 0;
+  /// Indices of the rows whose key is above @p after, ascending.
+  [[nodiscard]] virtual std::vector<size_t> indicesAfter(uint64_t after) const = 0;
   /// Display-axis seconds.
   [[nodiscard]] virtual double time(size_t index) const = 0;
   [[nodiscard]] virtual LogLevel level(size_t index) const = 0;
@@ -51,11 +59,6 @@ class LogRowSource {
   [[nodiscard]] virtual std::string dictionaryText(uint32_t id) const = 0;
   /// @p sink gets each row of [first, first + count), in order; the view is valid during the call only.
   virtual void messages(size_t first, size_t count, const MessageSink& sink) const = 0;
-  /// Absolute number of the first row that may no longer be the row the panel indexed under it (a late entry moved
-  /// it): rows from it on read as absent until the host re-indexes them. UINT64_MAX when every row is as indexed.
-  [[nodiscard]] virtual uint64_t validEnd() const {
-    return UINT64_MAX;
-  }
   /// Runs @p body with every read of this source seeing one state (a host may hold a lock for it). @p body reads this
   /// source only: reading another one inside it may deadlock against the host's writers.
   virtual void batch(const std::function<void()>& body) const {
@@ -66,18 +69,20 @@ class LogRowSource {
 /// A LogRowSource over rows it owns, for hosts that hand LogEntry lists (LogView::appendEntries) and for tests.
 class VectorLogRowSource final : public LogRowSource {
  public:
-  /// Adds @p entries (ascending time; non-finite times are skipped), each after this source's rows of equal time, and
-  /// returns the absolute number of the first row that changed (the old end when they all landed after it).
-  uint64_t merge(std::vector<LogEntry> entries);
+  /// Adds @p entries (ascending time; non-finite times are skipped), each after this source's rows of equal time.
+  void merge(std::vector<LogEntry> entries);
   /// Evicts the oldest @p count rows.
   void dropFront(size_t count);
 
   [[nodiscard]] size_t size() const override {
     return rows_.size();
   }
-  [[nodiscard]] uint64_t evicted() const override {
-    return evicted_;
+  [[nodiscard]] uint64_t key(size_t index) const override {
+    return rows_[index].key;
   }
+  // ponytail: a miss of the hint and indicesAfter() scan every row; fine for test-sized lists.
+  [[nodiscard]] std::optional<size_t> find(uint64_t key, size_t hint) const override;
+  [[nodiscard]] std::vector<size_t> indicesAfter(uint64_t after) const override;
   [[nodiscard]] double time(size_t index) const override {
     return rows_[index].time;
   }
@@ -101,6 +106,7 @@ class VectorLogRowSource final : public LogRowSource {
  private:
   struct Row {
     double time = 0.0;
+    uint64_t key = 0;
     int64_t stamp_ns = 0;
     LogLevel level = LogLevel::kUnknown;
     uint32_t source = 0;
@@ -110,7 +116,7 @@ class VectorLogRowSource final : public LogRowSource {
   uint32_t intern(std::string text);
 
   std::deque<Row> rows_;
-  uint64_t evicted_ = 0;
+  uint64_t next_key_ = 1;
   std::vector<std::string> dictionary_{std::string()};
   std::unordered_map<std::string, uint32_t> dictionary_ids_;
 };

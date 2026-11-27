@@ -171,11 +171,13 @@ void LogView::appendEntries(uint32_t topic, std::vector<LogEntry> entries) {
     return;
   }
   auto& source = entry_sources_[topic];
-  if (!source) {
+  const bool fresh = !source;
+  if (fresh) {
     source = std::make_shared<VectorLogRowSource>();
   }
-  const uint64_t from = source->merge(std::move(entries));
-  changeStore([&] { return store_.insert(topic, source, from, source->evicted() + source->size()); });
+  source->merge(std::move(entries));
+  // A new source has its own keys: what the topic showed goes.
+  changeStore([&] { return fresh ? store_.replaceWire(topic, source) : store_.update(topic, source); });
 }
 
 void LogView::replaceEntries(uint32_t topic, std::vector<LogEntry> entries) {
@@ -190,10 +192,9 @@ void LogView::setTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> s
   changeStore([&] { return store_.replaceWire(topic, std::move(source)); });
 }
 
-void LogView::updateTopicRows(
-    uint32_t topic, std::shared_ptr<const LogRowSource> source, uint64_t from_row, uint64_t to_row) {
+void LogView::updateTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source) {
   entry_sources_.erase(topic);
-  changeStore([&] { return store_.insert(topic, std::move(source), from_row, to_row); });
+  changeStore([&] { return store_.update(topic, std::move(source)); });
 }
 
 void LogView::removeTopic(uint32_t topic) {

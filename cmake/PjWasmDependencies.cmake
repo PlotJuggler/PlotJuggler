@@ -254,58 +254,54 @@ if(PJ_WASM_WITH_ARROW_PARSER OR PJ_WASM_WITH_PARQUET OR PJ_WASM_WITH_DATA_EXPORT
     set(PJ_WASM_WITH_ARROW ON)
 endif()
 
-if(PJ_WASM_WITH_MCAP OR PJ_WASM_WITH_PJ_BRIDGE OR (PJ_WASM_WITH_SCENE3D AND PJ_WASM_WITH_COMPRESSED_POINTCLOUDS) OR
-   PJ_WASM_WITH_ARROW)
-    # Match the native Conan graph exactly. MCAP uses these libraries for chunk
-    # decompression, the PlotJuggler Bridge zstd for its data frames, Arrow both
-    # for its Parquet/IPC codecs, and Cloudini the same pinned static targets for
-    # its second compression stage.
-    # Populate them once when any of these browser features needs them.
-    set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
-    set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(lz4
-        GIT_REPOSITORY https://github.com/lz4/lz4.git
-        GIT_TAG v1.9.4
-        GIT_SHALLOW TRUE
-        SOURCE_SUBDIR build/cmake
-        OVERRIDE_FIND_PACKAGE
-        SYSTEM)
+# Match the native Conan graph exactly. pj_datastore uses zstd for its log
+# columns, MCAP these libraries for chunk decompression, the PlotJuggler
+# Bridge zstd for its data frames, Arrow both for its Parquet/IPC codecs, and
+# Cloudini the same pinned static targets for its second compression stage.
+set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(lz4
+    GIT_REPOSITORY https://github.com/lz4/lz4.git
+    GIT_TAG v1.9.4
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR build/cmake
+    OVERRIDE_FIND_PACKAGE
+    SYSTEM)
 
-    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
-    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
-    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
-    set(ZSTD_DISABLE_ASM ON CACHE BOOL "" FORCE)
-    FetchContent_Declare(zstd
-        GIT_REPOSITORY https://github.com/facebook/zstd.git
-        GIT_TAG v1.5.5
-        GIT_SHALLOW TRUE
-        SOURCE_SUBDIR build/cmake
-        OVERRIDE_FIND_PACKAGE
-        SYSTEM)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+set(ZSTD_DISABLE_ASM ON CACHE BOOL "" FORCE)
+FetchContent_Declare(zstd
+    GIT_REPOSITORY https://github.com/facebook/zstd.git
+    GIT_TAG v1.5.5
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR build/cmake
+    OVERRIDE_FIND_PACKAGE
+    SYSTEM)
 
-    # LZ4 1.9.4 predates CMake 4's removal of pre-3.5 policy compatibility.
-    # Scope the documented compatibility floor to these dependency directories;
-    # PJ4 itself keeps its normal, newer policy baseline.
-    set(_pj_saved_policy_version_minimum "${CMAKE_POLICY_VERSION_MINIMUM}")
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-    FetchContent_MakeAvailable(lz4 zstd)
-    if(_pj_saved_policy_version_minimum)
-        set(CMAKE_POLICY_VERSION_MINIMUM "${_pj_saved_policy_version_minimum}")
-    else()
-        unset(CMAKE_POLICY_VERSION_MINIMUM)
-    endif()
-    unset(_pj_saved_policy_version_minimum)
-    if(NOT TARGET LZ4::lz4_static AND TARGET lz4_static)
-        add_library(LZ4::lz4_static ALIAS lz4_static)
-    endif()
-    if(NOT TARGET zstd::libzstd_static AND TARGET libzstd_static)
-        # Zstd's build/cmake target does not publish its source-tree include directory (build
-        # interface only: the target is in zstd's install export).
-        target_include_directories(libzstd_static SYSTEM INTERFACE "$<BUILD_INTERFACE:${zstd_SOURCE_DIR}/lib>")
-        add_library(zstd::libzstd_static ALIAS libzstd_static)
-    endif()
+# LZ4 1.9.4 predates CMake 4's removal of pre-3.5 policy compatibility.
+# Scope the documented compatibility floor to these dependency directories;
+# PJ4 itself keeps its normal, newer policy baseline.
+set(_pj_saved_policy_version_minimum "${CMAKE_POLICY_VERSION_MINIMUM}")
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(lz4 zstd)
+if(_pj_saved_policy_version_minimum)
+    set(CMAKE_POLICY_VERSION_MINIMUM "${_pj_saved_policy_version_minimum}")
+else()
+    unset(CMAKE_POLICY_VERSION_MINIMUM)
+endif()
+unset(_pj_saved_policy_version_minimum)
+if(NOT TARGET LZ4::lz4_static AND TARGET lz4_static)
+    add_library(LZ4::lz4_static ALIAS lz4_static)
+endif()
+if(NOT TARGET zstd::libzstd_static AND TARGET libzstd_static)
+    # Zstd's build/cmake target does not publish its source-tree include directory (build
+    # interface only: the target is in zstd's install export).
+    target_include_directories(libzstd_static SYSTEM INTERFACE "$<BUILD_INTERFACE:${zstd_SOURCE_DIR}/lib>")
+    add_library(zstd::libzstd_static ALIAS libzstd_static)
 endif()
 
 if(PJ_WASM_WITH_FFT)

@@ -258,9 +258,9 @@ ids into one dictionary, a level column (a constant when the chunk's rows agree)
 messages in one zstd frame (level 3). A late entry inside a sealed chunk reseals that chunk only; a front eviction
 drops whole chunks and only moves the first row of a sealed one. A read of a sealed chunk decompresses it once into a
 two-chunk cache of decoded chunks per series (its own mutex, keyed by a seal generation, so a reseal never reads stale
-rows): reads of nearby rows, the table view's among them, do not decompress again. `firstRowChangedSince(rewrite)`
-tells a reader which rows still read as they did under an earlier `rewrite` (a late entry moves only the rows after
-it). The reads below serve a log series like any other, re-serializing canonical bytes per entry; typed reads go
+rows): reads of nearby rows, the table view's among them, do not decompress again. A row's UID is its stable key (a
+late entry or a front eviction moves its index, never its UID): `indicesAfterUid(newest)` gives the rows pushed after
+a reader last looked, and `indexOfUid` finds a row again. The reads below serve a log series like any other, re-serializing canonical bytes per entry; typed reads go
 through `logView()`, a `LogSeriesView` that holds the topic's shared lock for its lifetime (one view at a time, and no
 store call while it lives, or a writer waiting for the lock deadlocks the thread). Retention applies as to any topic,
 the streaming window included.

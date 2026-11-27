@@ -110,15 +110,20 @@ the copying panel of the same day for comparison:
 | 10 000 | in order | copy | 3.5 | 41 (0) | 2.0 | 2.7 | 2.7 | 100 000 |
 | 10 000 | in order | index | 3.2 | 41 (21) | 1.1 | 1.6 | 1.8 | 49 999 |
 | 10 000 | late <= 50 ms | copy | 3.2 | 41 (40) | 2.0 | 2.7 | 2.8 | 100 000 |
-| 10 000 | late <= 50 ms | index | 1.4 | 41 (39) | 1.2 | 1.7 | 1.9 | 49 779 |
+| 10 000 | late <= 50 ms | index by row number | 1.4 | 41 (39) | 1.2 | 1.7 | 1.9 | 49 779 |
+| 10 000 | late <= 50 ms | index by UID | 2.9 | 41 (40) | 1.2 | 1.8 | 1.9 | 49 769 |
 
 The index shows what the 5 s window retains (the copy kept every row), and its in-order rebuilds are the rows that
 window evicts leaving the model.
 
-What the code does now: `LogDockWidget::loadTopic`
-indexes the new rows, re-indexes a topic from its oldest late entry on when `rewrite` moved, and the whole topic only
-on a `removal` move or a display-offset change; the panel holds no rows, so rows the store evicts leave it. Re-test
-when the retention defaults change, or with lateness of seconds (the re-indexed tail grows with it).
+The row-number index re-indexed the tail from the oldest late entry on and, until then, painted the rows after a
+late entry without text; the UID index (same day) merges only the new rows and paints every row with its text. Its
+refresh costs the same; its GUI CPU is twice the row-number index's and below the copy's (whether the blank rows
+explain the difference is reasoning, not profiled).
+
+What the code does now: `LogDockWidget::loadTopic` indexes the entries with a UID above the newest indexed, late ones
+included, and the whole topic only on a `removal` move or a display-offset change; the panel holds no rows, so rows
+the store evicts leave it. Re-test when the retention defaults change.
 
 ## One-off costs at 1e5 entries
 
@@ -139,8 +144,9 @@ store stamp; the "copy" build is the same benchmark against the panel that copie
 | rows | panel | panel RSS | accept | level toggle | filter "timeout" | clear | 10 screens scrolled | longest GUI event |
 |-----:|-------|----------:|-------:|-------------:|-----------------:|------:|--------------------:|------------------:|
 | 1e6 | copy | 265 MiB | 641 ms | 21 ms | 73 ms | 23 ms | 32.6 ms | the whole filter, in one call |
-| 1e6 | index | 74 MiB | 111 ms | 47 ms | 186 ms | 51 ms | 33.6 ms | 12 ms filtering, 18 ms on clear |
-| 1e7 | index | 594 MiB | 1229 ms | 502 ms | 1894 ms | 581 ms | 35.3 ms | 18 ms filtering, 106-165 ms on completion |
+| 1e6 | index by row number | 74 MiB | 111 ms | 47 ms | 186 ms | 51 ms | 33.6 ms | 12 ms filtering, 18 ms on clear |
+| 1e6 | index by UID | 82 MiB | 142 ms | 36 ms | 179 ms | 36 ms | 35.2 ms | 10 ms filtering, 17 ms on clear |
+| 1e7 | index by row number | 594 MiB | 1229 ms | 502 ms | 1894 ms | 581 ms | 35.3 ms | 18 ms filtering, 106-165 ms on completion |
 
 Wall times of a filter run until the list shows its result; the index filters in slices of
 `LogTableModel::kFilterSliceRows`, so the GUI stays responsive meanwhile. 100 000-row slices took up to 22 ms with a
@@ -148,12 +154,13 @@ message needle, 50 000-row slices 12 ms. Scrolling costs what the copy did: the 
 decoded-chunk cache, one decompression per chunk scrolled into view.
 
 The completion event grows with the rows the result holds (18 ms for 5 % of 1e7, 165 ms for all of them), as does the
-panel's RSS beyond the index (16 bytes a row) and the filtered list (4): about 42 bytes a row. Reasoning, not
+panel's RSS beyond the index (16 bytes a row when it was measured, 24 now) and the filtered list (4): about 42 bytes
+a row. Reasoning, not
 profiled: `QTreeView` keeps one layout item per row and rebuilds them on each model reset; a `QTableView` or a
 `QListView` with uniform rows keeps none.
 
-What the code does: slices of 50 000 rows. Re-test when the list widget changes, or with logs whose messages are much
-longer.
+What the code does: slices of 50 000 rows, a UID-keyed index (the 1e7 rows were measured with the row-number index).
+Re-test at 1e7 rows, when the list widget changes, or with logs whose messages are much longer.
 
 ## Not measured
 

@@ -621,6 +621,21 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, KLogIsEagerEvenUnderPureLazyOverri
   EXPECT_EQ((*view)->recordAt(0).log.message, "kept");
 }
 
+TEST_F(DataSourceRuntimeHostObjectIngestTest, ALogTopicReboundAsAnotherTypeKeepsItsLogsAndFailsNoPush) {
+  auto log_binding = bindTopic("/rosout", "mock/log");
+  ASSERT_TRUE(log_binding.has_value()) << log_binding.error();
+  (void)pushPayload(*log_binding, 100, logPayload(PJ::sdk::Log::Level::kInfo, "kept"));
+  auto image_binding = bindTopic("/rosout", "mock/image");
+  ASSERT_TRUE(image_binding.has_value()) << image_binding.error();
+  (void)pushPayload(*image_binding, 200, {0x10, 0x20, 0x30, 0x40});  // pushPayload asserts the push succeeds
+  auto topic = object_store_.findTopic(dataset_id_, "/rosout");
+  ASSERT_TRUE(topic.has_value());
+  auto view = object_store_.logView(*topic);
+  ASSERT_TRUE(view.has_value());
+  ASSERT_EQ((*view)->size(), 1U);
+  EXPECT_EQ((*view)->recordAt(0).log.message, "kept");
+}
+
 TEST_F(DataSourceRuntimeHostObjectIngestTest, UnparseableLogMessageIsSkippedNotFatal) {
   auto binding_or = bindTopic("/rosout", "mock/log");
   ASSERT_TRUE(binding_or.has_value()) << binding_or.error();

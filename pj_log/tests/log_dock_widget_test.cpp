@@ -10,6 +10,7 @@
 #include <QSet>
 #include <QSignalSpy>
 #include <QTest>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -150,20 +151,56 @@ std::vector<QString> modelMessages(const LogDockWidget& dock) {
   return out;
 }
 
-TEST_F(LogDockWidgetTest, ALateEntryKeepsTheRowsBeforeItReadableAndReindexesTheRest) {
+TEST_F(LogDockWidgetTest, ALateEntryLeavesEveryIndexedRowReadable) {
   auto dock = makeDock();
   ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
   push(rosout_, 4, "rosout 4");
   landed();
   ASSERT_EQ(messages(*dock), (std::vector<std::string>{"rosout 1", "rosout 2", "rosout 3", "rosout 4"}));
-  push(rosout_, 2, "late");  // lands after "rosout 2": the rows after it move, the two before do not
-  const std::vector<std::string> before_update = messages(*dock);
-  EXPECT_EQ(before_update[0], "rosout 1");
-  EXPECT_EQ(before_update[1], "rosout 2");
-  EXPECT_EQ(before_update[2], "");  // moved: absent, never the text of its new neighbour
-  // Seeing moved rows asks for an update on its own, with no landing signal.
-  QTest::qWait(50);
+  push(rosout_, 2, "late");  // lands after "rosout 2" and moves the rows after it in the store
+  EXPECT_EQ(messages(*dock), (std::vector<std::string>{"rosout 1", "rosout 2", "rosout 3", "rosout 4"}));
+  landed();
   EXPECT_EQ(messages(*dock), (std::vector<std::string>{"rosout 1", "rosout 2", "late", "rosout 3", "rosout 4"}));
+}
+
+TEST_F(LogDockWidgetTest, ALateEntryEvictedByTheSamePushKeepsRowsWithTheirTimes) {
+  const ObjectTopicId live = registerTopic("/live", kLogMetadata);
+  session_.objectStore().setRetentionBudget(live, RetentionBudget{.max_entries = 4});
+  for (int second = 1; second <= 4; ++second) {
+    push(live, second, "m" + std::to_string(second));
+  }
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(live, sdk::BuiltinObjectType::kLog, {}));
+  push(live, 0, "too late");  // older than every row: inserted first, evicted at once
+  push(live, 5, "m5");
+  landed();
+  ASSERT_EQ(messages(*dock), (std::vector<std::string>{"m2", "m3", "m4", "m5"}));
+  const auto& store = dock->view()->store();
+  for (size_t i = 1; i < store.size(); ++i) {
+    EXPECT_NEAR(store.row(i).time - store.row(0).time, static_cast<double>(i), 1e-6) << i;  // one second apart
+  }
+}
+
+TEST_F(LogDockWidgetTest, ManyLateEntriesBetweenUpdatesAllLand) {
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(diagnostics_, sdk::BuiltinObjectType::kLog, {}));
+  push(rosout_, 100, "newest");
+  for (int i = 0; i < 70; ++i) {
+    sdk::Log log;
+    log.message = "late " + std::to_string(i);
+    ASSERT_TRUE(session_.objectStore().pushOwned(rosout_, 1 * kNs + 1000 * (i + 1), serializeLog(log)).has_value());
+  }
+  push(diagnostics_, 3, "diagnostics 3");
+  landed();
+  std::vector<std::string> expected{"rosout 1"};
+  for (int i = 0; i < 70; ++i) {
+    expected.push_back("late " + std::to_string(i));
+  }
+  expected.insert(expected.end(), {"rosout 2", "diagnostics", "rosout 3", "diagnostics 3", "newest"});
+  EXPECT_EQ(messages(*dock), expected);
+  EXPECT_EQ(dock->view()->model()->rowCount(), static_cast<int>(expected.size()));
 }
 
 TEST_F(LogDockWidgetTest, ShowsFirstEntryOfALogLargerThanTheOldCapacity) {

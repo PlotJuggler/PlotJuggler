@@ -500,13 +500,11 @@ The optional settings store (SDK `SettingsStoreService` / `SettingsView`; host s
   `out_total`, saturated at `UINT32_MAX`), and stops delivering as soon as the sink returns false. The sink runs under
   the engine lock for scalar reads. `inputs_changed`, `config_changed` and `report_message` go to the `Callbacks`
   given at construction. Qt-free; one instance per panel, must outlive the `WidgetHandle` bound to it.
-- **`CanonicalObjectPayload`.** `decodeStoredObjects(session, topic, type, entries, sink)` decodes stored object
-  entries into `sdk::BuiltinObject`s, taking the topic's parser binding once per call: through the topic's parser under its per-topic lock (`decodeObjectEntry`) when one is bound
-  (the store holds the wire message, e.g. ROS CDR), else from the canonical bytes; a log's own stamp is moved by the
-  entry's `payload_stamp_shift`, so a time-shifted merge keeps it on the dataset clock. The built-in Log panel reads
-  logs through it. `canonicalObjectPayload(session, topic, type, entry)` gives the bytes a Widget plugin receives: with
-  no parser and no stamp shift the stored bytes are already canonical and pass through untouched (anchor included);
-  otherwise the decoded object is re-serialized with the SDK's `serializeBuiltinObject`. `canonicalObjectEncoder(session)` wraps it as the `ObjectPayloadEncoder` both delivery
+- **`CanonicalObjectPayload`.** The bytes a Widget plugin receives for a stored object entry: with no parser bound
+  and no stamp shift the stored bytes are already canonical and pass through untouched (anchor included); otherwise
+  the entry is decoded through the topic's parser under its per-topic lock (`decodeObjectEntry`), a log's own stamp is
+  moved by the entry's `payload_stamp_shift` (so a time-shifted merge keeps it on the dataset clock), and the object
+  is re-serialized with the SDK's `serializeBuiltinObject`. `canonicalObjectEncoder(session)` wraps it as the `ObjectPayloadEncoder` both delivery
   paths of a panel use: `WidgetRuntimeHost` (history) and `pj_custom_widgets`' `fetchObjectPayload` (the current
   value, encoded once per entry the wire shows). A decode or serialization failure is an error, which history skips
   and the current value turns into no value.

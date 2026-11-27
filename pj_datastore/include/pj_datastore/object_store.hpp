@@ -203,6 +203,9 @@ class ObjectStore {
   // --- Write ---
 
   Status pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload);
+  /// pushOwned() of a decoded log, for a topic stored as LogEntries (logView() has a value); skips the codec round
+  /// trip. An error on any other topic.
+  Status pushLog(ObjectTopicId id, Timestamp timestamp, sdk::Log log);
 
   /// Publishes one entry to each of several distinct topics as one transaction, under the exclusive store lock.
   /// Phase one validates every write and runs every `drop`: an unknown or repeated topic, or an exception from a
@@ -410,7 +413,7 @@ class ObjectStore {
       const OrderedEntries::Removal* removal = nullptr);
   // insertLocked() for a log series.
   SequentialUID insertLogLocked(
-      ObjectSeries& series, Timestamp timestamp, const sdk::Log& log, Graveyard& graveyard,
+      ObjectSeries& series, Timestamp timestamp, sdk::Log&& log, Graveyard& graveyard,
       const OrderedEntries::Removal* removal = nullptr);
   // After a log series lost rows: recharges its bytes and drops the warm cache if it named one of @p removed.
   static void accountLogRemoved(ObjectSeries& series, const std::vector<SequentialUID>& removed, Graveyard& graveyard);
