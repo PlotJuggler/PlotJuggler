@@ -200,6 +200,42 @@ TEST(ToolRegistry, DescribeTopicListsFieldPaths) {
   EXPECT_EQ(j["fields"][0]["path"], "/imu/x");
 }
 
+// A plugin's metadata documents ride along: the topic's on the topic, a field's on its entry, none where none was set.
+TEST(ToolRegistry, DescribeTopicCarriesThePluginsMetadataDocuments) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  const auto catalog = ctx.host.catalogSnapshot();
+  ASSERT_TRUE(catalog.has_value()) << catalog.error();
+  const PJ_topic_info_t& imu = catalog->topics()[0];
+  ASSERT_EQ(PJ::sdk::toStringView(imu.name), "/imu");
+  const PJ_field_info_t& x = catalog->fields()[imu.first_field];
+  ASSERT_EQ(PJ::sdk::toStringView(x.name), "x");
+  ASSERT_TRUE(ctx.host.setTopicMetadata(imu.handle, R"({"description":"Inertial unit","frame":"base"})"));
+  ASSERT_TRUE(ctx.host.setFieldMetadata(x.handle, R"({"description":"Acceleration along x","unit":"m/s^2"})"));
+
+  auto r = reg.execute("describe_topic", {{"topic", "/imu"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["metadata"], json({{"description", "Inertial unit"}, {"frame", "base"}}));
+  ASSERT_EQ(j["fields"].size(), 2u);
+  EXPECT_EQ(j["fields"][0]["metadata"], json({{"description", "Acceleration along x"}, {"unit", "m/s^2"}}));
+  EXPECT_FALSE(j["fields"][1].contains("metadata")) << r.content;
+}
+
+TEST(ToolRegistry, DescribeTopicWithoutMetadataHasNoMetadataKey) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("describe_topic", {{"topic", "/imu"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_FALSE(j.contains("metadata")) << r.content;
+  EXPECT_FALSE(j["fields"][0].contains("metadata")) << r.content;
+}
+
 TEST(ToolRegistry, DescribeUnknownTopicFails) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;

@@ -44,6 +44,8 @@ In the browser, `open_file` still takes a path on the agent's computer (the rela
 - `list_topics` (with `filter`) and `describe_topic` find paths. A unique suffix of a path resolves; an ambiguous one
   comes back with the candidates. When several datasets hold the same path, name one as `dataset:topic/field`. Do
   not re-verify paths you were just given.
+- `describe_topic` also returns the `metadata` a plugin gave a topic or a field: a `description`, a `unit`, and any
+  other key the plugin chose. Take units and meanings from it instead of guessing them from a name.
 - `read_series`: `stats` for a summary, `buckets` (min/max per bucket) for the shape of a long signal, `raw` for
   samples inside a window you set. Compare channels in ONE call.
 - `evaluate`: compute something (scalar series or objects: point clouds, images, TF) without leaving anything
