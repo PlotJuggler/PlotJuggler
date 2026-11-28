@@ -215,13 +215,24 @@ void listScalarTopics(
   }
 }
 
+// A plugin's metadata document on a scalar field or topic (a flat object of strings: "description", "unit" and any key
+// the plugin chose), or null when there is none, the host predates the read slots, or the text is not an object. It is
+// optional detail, never a reason to fail the call.
+json metadataDocument(const PJ::Expected<std::string>& text) {
+  if (!text || text->empty()) {
+    return nullptr;
+  }
+  json doc = json::parse(*text, nullptr, /*allow_exceptions=*/false);
+  return doc.is_object() && !doc.empty() ? doc : json(nullptr);
+}
+
 // Scalar-topic half of describe_topic, shared by the catalog-snapshot-v2 and
 // legacy-v1 paths (identical span shapes either way). The topic resolves like a
 // read_series topic path, and the field paths carry its dataset when several are
 // loaded, so read_series takes them as they are.
 ToolResult describeScalarTopic(
-    std::span<const PJ_topic_info_t> topics, std::span<const PJ_field_info_t> fields,
-    std::span<const PJ_data_source_info_t> sources, const std::string& want) {
+    const PJ::sdk::ToolboxHostView& host, std::span<const PJ_topic_info_t> topics,
+    std::span<const PJ_field_info_t> fields, std::span<const PJ_data_source_info_t> sources, const std::string& want) {
   const TopicDatasetMap topic_dataset = datasetByTopicIndex(sources);
   const TopicLookup lookup = resolveTopicPath(topics, sources, want, topic_dataset);
   if (lookup.ambiguous) {
@@ -244,14 +255,21 @@ ToolResult describeScalarTopic(
       break;
     }
     const std::string leaf(PJ::sdk::toStringView(fields[idx].name));
-    field_arr.push_back(
-        {{"field", leaf},
-         {"path", qualifyWithDataset(dataset, joinSeriesPath(name, leaf))},
-         {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}});
+    json entry = {
+        {"field", leaf},
+        {"path", qualifyWithDataset(dataset, joinSeriesPath(name, leaf))},
+        {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}};
+    if (json doc = metadataDocument(host.fieldMetadata(fields[idx].handle)); !doc.is_null()) {
+      entry["metadata"] = std::move(doc);
+    }
+    field_arr.push_back(std::move(entry));
   }
   json out = {{"topic", name}, {"kind", "scalar"}, {"fields", field_arr}};
   if (!dataset.empty()) {
     out["dataset"] = dataset;
+  }
+  if (json doc = metadataDocument(host.topicMetadata(topic.handle)); !doc.is_null()) {
+    out["metadata"] = std::move(doc);
   }
   return ToolResult::success(out.dump());
 }
@@ -498,14 +516,14 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
     if (lookup.resolved) {
       return describeObjectTopic(ctx, v2->dataSources(), lookup.resolved->info);
     }
-    return describeScalarTopic(v2->topics(), v2->fields(), v2->dataSources(), want);
+    return describeScalarTopic(ctx.host, v2->topics(), v2->fields(), v2->dataSources(), want);
   }
 
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
-  return describeScalarTopic(catalog->topics(), catalog->fields(), catalog->dataSources(), want);
+  return describeScalarTopic(ctx.host, catalog->topics(), catalog->fields(), catalog->dataSources(), want);
 }
 
 ToolResult playbackTool(const json& args, ToolContext& ctx) {

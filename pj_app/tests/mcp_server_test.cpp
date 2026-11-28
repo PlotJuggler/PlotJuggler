@@ -1504,6 +1504,33 @@ TEST_F(McpServerTest, ExportWritesANaNAsNan) {
   }
 }
 
+// The documents a plugin set on a topic and its fields reach describe_topic through the app's own toolbox host.
+TEST_F(McpServerTest, DescribeTopicReturnsThePluginsMetadata) {
+  const int dataset = loadMock();
+  ASSERT_NE(dataset, 0);
+  PJ::SessionManager& manager = window_->appSession().sessionManager();
+  PJ::DataEngine& engine = manager.dataEngine();
+  PJ::DataWriter writer = engine.createWriter();
+  const auto speed =
+      writer.registerScalarSeries(static_cast<PJ::DatasetId>(dataset), "speed", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(speed.has_value()) << speed.error();
+  ASSERT_TRUE(writer.beginRow(speed->topic_id, 100).has_value());
+  writer.set<double>(speed->topic_id, 0, 1.0);
+  ASSERT_TRUE(writer.finishRow(speed->topic_id).has_value());
+  ASSERT_FALSE(manager.commitChunks(writer.flushAll()).empty());
+  ASSERT_TRUE(engine.setTopicMetadata(speed->topic_id, R"({"description":"Wheel odometry"})"));
+  ASSERT_TRUE(engine.setFieldMetadata(speed->topic_id, 0, R"({"description":"Vehicle speed","unit":"m/s"})"));
+  window_->appSession().catalogModel().rebuildFromDatastore();
+
+  const auto [text, error] = result(call("describe_topic", {{"topic", "speed"}}));
+  ASSERT_FALSE(error) << text;
+  const json described = json::parse(text);
+  EXPECT_EQ(described.value("metadata", json()), json({{"description", "Wheel odometry"}})) << text;
+  ASSERT_EQ(described.at("fields").size(), 1U) << text;
+  EXPECT_EQ(described["fields"][0].value("metadata", json()), json({{"description", "Vehicle speed"}, {"unit", "m/s"}}))
+      << text;
+}
+
 // A null sample (an empty CSV cell, an absent optional field) is no value: the store reads it as
 // NaN everywhere else, and so must the two tools that read through the SDK's series view, whose
 // value buffer holds a zero in that slot.
