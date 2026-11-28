@@ -108,8 +108,8 @@ endif()
 # Pin the reviewed upstream commit by immutable archive and hash so PJ4 consumes the official
 # sources without a local patch layer.
 FetchContent_Declare(pj_official_plugins
-    URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/08851777d2b788266662f974f04e369fd9675589
-    URL_HASH SHA256=248a1be7ff568023c2ebf040096a131c959acace7c0ef9502ea2129b55c7fc5e
+    URL https://codeload.github.com/PlotJuggler/pj-official-plugins/tar.gz/9361d66302c6adab5b033d3b1e13d11b75d1eb3e
+    URL_HASH SHA256=0baa30de5d555fd865214f288be1749bda049c603bcf9ebd37b847f9b155165f
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 FetchContent_MakeAvailable(pj_official_plugins)
@@ -167,8 +167,8 @@ endif()
 if(PJ_WASM_WITH_ULOG)
     # data_load_ulog's pinned PX4 ULog reader (its CPM pin).
     FetchContent_Declare(ulog_cpp
-        URL https://github.com/PX4/ulog_cpp/archive/refs/tags/v1.0.1.zip
-        URL_HASH SHA256=bb556d4c515f12707be816061c6ca7c0a8125917a0c4911ef1770ed9e1a85cb0
+        URL https://github.com/PX4/ulog_cpp/archive/refs/tags/v1.1.0.zip
+        URL_HASH SHA256=723a2ad92ba39403eef3a7a3c476543cdae7c0b2f293bc074f658e6e393cdcda
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SYSTEM)
     FetchContent_MakeAvailable(ulog_cpp)
