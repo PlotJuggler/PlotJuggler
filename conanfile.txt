@@ -25,12 +25,12 @@ pocketfft/0.0.0.cci.20240801
 # PythonEngine). pybind11 provides the embed target; cpython is pinned explicitly.
 cpython/3.12.7
 pybind11/3.1.0
-mcap/2.1.1
-zstd/1.5.5
+mcap/2.1.3
+zstd/1.5.7
 fast_float/8.2.10
 libarchive/3.8.7
 libjpeg-turbo/3.2.0
-libpng/1.6.58
+libpng/1.6.59
 ffmpeg/9.0.2
 # Crash handler for pj_app: prints a symbolized stack trace (with source
 # file:line) to stderr on SIGSEGV/SIGABRT/etc. The default options select the
