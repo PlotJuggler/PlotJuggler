@@ -1,0 +1,20 @@
+# Intended behaviour (pj_log ARCHITECTURE, LogView): with later entries hidden, a seek back before the selected entry
+# hides it and selects nothing in its place; seeking forward past it shows it selected again.
+# app: -d scripts/qa/regressions/fixtures/log_panel/rosout_a.mcap -l scripts/qa/regressions/fixtures/log_panel/rosout_a.pj4.xml
+# needs: plugins
+until ui_tree {} "0.000 | Info | node_a"
+playback {"action":"seek","time_s":30}
+until ui_tree {} "29.500 | Error | node_a"
+ui_click {"name":"logView","x":30,"y":40}
+ui_key {"keys":"End"}
+ui_key {"keys":"Up"}
+ui_key {"keys":"Up"}
+ui_key {"keys":"Up"}
+ui_key {"keys":"Up"}
+until ui_tree {} #detailText "Time: 27.500
+playback {"action":"seek","time_s":20}
+until ui_tree {} #displayTime "20.000"
+ui_tree {}
+absent #detailText "Time:
+playback {"action":"seek","time_s":30}
+until ui_tree {} #detailText "Time: 27.500

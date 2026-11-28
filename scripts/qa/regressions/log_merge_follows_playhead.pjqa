@@ -1,0 +1,20 @@
+# Intended behaviour (pj_log ARCHITECTURE, LogView): a merge that folds another /rosout into the one a Log panel shows
+# indexes that topic anew, and the list shows the playhead's rows, not the rows its old scroll offset now points at.
+# app: -d scripts/qa/regressions/fixtures/log_panel/rosout_a.mcap -d scripts/qa/regressions/fixtures/log_panel/rosout_b.mcap -l scripts/qa/regressions/fixtures/log_panel/rosout_a.pj4.xml
+# needs: plugins
+until get_status {} "name":"rosout_b.mcap"
+playback {"action":"seek","time_s":30}
+until ui_tree {} "29.500 | Error | node_a"
+absent "node_b"
+# Select both datasets in the curve tree, then Merge from its context menu and confirm.
+ui_click {"name":"treeView","x":150,"y":32}
+ui_click {"name":"treeView","x":150,"y":54,"modifiers":"Ctrl"}
+ui_click {"name":"treeView","x":150,"y":54,"button":"right"}
+ui_click {"name":"PJMenu","x":70,"y":39}
+expect "Merge"
+until ui_tree {} "Merge datasets"
+ui_key {"keys":"Space"}
+until get_status {} "name":"rosout_a.mcap_merged"
+playback {"action":"seek","time_s":30}
+until ui_tree {} "29.750 | Error | node_b"
+expect "29.500 | Error | node_a"
