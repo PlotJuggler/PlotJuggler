@@ -110,8 +110,8 @@ class Scene2DDockWidget : public SceneDockWidget {
  private:
   enum class ImageLayerKind { kImage, kDepth };
 
-  /// xmlValidateState's checks; the parsed view when they pass.
-  [[nodiscard]] std::optional<MediaViewState> validatedViewState(const QDomElement& element) const;
+  /// xmlValidateState's checks (the layers' only with `check_layers`); the parsed view when they pass.
+  [[nodiscard]] std::optional<MediaViewState> validatedViewState(const QDomElement& element, bool check_layers) const;
 
   /// Resolves saved layer identities that are already available and primes the
   /// encoding-aware factory with their explicit concrete kind.

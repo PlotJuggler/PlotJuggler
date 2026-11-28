@@ -54,9 +54,14 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
 **Persistence.** The dock saves `<scene3d version="1">`: fixed frame and mode, `follow_frame` (empty = off), the
 camera model as a stable string id plus `CameraState` JSON, `<scene_controls>` (grid, gizmo, TF lines, mesh and
 collision visibility and opacity; ranges in `scene_state_xml.h`, shared by desktop and browser), and every layer's
-own payload. Restore validates every control and camera field before mutating and rolls the whole dock back if a
-layer payload or topic resolution fails. A restored follow target absent from the tree stays inert until it
-appears. The last hand-picked fixed frame is also kept across restarts in `QSettings`
+own payload. Restore validates every control and camera field before mutating; a layer or config topic that cannot
+restore (bad header, type mismatch, refused payload) is skipped and named, as in `pj_scene_common` "Persistence and
+deferred restore", and the rest of the dock restores. A restored follow target absent from the tree stays inert until it
+appears. While following, the dock also saves `follow_offset`, the focal minus the followed origin at the cursor:
+`CameraState`'s focal is a fixed-frame point, right only at the cursor it was saved at, so the restore anchors the
+camera at that offset from the followed frame at the first follow seed (`SceneViewWidget::setFollowAnchor`). A
+layout with a `camera_state` but no `follow_offset` snaps onto the followed frame; a state naming neither (a partial
+`set_widget_state`) keeps the camera. The last hand-picked fixed frame is also kept across restarts in `QSettings`
 `pj_scene3d/fixed_frame_by_source`, keyed by the dataset's source path and name (not the per-session `DatasetId`);
 a dataset without a source name is remembered for the session only, and a layout's saved fixed frame still wins
 for its dock.
@@ -584,7 +589,8 @@ headless.
   top-down the focal, Fly the eye, XYOrbit drops z). `SceneViewWidget::applyFollow` shifts by the followed origin's
   delta per tracker tick. Enabling follow, changing the fixed frame or swapping the TF buffer seeds the baseline at
   the current time; before the view's first tracker time nothing seeds, so that tick only seeds, and after a lookup
-  gap the first tick that resolves seeds it. `followRenderKey(time)` feeds the dock's view key, so a moving target repaints with the triads hidden.
+  gap the first tick that resolves seeds it. A pending follow anchor (a restored `follow_offset`) makes that seed
+  place the focal at the anchor from the followed origin instead. `followRenderKey(time)` feeds the dock's view key, so a moving target repaints with the triads hidden.
 - **Camera-relative rendering.** At UTM scale float32 keeps decimetres, so each frame picks a render origin (the
   focal, in double), builds the view with `viewMatrixRelativeTo(origin)` (bit-exact `viewMatrix()` at origin 0) and
   subtracts the origin in double before every float cast. Camera state and scene bounds stay absolute.

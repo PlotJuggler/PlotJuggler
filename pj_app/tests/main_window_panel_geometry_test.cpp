@@ -4,8 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDomDocument>
 #include <QLabel>
 #include <QPointer>
+#include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
 #include <QStandardPaths>
@@ -37,6 +39,13 @@ class MainWindowPanelGeometryTestPeer {
 
   static void restoreCentralArea(MainWindow& window) {
     window.restoreCentralArea();
+  }
+
+  [[nodiscard]] static QDomElement saveChromeState(MainWindow& window, QDomDocument& doc) {
+    return window.saveChromeState(doc);
+  }
+  static void restoreChromeState(MainWindow& window, const QDomElement& element) {
+    window.restoreChromeState(element);
   }
 
   // A bare (engine-less) toolbox presenter for `container`, not yet presented.
@@ -322,6 +331,85 @@ TEST(MainWindowPanelGeometryTest, WideningTheWindowWithAPanelOpenLeavesTheLeftPa
   settle();
 
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth);
+}
+
+[[nodiscard]] QWidget& leftColumn(PJ::MainWindow& window) {
+  QWidget* column = window.findChild<QWidget*>(u"leftColumn"_s);
+  Q_ASSERT(column != nullptr);
+  return *column;
+}
+
+void clickLeftPanelToggle(PJ::MainWindow& window) {
+  auto* tabs = window.findChild<PJ::TabbedPlotWidget*>();
+  ASSERT_NE(tabs, nullptr);
+  tabs->leftPanelButton()->click();
+  settle();
+}
+
+// A layout saved with the left panel hidden opens with it hidden, and one saved with it shown reopens it.
+TEST(MainWindowPanelGeometryTest, LayoutRestoresTheLeftPanelVisibility) {
+  PJ::MainWindow window;
+  openAtUserChosenWidth(window);
+
+  clickLeftPanelToggle(window);
+  ASSERT_TRUE(leftColumn(window).isHidden());
+  QDomDocument hidden_doc;
+  const QDomElement hidden_state = PJ::MainWindowPanelGeometryTestPeer::saveChromeState(window, hidden_doc);
+  EXPECT_EQ(hidden_state.attribute(u"left_panel_visible"_s), u"false"_s);
+
+  clickLeftPanelToggle(window);
+  ASSERT_FALSE(leftColumn(window).isHidden());
+  QDomDocument shown_doc;
+  const QDomElement shown_state = PJ::MainWindowPanelGeometryTestPeer::saveChromeState(window, shown_doc);
+  EXPECT_EQ(shown_state.attribute(u"left_panel_visible"_s), u"true"_s);
+
+  PJ::MainWindowPanelGeometryTestPeer::restoreChromeState(window, hidden_state);
+  settle();
+  EXPECT_TRUE(leftColumn(window).isHidden());
+
+  PJ::MainWindowPanelGeometryTestPeer::restoreChromeState(window, shown_state);
+  settle();
+  EXPECT_FALSE(leftColumn(window).isHidden());
+
+  // The toggle still works after a restore: one click hides the panel again.
+  clickLeftPanelToggle(window);
+  EXPECT_TRUE(leftColumn(window).isHidden());
+}
+
+// A layout saved with the panel hidden keeps the width it reopens at: a hidden panel's splitter size is 0.
+TEST(MainWindowPanelGeometryTest, LayoutSavedWithTheLeftPanelHiddenKeepsItsWidth) {
+  PJ::MainWindow window;
+  openAtUserChosenWidth(window);
+  clickLeftPanelToggle(window);
+  ASSERT_TRUE(leftColumn(window).isHidden());
+  QDomDocument hidden_doc;
+  const QDomElement hidden_state = PJ::MainWindowPanelGeometryTestPeer::saveChromeState(window, hidden_doc);
+  clickLeftPanelToggle(window);
+  settle();
+  ASSERT_EQ(leftPanelWidth(window), kUserChosenLeftWidth);
+
+  PJ::MainWindowPanelGeometryTestPeer::restoreChromeState(window, hidden_state);
+  settle();
+  ASSERT_TRUE(leftColumn(window).isHidden());
+  clickLeftPanelToggle(window);
+  settle();
+  EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth);
+}
+
+// A layout written before the attribute existed leaves the panel as the user has it.
+TEST(MainWindowPanelGeometryTest, LayoutWithoutLeftPanelVisibilityLeavesThePanelAlone) {
+  PJ::MainWindow window;
+  openAtUserChosenWidth(window);
+  clickLeftPanelToggle(window);
+  ASSERT_TRUE(leftColumn(window).isHidden());
+
+  QDomDocument doc;
+  QDomElement legacy = doc.createElement(u"chrome_state"_s);
+  legacy.setAttribute(u"main_splitter_sizes"_s, u"0,0"_s);
+  PJ::MainWindowPanelGeometryTestPeer::restoreChromeState(window, legacy);
+  settle();
+
+  EXPECT_TRUE(leftColumn(window).isHidden());
 }
 
 }  // namespace

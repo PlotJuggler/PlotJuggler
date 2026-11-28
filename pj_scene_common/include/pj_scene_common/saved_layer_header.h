@@ -55,4 +55,12 @@ struct SavedLayerHeader : SavedTopicHeader {
 [[nodiscard]] std::optional<SavedLayerHeader> parseSavedLayerHeader(
     const QDomElement& element, SavedTopicRef ref, const LayerFactory& factory);
 
+/// The persisted `object_type` token of `object_type`.
+[[nodiscard]] QString objectTypeName(sdk::BuiltinObjectType object_type);
+
+/// Why a saved element of `saved` type cannot bind `topic_name`, whose data is `live`: the skip reason of a layout
+/// whose element names the wrong object type.
+[[nodiscard]] QString objectTypeMismatch(
+    const QString& topic_name, sdk::BuiltinObjectType saved, sdk::BuiltinObjectType live);
+
 }  // namespace PJ

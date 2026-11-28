@@ -233,9 +233,9 @@ class Scene3DDockWidget : public SceneDockWidget {
   void onDatasetTransformsReady(DatasetId dataset_id);
 
  private:
-  // kConsumed: a valid element the dock deliberately dropped (a foreign dataset's
-  // topic, already reported through topicRefused); the restore carries on.
-  enum class ElementRestoreResult { kRestored, kConsumed, kDeferred, kInvalid };
+  // kConsumed: the element is done without a layer and the restore carries on: the dock dropped a foreign dataset's
+  // topic (reported through topicRefused) or skipped an element it cannot restore (skipRestoreElement, at the failure).
+  enum class ElementRestoreResult { kRestored, kConsumed, kDeferred };
   // Shared body of addTopic(). `enforce_image_gate` runs the kImage depth-encoding gate (firstSampleIsDepthEncoded):
   // true for interactive adds, false for layout restore, which trusts the saved layer type because the topic's first
   // sample may not be loaded yet (gating on an absent sample would silently drop a saved DepthCloud layer).
@@ -251,7 +251,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   ObjectTopicId addTrailLayerImpl(ObjectTopicId topic_id, std::unique_ptr<pj::scene3d::TrailLayer> layer);
   // Saved-topic resolution shared by restoreLayerElement and restoreConfigTopicElement: binds `ref` (parsed from `el`
   // with SavedTopicRef::kRequired) and yields kRestored (live topic id), kDeferred (with the topic name for the
-  // pending queue), kConsumed (the element's dataset lost the restore's dataset choice) or kInvalid.
+  // pending queue) or kConsumed (the element's dataset lost the restore's dataset choice, or it was skipped).
   [[nodiscard]] ElementRestoreResult resolveSavedTopicRef(
       const QDomElement& el, const SavedTopicHeader& ref, QString* deferred_topic_name,
       sdk::BuiltinObjectType expected_type, std::optional<ObjectTopicId>& out_topic);
@@ -339,7 +339,6 @@ class Scene3DDockWidget : public SceneDockWidget {
   uint32_t next_local_layer_topic_id_ = std::numeric_limits<uint32_t>::max();
   std::unordered_set<uint32_t> local_layer_ids_;
   std::unordered_map<int64_t, int> restored_layer_orders_;
-  bool xml_rollback_in_progress_ = false;
 
   QList<pj::tf::FrameRow> available_frames_;
   std::vector<std::string> fallback_frames_;

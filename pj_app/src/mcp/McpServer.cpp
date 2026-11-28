@@ -338,6 +338,18 @@ void McpServer::dropCallsOf(const QByteArray& token) {
 }
 
 #ifndef PJ_TARGET_WASM
+namespace {
+
+// flush() sends now: a buffered write leaves on a later event-loop pass, which during playback comes only after the
+// next frame, so every reply would wait a frame longer.
+void replyAndClose(QTcpSocket* socket, const QByteArray& response) {
+  socket->write(response);
+  socket->flush();
+  socket->disconnectFromHost();
+}
+
+}  // namespace
+
 void McpServer::onReadyRead(QTcpSocket* socket) {
   auto it = pending_.find(socket);
   if (it == pending_.end()) {
@@ -352,8 +364,7 @@ void McpServer::onReadyRead(QTcpSocket* socket) {
   }
   pending_.erase(it);
   if (parsed != 200) {
-    socket->write(mcp::httpResponse(parsed));
-    socket->disconnectFromHost();
+    replyAndClose(socket, mcp::httpResponse(parsed));
     return;
   }
   handle(socket, request);
@@ -363,8 +374,7 @@ void McpServer::handle(QTcpSocket* socket, const mcp::HttpRequest& request) {
   const QPointer<QTcpSocket> guard(socket);
   const auto respond = [guard](int status, const QByteArray& body = {}) {
     if (guard != nullptr && guard->isOpen()) {  // a revoke closes its token's connections
-      guard->write(mcp::httpResponse(status, body));
-      guard->disconnectFromHost();
+      replyAndClose(guard, mcp::httpResponse(status, body));
     }
   };
   // Every token is compared, each in constant time, so how long this takes does not say which

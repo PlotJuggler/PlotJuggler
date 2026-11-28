@@ -646,8 +646,8 @@ dock with no state).
   job's status, whose progress says the load completes) comes without waiting, and the job ends with the load's own
   outcome.
 - **The answer** is `loaded` and the warnings reported meanwhile (every "Layout" diagnostic at warning level or
-  above, such as a newer `pj4_version`, a data file that is gone, a relative path, curves the data lacks or a dataset
-  chosen for the layout, and a layout data file's "File Loader" load failure), each once; the apply failure's
+  above, such as a newer `pj4_version`, a data file that is gone, a relative path, curves the data lacks, a 2D/3D layer
+  skipped with its attribute and valid values, or a dataset chosen for the layout, and a layout data file's "File Loader" load failure), each once; the apply failure's
   summary, which quotes issues already reported, only when it is the sole reason. Or an error with the app's
   reasons. Diagnostics reach `QtDiagnosticBridge` queued: those posted before the load are delivered before the
   capture starts, those posted before its settle are delivered at the settle, where the capture ends, and the reply

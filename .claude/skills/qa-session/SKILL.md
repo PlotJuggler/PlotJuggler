@@ -22,8 +22,15 @@ scripts/qa/pjqa.py call screenshot                  # saves a PNG under $PJQA_HO
 scripts/qa/pjqa.py stop                             # always, at the end
 ```
 
-- Linux only. Offscreen by default; `start --xvfb` runs under a virtual X display instead. Never run on the
-  user's display: keys go to the active window.
+- Linux only. Offscreen by default; `start --xvfb` runs under a virtual X display instead (screen 1920x1080, or
+  `--xvfb 2560x1440` for a large layout; the window keeps its default size unless the app arguments also carry
+  `-geometry 2560x1440+0+0`). Never run on the user's display: keys go to the active window.
+- Offscreen has no QRhi: 2D/3D scenes and image views draw nothing but a "GPU rendering is unavailable" /
+  "Scene3D has no graphics device" banner (`QLabel#scene2dRenderingWarning`, `#scene3dRenderingWarning` in
+  `ui_tree`), and `get_status` reports `frames_last_s 0`. No Qt backend renders there: the offscreen platform
+  plugin offers none, and the Null backend draws nothing. `pjqa.py start` says so on stderr when it starts
+  offscreen. Scene state (`widget_state`, the camera, follow) still works offscreen; for anything you must see, use
+  `--xvfb` (llvmpipe, software rendering).
 - `start --display :N` runs on an X display you started (a private GPU display), `--display wayland` natively on
   the session's compositor: windows appear there, so the user's own display only when they asked.
 - `--plugin-dir` names a folder of built plugins (CSV, MCAP, Parquet...); without it only built-in features load.

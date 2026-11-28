@@ -64,7 +64,8 @@ on the ground plane), "Fly", "Top-down ortho".
 - **Trail of a frame's motion:** right-click a frame → "Create trail for '<frame>'", or "Transforms and RobotModel" →
   "Create Trail" ("TF frame whose motion trail to draw") and "Add a motion trail for the selected frame".
 - **MCP:** camera and fixed frame through `widget_state` / `set_widget_state` (`fixed_frame`, `camera_model`, `camera_state` on the
-  `<scene3d>` element); trails from the UI. `evaluate` with `pj.tf.lookup` reads a transform as numbers
+  `<scene3d>` element); while a frame is followed, `follow_offset` (the camera's focal point relative to that frame)
+  places the camera, not `camera_state`'s focal; trails from the UI. `evaluate` with `pj.tf.lookup` reads a transform as numbers
   ([scripting.md](../scripting.md), "On-demand object scripts").
 
 ## 3D view: scene settings

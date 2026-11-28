@@ -987,12 +987,14 @@ class MainWindow : public QMainWindow {
   /// Coalesces plot-owned intent changes into one binder rebuild on the event loop.
   void schedulePendingDisplayBindingRebuild();
   /// Settles every scene dock after a restore: dataset choice, a last pending retry, then the verdict
-  /// (permanent failure, unresolved blocking topics).
+  /// (unresolved blocking topics, skipped elements).
   struct SceneRestoreVerdict {
-    bool failed = false;
     QStringList blocking_topics;
+    bool skipped = false;  ///< a dock dropped an element since applyWorkspace began, already reported
   };
   [[nodiscard]] SceneRestoreVerdict settleSceneRestores();
+  /// A scene dock's restoreElementSkipped: a "Layout" warning naming the dock, counted for settleSceneRestores.
+  void reportSkippedSceneElement(const QWidget* scene_dock, const QString& line);
 
   int retryPendingSceneRestores(const std::vector<CatalogItem>& items);
   [[nodiscard]] QStringList unresolvedPendingSceneRestores();
@@ -1144,18 +1146,19 @@ class MainWindow : public QMainWindow {
   // datasets reload, or zoom and scroll map onto the old scene.
   void restoreSourceTimelineViewState(const QDomElement& element);
 
-  // <right_panel_state visible width style splitter_sizes/>, always emitted; the caller appends it.
+  // <right_panel_state width style splitter_sizes/>, always emitted; the caller appends it. The right panel's
+  // open/closed state is not saved.
   [[nodiscard]] QDomElement saveRightPanelState(QDomDocument& doc) const;
 
   // Missing or mismatched values are ignored. Never writes QSettings: a layout must not change the user's
   // defaults.
   void restoreRightPanelState(const QDomElement& element);
 
-  // <chrome_state main_splitter_sizes timeline_splitter_sizes/>. Panel open/closed state is not saved: it is a
-  // QSettings preference, not document state.
+  // <chrome_state main_splitter_sizes left_panel_visible/>. Only the left panel's open/closed state is saved; the
+  // bottom and right panels open as every launch opens them.
   [[nodiscard]] QDomElement saveChromeState(QDomDocument& doc) const;
 
-  // Missing or mismatched values are ignored; panel visibility is left as is.
+  // Missing or mismatched values are ignored: a layout without left_panel_visible leaves the left panel as it is.
   void restoreChromeState(const QDomElement& element);
 
   // Thin wrappers over pj_runtime's DerivedObjects, which owns the <data_processors> persistence. This one is
@@ -1589,6 +1592,8 @@ class MainWindow : public QMainWindow {
   // Trailing edge for scene docks' workspaceChanged: scrubbers emit per drag tick, and each undo push serializes
   // the whole workspace.
   QTimer scene_undo_debounce_;
+  // Scene elements skipped since applyWorkspace began; an exact restore fails on any.
+  int scene_restore_skips_ = 0;
   // Trailing edge, from the event loop, for a plugin's change to a history-owned derived node: one undo step per
   // burst, so an Apply that creates several nodes is undone at once.
   QTimer plugin_history_step_;

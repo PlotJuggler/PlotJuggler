@@ -316,8 +316,8 @@ newest sample: the dock subscribes to the session's live samples and moves visib
 - **Depth routing.** `kImage` covers colour and depth: the dock peeks the topic's first sample's encoding and
   creates a `DepthImageLayer` or an `ImageLayer`. A saved `layer_kind` attribute overrides the peek on restore;
   XML without it falls back to the peek (depth settings in the XML select depth).
-- **Restore.** XML is validated before the destructive restore, normalized on a private clone, and a snapshot puts
-  the dock back if a late step fails.
+- **Restore.** XML is validated before the destructive restore and normalized on a private clone; a layer the
+  validator refuses is skipped and named (`restoreElementSkipped`), the rest restores.
 - **Placeholder.** An empty dock shows a greyed icon on a stacked page instead of the viewer: a raster widget over
   the QRhiWidget's surface does not composite reliably.
 - **Image layer**: nearest magnification, Rectify toggle (`rectify_enabled` in XML; absent means on).

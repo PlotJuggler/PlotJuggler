@@ -75,7 +75,8 @@ function makeMissingCurveLayout(layoutBytes) {
 function makeInvalidSceneLayout(layoutBytes) {
   const xml = layoutBytes.toString('utf8').replace(
     /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/,
-    '$1<scene3d><layer object_type="not_a_type"/></scene3d>$2',
+    // A child the dock does not know fails its xmlLoadState; a bad <layer> would only be skipped.
+    '$1<scene3d><not_a_layer/></scene3d>$2',
   );
   return Buffer.from(xml);
 }
