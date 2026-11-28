@@ -286,6 +286,8 @@ TopicStorage::DetachedState TopicStorage::detachChunks() {
   detached.column_descriptors = column_descriptors_;
   detached.array_expansion_counts = array_expansion_counts_;
   detached.retired_columns = retired_columns_;
+  detached.field_metadata = field_metadata_;
+  detached.topic_metadata = topic_metadata_;
   detached.retention_floor = retention_floor_;
   detached.evicted_through_chunk_id = evicted_through_chunk_id_;
   detached.schema_id = descriptor_.schema_id;
@@ -305,6 +307,7 @@ void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
   static_assert(std::is_nothrow_move_assignable_v<std::vector<ColumnDescriptor>>);
   static_assert(std::is_nothrow_move_assignable_v<std::unordered_map<std::string, uint32_t>>);
   static_assert(std::is_nothrow_move_assignable_v<std::unordered_set<FieldId>>);
+  static_assert(std::is_nothrow_move_assignable_v<std::unordered_map<FieldId, std::string>>);
 
   sealed_chunks_ = std::move(detached.chunks);
   invalidateChunkAggregate();
@@ -317,6 +320,8 @@ void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
   truncated_sample_count_ = detached.truncated_sample_count;
   array_expansion_counts_ = std::move(detached.array_expansion_counts);
   retired_columns_ = std::move(detached.retired_columns);
+  field_metadata_ = std::move(detached.field_metadata);
+  topic_metadata_ = std::move(detached.topic_metadata);
 }
 
 void TopicStorage::ensureChunkAggregate() const noexcept {
@@ -527,6 +532,23 @@ uint32_t TopicStorage::truncatedSampleCount() const noexcept {
 uint32_t TopicStorage::arrayExpansionCount(const std::string& field_path) const noexcept {
   auto it = array_expansion_counts_.find(field_path);
   return it != array_expansion_counts_.end() ? it->second : 0;
+}
+
+void TopicStorage::setFieldMetadata(FieldId field_id, std::string metadata_json) {
+  if (metadata_json.empty()) {
+    field_metadata_.erase(field_id);
+    return;
+  }
+  field_metadata_[field_id] = std::move(metadata_json);
+}
+
+std::string_view TopicStorage::fieldMetadata(FieldId field_id) const noexcept {
+  const auto it = field_metadata_.find(field_id);
+  return it != field_metadata_.end() ? std::string_view(it->second) : std::string_view();
+}
+
+void TopicStorage::setTopicMetadata(std::string metadata_json) {
+  topic_metadata_ = std::move(metadata_json);
 }
 
 void TopicStorage::setArrayExpansionCount(const std::string& field_path, uint32_t count) {

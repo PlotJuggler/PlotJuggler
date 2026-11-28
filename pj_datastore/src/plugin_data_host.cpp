@@ -25,6 +25,7 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -646,6 +647,34 @@ Status scanSeriesValues(
   return lockEnginePair(live, staging);
 }
 
+// PlotJuggler's byte bound on a field or topic metadata document; the SDK contract quotes it, so raising it is
+// compatible and lowering it breaks plugins.
+constexpr std::size_t kMaxMetadataBytes = 4 * 1024;
+
+// Checks a set_field_metadata / set_topic_metadata document against the SDK rules (a flat JSON object of string
+// values) and returns the text to store: verbatim, or empty when the document clears (empty text, or no key).
+[[nodiscard]] PJ::Expected<std::string> checkMetadataDocument(std::string_view text) {
+  if (text.empty()) {
+    return std::string();
+  }
+  if (text.size() > kMaxMetadataBytes) {
+    return PJ::unexpected(fmt::format("metadata is {} bytes; the limit is {}", text.size(), kMaxMetadataBytes));
+  }
+  const auto doc = nlohmann::json::parse(text.begin(), text.end(), nullptr, /*allow_exceptions=*/false);
+  if (doc.is_discarded()) {
+    return PJ::unexpected(std::string("metadata is not valid UTF-8 JSON"));
+  }
+  if (!doc.is_object()) {
+    return PJ::unexpected(std::string("metadata is not a JSON object"));
+  }
+  for (const auto& [key, value] : doc.items()) {
+    if (!value.is_string()) {
+      return PJ::unexpected(fmt::format("metadata value of \"{}\" is not a string", key));
+    }
+  }
+  return doc.empty() ? std::string() : std::string(text);
+}
+
 struct WriteCore {
   explicit WriteCore(DataEngine& data_engine) : engine(data_engine), writer(data_engine.createWriter()) {}
 
@@ -869,6 +898,42 @@ struct WriteCore {
     field_types[key] = column->desc.logical_type;
     field_cache[{.topic_id = topic.id, .field_name = column->desc.field_path}] =
         FieldHandle{.topic = topic, .id = field_id};
+    return true;
+  }
+
+  // Stores a document checkMetadataDocument() accepted on the live engine and the staging mirror, so it survives the
+  // pause/resume swap. `owns(dataset_id)` says whether the topic's dataset is the caller's to describe.
+  template <typename Owns>
+  [[nodiscard]] bool setFieldMetadata(FieldHandle field, const std::string& doc, Owns&& owns) {
+    return storeMetadata(
+        field.topic, owns, [&](DataEngine& e) { return e.setFieldMetadata(field.topic.id, field.id, doc); });
+  }
+
+  template <typename Owns>
+  [[nodiscard]] bool setTopicMetadata(TopicHandle topic, const std::string& doc, Owns&& owns) {
+    return storeMetadata(topic, owns, [&](DataEngine& e) { return e.setTopicMetadata(topic.id, doc); });
+  }
+
+  template <typename Owns, typename Apply>
+  [[nodiscard]] bool storeMetadata(TopicHandle topic, Owns& owns, Apply&& apply) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
+    const TopicStorage* storage = engine.getTopicStorage(topic.id);
+    if (storage == nullptr) {
+      setError(fmt::format("topic {} not found", topic.id));
+      return false;
+    }
+    if (!owns(storage->descriptor().dataset_id)) {
+      setError(fmt::format("topic {} belongs to another plugin: only its writer describes it", topic.id));
+      return false;
+    }
+    if (auto status = apply(engine); !status.has_value()) {
+      setError(status.error());
+      return false;
+    }
+    if (secondary_engine != nullptr) {
+      (void)apply(*secondary_engine);  // a mirror without the topic has nothing to describe
+    }
+    last_error.clear();
     return true;
   }
 
@@ -1538,6 +1603,8 @@ struct DatastoreToolboxHostState {
   ToolboxCore core;
   ObjectStore& object_store;
   std::string object_last_error;
+  // The datasets create_data_source made: the only ones whose topics the toolbox may describe.
+  std::unordered_set<DatasetId> created;
 
   void setObjectError(std::string msg) {
     object_last_error = std::move(msg);
@@ -1623,6 +1690,43 @@ bool sourceEnsureField(
   });
 }
 
+// Checked before pinCore(), so parsing never holds the engine locks the GUI reads under.
+bool sourceSetFieldMetadata(
+    void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    auto [core, engine_locks] = pinCore(*impl);
+    if (!core->setFieldMetadata(field, *doc, [&](DatasetId ds) { return ds == impl->source.id; })) {
+      propagateError(out_error, core->lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+bool sourceSetTopicMetadata(
+    void* ctx, TopicHandle topic, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    auto [core, engine_locks] = pinCore(*impl);
+    if (!core->setTopicMetadata(topic, *doc, [&](DatasetId ds) { return ds == impl->source.id; })) {
+      propagateError(out_error, core->lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
 bool sourceAppendRecord(
     void* ctx, TopicHandle topic, int64_t timestamp, const PJ_named_field_value_t* fields, uint64_t field_count,
     PJ_error_t* out_error) noexcept {
@@ -1684,6 +1788,28 @@ bool parserEnsureField(
   });
 }
 
+bool parserSetFieldMetadata(
+    void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
+    if (field.topic.id != impl->topic.id) {
+      propagateError(out_error, "set_field_metadata: field does not belong to the parser's bound topic");
+      return false;
+    }
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    auto [core, engine_locks] = pinCore(*impl);
+    if (!core->setFieldMetadata(field, *doc, [](DatasetId) { return true; })) {  // the bound topic is the check
+      propagateError(out_error, core->lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
 bool parserAppendRecord(
     void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields, uint64_t field_count,
     PJ_error_t* out_error) noexcept {
@@ -1736,6 +1862,11 @@ bool toolboxCreateDataSource(
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
+    {
+      // Read by the ownership check under the engine lock, from whichever thread the toolbox writes on.
+      const auto lock = impl->core.write.engine.lockEngine();
+      impl->created.insert(out_source->id);
+    }
     return true;
   });
 }
@@ -1762,6 +1893,82 @@ bool toolboxEnsureField(
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
+    return true;
+  });
+}
+
+bool toolboxSetFieldMetadata(
+    void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    if (!impl->core.write.setFieldMetadata(field, *doc, [&](DatasetId ds) { return impl->created.count(ds) != 0; })) {
+      propagateError(out_error, impl->core.write.lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+bool toolboxSetTopicMetadata(
+    void* ctx, TopicHandle topic, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    if (!impl->core.write.setTopicMetadata(topic, *doc, [&](DatasetId ds) { return impl->created.count(ds) != 0; })) {
+      propagateError(out_error, impl->core.write.lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+// The getters' view stays valid until the next get_field_metadata / get_topic_metadata on the same thread (the SDK
+// contract): one buffer per thread, whichever host serves the call.
+thread_local std::string tl_metadata_read;
+
+bool toolboxGetFieldMetadata(void* ctx, FieldHandle field, PJ_string_view_t* out_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    if (out_json == nullptr) {
+      propagateError(out_error, "out_json must not be null");
+      return false;
+    }
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    const auto lock = impl->core.engine.lockEngine();
+    const auto column = lookupFieldColumn(impl->core.engine, field);
+    if (!column.has_value()) {
+      propagateError(out_error, column.error().c_str());
+      return false;
+    }
+    tl_metadata_read = column->storage->fieldMetadata(field.id);
+    *out_json = PJ_string_view_t{tl_metadata_read.data(), tl_metadata_read.size()};
+    return true;
+  });
+}
+
+bool toolboxGetTopicMetadata(void* ctx, TopicHandle topic, PJ_string_view_t* out_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    if (out_json == nullptr) {
+      propagateError(out_error, "out_json must not be null");
+      return false;
+    }
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    const auto lock = impl->core.engine.lockEngine();
+    const TopicStorage* storage = impl->core.engine.getTopicStorage(topic.id);
+    if (storage == nullptr) {
+      propagateError(out_error, fmt::format("topic {} not found", topic.id).c_str());
+      return false;
+    }
+    tl_metadata_read = storage->topicMetadata();
+    *out_json = PJ_string_view_t{tl_metadata_read.data(), tl_metadata_read.size()};
     return true;
   });
 }
@@ -2421,13 +2628,15 @@ const PJ_source_write_host_vtable_t kSourceWriteVTable = {
     PJ_PLUGIN_DATA_API_VERSION, sizeof(PJ_source_write_host_vtable_t),
     sourceEnsureTopic,          sourceEnsureField,
     sourceAppendRecord,         sourceAppendBoundRecord,
-    sourceAppendArrowStream,
+    sourceAppendArrowStream,    sourceSetFieldMetadata,
+    sourceSetTopicMetadata,
 };
 
 const PJ_parser_write_host_vtable_t kParserWriteVTable = {
     PJ_PLUGIN_DATA_API_VERSION, sizeof(PJ_parser_write_host_vtable_t),
     parserEnsureField,          parserAppendRecord,
     parserAppendBoundRecord,    parserAppendArrowStream,
+    parserSetFieldMetadata,
 };
 
 const PJ_toolbox_host_vtable_t kToolboxVTable = {
@@ -2446,6 +2655,10 @@ const PJ_toolbox_host_vtable_t kToolboxVTable = {
     toolboxRegisterObjectTopicOnDataset,
     toolboxSetObjectTopicRetention,
     toolboxAcquireCatalogSnapshotV2,
+    toolboxSetFieldMetadata,
+    toolboxSetTopicMetadata,
+    toolboxGetFieldMetadata,
+    toolboxGetTopicMetadata,
 };
 
 const PJ_object_write_host_vtable_t kSourceObjectWriteVTable = {

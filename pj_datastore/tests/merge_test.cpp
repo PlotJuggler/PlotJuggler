@@ -452,5 +452,80 @@ TEST(MergeDatasets, SourceRetiredColumnOfAnotherTypeDoesNotSkipTheTopic) {
   EXPECT_EQ(readColumn(engine, data, 1).size(), 4U);
 }
 
+TEST(MergeDatasets, DocumentsFollowTheirColumnsAnchorFirst) {
+  DataEngine engine;
+  const DatasetId anchor = makeDataset(engine, "anchor");
+  const DatasetId source = makeDataset(engine, "source");
+  const TopicId shared = writeScalar(engine, anchor, "shared", {0}, {0.0});
+  const TopicId shared_bare = writeScalar(engine, anchor, "shared_bare", {0}, {0.0});
+  const TopicId anchor_only = writeScalar(engine, anchor, "anchor_only", {0}, {1.0});
+  const TopicId source_shared = writeScalar(engine, source, "shared", {0}, {2.0});
+  const TopicId source_shared_bare = writeScalar(engine, source, "shared_bare", {0}, {2.0});
+  const TopicId source_only = writeScalar(engine, source, "source_only", {0}, {3.0});
+  {
+    auto lock = engine.lockEngine();
+    const auto describe = [&](TopicId tid, const std::string& who) {
+      engine.getTopicStorage(tid)->setTopicMetadata(R"({"description":")" + who + R"( topic"})");
+      engine.getTopicStorage(tid)->setFieldMetadata(0, R"({"description":")" + who + R"( field"})");
+    };
+    describe(shared, "anchor");
+    describe(anchor_only, "anchor");
+    describe(source_shared, "source");
+    describe(source_shared_bare, "source");  // its anchor twin has none
+    describe(source_only, "source");
+  }
+
+  ASSERT_TRUE(engine.mergeDatasets(anchor, {{source, 1000}}).has_value());
+
+  const TopicId merged_source_only = topicIdByName(engine, anchor, "source_only");
+  ASSERT_NE(merged_source_only, 0U);
+  auto lock = engine.lockEngine();
+  const auto expect_described_by = [&](TopicId tid, const std::string& who) {
+    EXPECT_EQ(engine.getTopicStorage(tid)->topicMetadata(), R"({"description":")" + who + R"( topic"})") << tid;
+    EXPECT_EQ(engine.getTopicStorage(tid)->fieldMetadata(0), R"({"description":")" + who + R"( field"})") << tid;
+  };
+  expect_described_by(shared, "anchor");
+  expect_described_by(shared_bare, "source");
+  expect_described_by(anchor_only, "anchor");
+  expect_described_by(merged_source_only, "source");
+}
+
+// The source lays its columns out in another order, so carrying by field id would mislabel them.
+TEST(MergeDatasets, FieldDocumentsFollowTheFieldPathAndTheFirstKeptSource) {
+  DataEngine engine;
+  const DatasetId anchor = makeDataset(engine, "anchor");
+  const DatasetId first = makeDataset(engine, "first");
+  const DatasetId second = makeDataset(engine, "second");
+  const std::vector<double> v{0.0, 1.0};
+  const auto col = [&](uint32_t i) { return ColumnData::float64(i, Span<const double>(v.data(), v.size())); };
+  const TopicId merged = writeTyped(engine, anchor, "m", {{"x", PrimitiveType::kFloat64}}, {0, 1000}, {col(0)});
+  const TopicId first_m = writeTyped(
+      engine, first, "m", {{"y", PrimitiveType::kFloat64}, {"x", PrimitiveType::kFloat64}}, {0, 1000},
+      {col(0), col(1)});
+  const TopicId second_m = writeTyped(engine, second, "m", {{"y", PrimitiveType::kFloat64}}, {0, 1000}, {col(0)});
+  {
+    auto lock = engine.lockEngine();
+    engine.getTopicStorage(first_m)->setFieldMetadata(0, R"({"description":"first y"})");
+    engine.getTopicStorage(first_m)->setFieldMetadata(1, R"({"description":"first x"})");
+    engine.getTopicStorage(second_m)->setFieldMetadata(0, R"({"description":"second y"})");
+  }
+
+  ASSERT_TRUE(engine.mergeDatasets(anchor, {{first, 2000}, {second, 4000}}).has_value());
+
+  auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(merged);
+  ASSERT_NE(storage, nullptr);
+  const auto document_of = [&](const std::string& path) -> std::string {
+    for (const ColumnDescriptor& c : storage->columnDescriptors()) {
+      if (c.field_path == path) {
+        return std::string(storage->fieldMetadata(c.field_id));
+      }
+    }
+    return "no column " + path;
+  };
+  EXPECT_EQ(document_of("x"), R"({"description":"first x"})");
+  EXPECT_EQ(document_of("y"), R"({"description":"first y"})");
+}
+
 }  // namespace
 }  // namespace PJ

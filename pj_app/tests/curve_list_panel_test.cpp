@@ -269,6 +269,76 @@ TEST(CurveListPanelTest, HoverTooltipReportsTypeAndCounts) {
   EXPECT_TRUE(dataset_tip.contains(u"<span style=\"font-weight:600\">Topics:</span> 2"_s)) << dataset_tip.toStdString();
 }
 
+// A plugin-supplied description and unit show on the field row and on its topic's row, HTML-escaped with line breaks
+// kept; a long description is cut.
+TEST(CurveListPanelTest, HoverTooltipShowsTheMetadataDescription) {
+  AppSession app_session;
+  const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
+  DataEngine& engine = app_session.sessionManager().dataEngine();
+  auto writer = engine.createWriter();
+  const auto topic = writer.registerTopic(dataset, TopicDescriptor{.name = "/imu"});
+  ASSERT_TRUE(topic.has_value());
+  const auto ax = writer.ensureColumn(*topic, "ax", PrimitiveType::kFloat64);
+  const auto ay = writer.ensureColumn(*topic, "ay", PrimitiveType::kFloat64);
+  ASSERT_TRUE(ax.has_value());
+  ASSERT_TRUE(ay.has_value());
+  ASSERT_TRUE(writer.beginRow(*topic, 100).has_value());
+  writer.set(*topic, 0, 1.0);
+  writer.set(*topic, 1, 2.0);
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  EXPECT_FALSE(app_session.sessionManager().commitChunks(writer.flushAll()).empty());
+  ASSERT_TRUE(
+      engine.setFieldMetadata(*topic, *ax, R"({"description":"<b>x</b> & more\nsecond line","unit":"m/s<sup>2"})"));
+  ASSERT_TRUE(engine.setFieldMetadata(*topic, *ay, R"({"description":")" + std::string(600, 'y') + R"("})"));
+  ASSERT_TRUE(engine.setTopicMetadata(*topic, R"({"description":"Inertial unit"})"));
+  auto& catalog = app_session.catalogModel();
+  catalog.rebuildFromDatastore();
+
+  CurveListPanel panel;
+  panel.setCatalog(&catalog);
+  panel.resize(400, 300);
+  panel.show();
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  tree->expandAll();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* ax_row = nullptr;
+  QTreeWidgetItem* ay_row = nullptr;
+  for (const CatalogItem& item : catalog.items()) {
+    if (const ScalarFieldPayload* scalar = asScalarField(item)) {
+      QTreeWidgetItem* row = findRowByCatalogKey(tree->invisibleRootItem(), item.key);
+      (scalar->field_path == u"ax"_s ? ax_row : ay_row) = row;
+    }
+  }
+  ASSERT_NE(ax_row, nullptr);
+  ASSERT_NE(ay_row, nullptr);
+  QTreeWidgetItem* topic_row = ax_row->parent();
+  ASSERT_NE(topic_row, nullptr);
+
+  const auto hover = [&](QTreeWidgetItem* item) {
+    const QRect rect = tree->visualItemRect(item);
+    const QPoint pos(rect.left() + 4, rect.center().y());
+    QHelpEvent event(QEvent::ToolTip, pos, tree->viewport()->mapToGlobal(pos));
+    QApplication::sendEvent(tree->viewport(), &event);
+    return QToolTip::text();
+  };
+  const QString ax_tip = hover(ax_row);
+  EXPECT_TRUE(ax_tip.contains(
+      u"<span style=\"font-weight:600\">Description:</span> &lt;b&gt;x&lt;/b&gt; &amp; more<br>second line"_s))
+      << ax_tip.toStdString();
+  EXPECT_FALSE(ax_tip.contains(u"<b>x</b>"_s)) << ax_tip.toStdString();
+  EXPECT_TRUE(ax_tip.contains(u"<span style=\"font-weight:600\">Unit:</span> m/s&lt;sup&gt;2"_s))
+      << ax_tip.toStdString();
+  const QString ay_tip = hover(ay_row);
+  EXPECT_TRUE(ay_tip.contains(QString(500, u'y') + u'…')) << ay_tip.toStdString();
+  EXPECT_FALSE(ay_tip.contains(QString(501, u'y'))) << ay_tip.toStdString();
+  EXPECT_FALSE(ay_tip.contains(u"Unit:"_s)) << ay_tip.toStdString();
+  const QString topic_tip = hover(topic_row);
+  EXPECT_TRUE(topic_tip.contains(u"<span style=\"font-weight:600\">Description:</span> Inertial unit"_s))
+      << topic_tip.toStdString();
+}
+
 TEST(CurveListPanelTest, NoViewObjectTopicRowDragsToACustomWidgetWithTooltip) {
   AppSession app_session;
   const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");

@@ -184,12 +184,27 @@ between.
   retired topic does. Clearing, detaching and merging keep the retired set and a reattach restores it, so the column
   stays hidden through later refills; only a committed chunk with a value in the column un-retires it. A file whose
   column is entirely null is therefore hidden after a reload, though a fresh load lists it.
+- **Field and topic metadata.** A plugin describes a field (`set_field_metadata`) or a topic (`set_topic_metadata`)
+  with a metadata document, a flat JSON object of string values; the contract is the SDK's `plugin_data_api.h`.
+  - Each writer describes only its own: a source its dataset's topics, a parser its bound topic's fields (it has no
+    topic slot), a toolbox the topics under the data sources it created. Every toolbox reads any scalar field's or
+    topic's document (`get_field_metadata`, `get_topic_metadata`).
+  - The host bridge checks the document (`checkMetadataDocument`: byte bound, flat strings) before it takes the
+    engine locks, and stores the text verbatim, so unknown keys survive; empty text or an object with no key clears.
+    The write core sets it on the live and the staging engine alike.
+  - `TopicStorage` keeps one string per field id, apart from `ColumnDescriptor` (chunks hold immutable copies of the
+    descriptors), and one per topic. `clearChunks()` leaves them alone.
+  - An in-place reload starts without documents: `detachDatasetChunks()` moves them into the snapshot and
+    `reattachDatasetChunks()` restores them on rollback. `replaceDatasetFrom()` takes the staged layout's.
+  - `CatalogModel::fieldMetadata()` / `topicMetadata()` parse them at hover time; the curve list tooltip shows the
+    `description` and `unit` keys.
 - **Merge.** `DataEngine::mergeDatasets()` and `ObjectStore::mergeDatasets()` fold source datasets into an anchor, each
   shifted by a raw delta the caller supplies; `pj_runtime` computes the deltas and owns the type-conflict policy.
   Scalar topics unite by name and columns by field path; the anchor keeps its ids and column indices, a conflicting
   field type is skipped and reported, and the rebuilt chunks are ascending and non-overlapping. Object topics with a
   shared name fuse by shifted timestamp with fresh UIDs; source-only ones move under the anchor and keep their id.
-  Sources end empty but registered.
+  Sources end empty but registered. A field's metadata document follows its column into the union by field path, the
+  anchor's first, then the first kept source's; a topic's document likewise.
 - **Merged payload stamps.** A merge moves each entry's store timestamp but never rewrites its payload, so it records
   the delta in the entry's `payload_stamp_shift`. A consumer that reads timestamps embedded in a payload (the TF
   buffer, the scene layers, the marker and script engines) adds it; a consumer of the store timestamp ignores it.
@@ -372,3 +387,6 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
   no bytes yet. The plugin gets the store's error.
 - A row begun and never finished (an exception between `beginRow()` and `finishRow()`) keeps its topic's uncommitted
   rows out of every later commit, `finish()` included.
+- Field and topic metadata documents live only in memory: a recording or the source cache does not keep the ones a
+  source set, so a replayed recording shows none (a parser sets its own again on replay).
+- Object topics take no metadata document: their `metadata_json` is set once, at registration.

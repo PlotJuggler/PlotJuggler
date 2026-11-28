@@ -6,6 +6,7 @@
 #include <deque>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -94,6 +95,8 @@ class TopicStorage {
     uint32_t truncated_sample_count = 0;
     std::unordered_map<std::string, uint32_t> array_expansion_counts;
     std::unordered_set<FieldId> retired_columns;
+    std::unordered_map<FieldId, std::string> field_metadata;
+    std::string topic_metadata;
   };
 
   /// Takes the chunks and metadata out, leaving the storage as clearChunks() would, so restoreChunks() can undo a
@@ -121,6 +124,22 @@ class TopicStorage {
   /// address columns by them), so listings skip it through isColumnRetired(). A chunk holding a value of a retired
   /// column un-retires it.
   void retireValuelessColumns();
+
+  /// Plugin-supplied JSON metadata of a column, kept as sent (validation is the caller's); empty text clears it.
+  /// Kept apart from ColumnDescriptor and untouched by clearChunks(): it describes the column, not its rows.
+  void setFieldMetadata(FieldId field_id, std::string metadata_json);
+
+  /// Empty when the column has none; valid until the next setFieldMetadata().
+  [[nodiscard]] std::string_view fieldMetadata(FieldId field_id) const noexcept;
+
+  /// Plugin-supplied JSON metadata of the topic itself, kept as sent (validation is the caller's); empty text clears
+  /// it. Untouched by clearChunks(): it describes the topic, not its rows.
+  void setTopicMetadata(std::string metadata_json);
+
+  /// Empty when the topic has none; valid until the next setTopicMetadata().
+  [[nodiscard]] std::string_view topicMetadata() const noexcept {
+    return topic_metadata_;
+  }
 
   [[nodiscard]] bool isColumnRetired(FieldId field_id) const noexcept {
     return retired_columns_.count(field_id) != 0;
@@ -248,6 +267,10 @@ class TopicStorage {
   ChunkId newest_chunk_id_ever_ = 0;
   // Shared by every DataWriter of this topic.
   std::unordered_map<std::string, uint32_t> array_expansion_counts_;
+  // JSON text per field id, set by the plugin; ids are dense positions, so the key survives clear and reload.
+  std::unordered_map<FieldId, std::string> field_metadata_;
+  // JSON text of the topic, set by the plugin.
+  std::string topic_metadata_;
 };
 
 }  // namespace PJ

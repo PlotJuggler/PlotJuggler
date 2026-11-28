@@ -114,6 +114,14 @@ class DataEngine {
       PJ::TopicId topic_id, std::string_view field_name, PJ::PrimitiveType type,
       std::optional<PJ::FieldId> requested_id = std::nullopt);
 
+  /// Sets (an empty text clears) the metadata JSON of an existing column; see TopicStorage::setFieldMetadata().
+  /// Locks. Fails for an unknown topic or a field id the topic does not have. Does not validate the text.
+  [[nodiscard]] PJ::Status setFieldMetadata(PJ::TopicId topic_id, PJ::FieldId field_id, std::string metadata_json);
+
+  /// Sets (an empty text clears) the metadata JSON of an existing topic; see TopicStorage::setTopicMetadata(). Locks.
+  /// Fails for an unknown topic. Does not validate the text.
+  [[nodiscard]] PJ::Status setTopicMetadata(PJ::TopicId topic_id, std::string metadata_json);
+
   /// Does not lock: hold lockEngine() for as long as the pointer is used. nullptr if missing.
   [[nodiscard]] TopicStorage* getTopicStorage(PJ::TopicId id);
 
@@ -175,7 +183,8 @@ class DataEngine {
   void clearDatasetChunks(PJ::DatasetId dataset_id);
 
   /// The chunks detachDatasetChunks() moved out, plus the per-topic metadata a refill can change. The metadata is
-  /// stored because the public ratchet setters only increase, so they cannot restore a smaller prior value.
+  /// stored because the public ratchet setters only increase, so they cannot restore a smaller prior value. The
+  /// plugin documents are moved out rather than copied: a refill starts without any, as the SDK contract promises.
   /// `prior_topic_ids` lets reattach retire topics a failed refill added. `valid == false`: nothing was detached.
   struct DatasetChunkSnapshot {
     struct TopicSnapshot {
@@ -187,6 +196,8 @@ class DataEngine {
       uint32_t truncated_sample_count = 0;
       std::unordered_map<std::string, uint32_t> array_expansion_counts;
       std::unordered_set<PJ::FieldId> retired_columns;
+      std::unordered_map<PJ::FieldId, std::string> field_metadata;
+      std::string topic_metadata;
     };
     PJ::DatasetId dataset_id = 0;
     std::vector<PJ::TopicId> prior_topic_ids;

@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonDocument>
 #include <QLoggingCategory>
 #include <QTimer>
 #include <algorithm>
@@ -643,6 +644,46 @@ std::optional<TopicStats> CatalogModel::topicStats(const QString& key) const {
     return stats;
   }
   return std::nullopt;  // advertised placeholder: no storage behind it
+}
+
+QJsonObject CatalogModel::fieldMetadata(const QString& key) const {
+  return metadataOf(key, /*of_topic=*/false);
+}
+
+QJsonObject CatalogModel::topicMetadata(const QString& key) const {
+  return metadataOf(key, /*of_topic=*/true);
+}
+
+QJsonObject CatalogModel::metadataOf(const QString& key, bool of_topic) const {
+  if (impl_->session == nullptr) {
+    return {};
+  }
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return {};
+  }
+  const ScalarFieldPayload* scalar = asScalarField(it->second);
+  if (scalar == nullptr) {
+    return {};
+  }
+  const DataEngine& engine = impl_->session->dataEngine();
+  // Copied under the lock, parsed after it: the view dies with the next write.
+  QByteArray metadata_json;
+  {
+    const auto lock = engine.lockEngine();
+    const TopicStorage* storage = engine.getTopicStorage(scalar->topic_id);
+    if (storage == nullptr) {
+      return {};
+    }
+    std::string_view view;
+    if (of_topic) {
+      view = storage->topicMetadata();
+    } else if (const auto& columns = storage->columnDescriptors(); scalar->column_index < columns.size()) {
+      view = storage->fieldMetadata(columns[scalar->column_index].field_id);
+    }
+    metadata_json = QByteArray(view.data(), static_cast<qsizetype>(view.size()));
+  }
+  return QJsonDocument::fromJson(metadata_json).object();
 }
 
 bool CatalogModel::isScalarKey(const QString& key) const {

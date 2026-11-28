@@ -13,7 +13,7 @@
         "pybind11/3.1.0#0d2fd6b7fa13f29c1c6fb8fa23a7b570",
         "pugixml/1.14#6b0b93a0676c40e5204decd48fedba68%1784130349.529",
         "pocketfft/0.0.0.cci.20240801#68062a9fc92c10cd3a612ad24f57636c%1722884640.0",
-        "plotjuggler_sdk/1.1.0#c760ab26aa93dbe53e4c086f170d3132",
+        "plotjuggler_sdk/1.2.0#5f20172188854c72928a310ebc8314ab",
         "openssl/3.6.4#bc460bf37686ccae86a15bfdce71be11%1787920038.176",
         "nlohmann_json/3.12.0#2d634ab0ec8d9f56353e5ccef6d6612c%1784130346.411",
         "mpdecimal/2.5.1#cad87046d76460b8e2fc159194e50e7e%1784130333.32",

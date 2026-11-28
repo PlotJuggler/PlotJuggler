@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -273,6 +274,15 @@ class CatalogModel : public QObject {
   // nullopt for an unknown key, an advertised placeholder or no session. Takes the engine/store locks: hover rate only.
   [[nodiscard]] std::optional<TopicStats> topicStats(const QString& key) const;
 
+  // The metadata document (a flat object of strings) a plugin attached to the scalar field `key`; empty for any other
+  // key, a field without one or no session. Read from the store at call time, so a document set after the catalog was
+  // built still shows. Takes the engine lock: hover rate only.
+  [[nodiscard]] QJsonObject fieldMetadata(const QString& key) const;
+
+  // The same for the scalar topic the field `key` belongs to; object topics keep theirs in
+  // ObjectTopicPayload::metadata_json.
+  [[nodiscard]] QJsonObject topicMetadata(const QString& key) const;
+
   std::vector<CurveDescriptor> curves() const;
   // The descriptor for `key` when its field satisfies `capability`. kPlottable is the plot gate (strings have no
   // curve descriptor); the strip passes kDiscrete.
@@ -388,6 +398,8 @@ class CatalogModel : public QObject {
  private:
   // The rebuild body; rebuildFromDatastore() also refreshes the fingerprint, so the gate stays in sync.
   void rebuildNow();
+
+  [[nodiscard]] QJsonObject metadataOf(const QString& key, bool of_topic) const;
 
   // Engine structure (datasets, topics, column counts, retired columns, object topics, dataset labels) plus tombstones:
   // equal fingerprints mean an identical rebuild.

@@ -292,6 +292,30 @@ Expected<FieldId> DataEngine::createTopicField(
   return next_id;
 }
 
+PJ::Status DataEngine::setFieldMetadata(TopicId topic_id, FieldId field_id, std::string metadata_json) {
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
+  auto topic_it = impl_->topics.find(topic_id);
+  if (topic_it == impl_->topics.end()) {
+    return PJ::unexpected(fmt::format("setFieldMetadata: topic {} not found", topic_id));
+  }
+  TopicStorage& storage = *topic_it.value();
+  if (field_id >= storage.columnDescriptors().size()) {
+    return PJ::unexpected(fmt::format("setFieldMetadata: topic {} has no field {}", topic_id, field_id));
+  }
+  storage.setFieldMetadata(field_id, std::move(metadata_json));
+  return PJ::okStatus();
+}
+
+PJ::Status DataEngine::setTopicMetadata(TopicId topic_id, std::string metadata_json) {
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
+  auto topic_it = impl_->topics.find(topic_id);
+  if (topic_it == impl_->topics.end()) {
+    return PJ::unexpected(fmt::format("setTopicMetadata: topic {} not found", topic_id));
+  }
+  topic_it.value()->setTopicMetadata(std::move(metadata_json));
+  return PJ::okStatus();
+}
+
 TopicStorage* DataEngine::getTopicStorage(TopicId id) {
   auto it = impl_->topics.find(id);
   if (it == impl_->topics.end()) {
@@ -521,6 +545,8 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
     topic_snapshot.truncated_sample_count = storage->truncated_sample_count_;
     topic_snapshot.array_expansion_counts = storage->array_expansion_counts_;
     topic_snapshot.retired_columns = storage->retired_columns_;
+    topic_snapshot.field_metadata = std::exchange(storage->field_metadata_, {});
+    topic_snapshot.topic_metadata = std::exchange(storage->topic_metadata_, {});
     // Leaves the storage as clearDatasetChunks() would: columns and ratchet stats stay, so a refill rebinds.
     storage->clearChunks();
     snapshot.topics.emplace(topic_id, std::move(topic_snapshot));
@@ -558,6 +584,8 @@ void DataEngine::reattachDatasetChunks(DatasetId dataset_id, DatasetChunkSnapsho
     storage->truncated_sample_count_ = topic_snapshot.truncated_sample_count;
     storage->array_expansion_counts_ = std::move(topic_snapshot.array_expansion_counts);
     storage->retired_columns_ = std::move(topic_snapshot.retired_columns);
+    storage->field_metadata_ = std::move(topic_snapshot.field_metadata);
+    storage->topic_metadata_ = std::move(topic_snapshot.topic_metadata);
   }
   snapshot.valid = false;
 }
@@ -690,6 +718,8 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     primary_storage->clearChunks();
     primary_storage->setColumnDescriptors(std::move(staged_storage->column_descriptors_));
     primary_storage->retired_columns_ = std::move(staged_storage->retired_columns_);  // ids of the staged layout
+    primary_storage->field_metadata_ = std::move(staged_storage->field_metadata_);    // keyed by the same ids
+    primary_storage->topic_metadata_ = std::move(staged_storage->topic_metadata_);
     adoptChunksFrom(*primary_storage, *staged_storage);
   }
 
@@ -980,6 +1010,29 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       built.push_back(builder.seal());
     }
 
+    // Documents follow their column into the union by field path: the anchor's first, then the first kept source's.
+    std::unordered_map<FieldId, std::string> union_field_metadata;
+    std::string union_topic_metadata;
+    auto carry_metadata = [&](const TopicStorage& st) {
+      for (const ColumnDescriptor& col : st.columnDescriptors()) {
+        const std::string_view doc = st.fieldMetadata(col.field_id);
+        if (const auto it = union_index.find(col.field_path); !doc.empty() && it != union_index.end()) {
+          union_field_metadata.try_emplace(static_cast<FieldId>(it->second), doc);
+        }
+      }
+      if (union_topic_metadata.empty()) {
+        union_topic_metadata = st.topicMetadata();
+      }
+    };
+    if (!dest_is_new) {
+      carry_metadata(*getTopicStorage(dest_tid));  // the anchor's topic, kept or not: it may have no rows
+    }
+    for (const Contributor& c : kept) {
+      if (const TopicStorage* st = getTopicStorage(c.topic_id)) {
+        carry_metadata(*st);
+      }
+    }
+
     TopicStorage* dest = getTopicStorage(dest_tid);
     if (dest == nullptr) {
       // Unreachable: nothing above retires a topic.
@@ -987,6 +1040,8 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     }
     dest->clearChunks();
     dest->setColumnDescriptors(union_cols);
+    dest->field_metadata_ = std::move(union_field_metadata);
+    dest->topic_metadata_ = std::move(union_topic_metadata);
     for (TopicChunk& chunk : built) {
       chunk.topic_id = dest_tid;
       (void)dest->appendSealedChunk(std::move(chunk));
