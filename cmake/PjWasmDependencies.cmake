@@ -52,7 +52,7 @@ FetchContent_Declare(fmt
 set(FASTFLOAT_TEST OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(FastFloat
     GIT_REPOSITORY https://github.com/fastfloat/fast_float.git
-    GIT_TAG v8.1.0
+    GIT_TAG v8.2.10
     GIT_SHALLOW TRUE
     OVERRIDE_FIND_PACKAGE
     SYSTEM)
@@ -68,7 +68,7 @@ set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
-    GIT_TAG 1.0.1
+    GIT_TAG 1.0.3
     GIT_SHALLOW TRUE
     OVERRIDE_FIND_PACKAGE
     SYSTEM)
@@ -262,7 +262,7 @@ set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
 set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(lz4
     GIT_REPOSITORY https://github.com/lz4/lz4.git
-    GIT_TAG v1.9.4
+    GIT_TAG v1.10.0
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR build/cmake
     OVERRIDE_FIND_PACKAGE
@@ -276,7 +276,7 @@ set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
 set(ZSTD_DISABLE_ASM ON CACHE BOOL "" FORCE)
 FetchContent_Declare(zstd
     GIT_REPOSITORY https://github.com/facebook/zstd.git
-    GIT_TAG v1.5.5
+    GIT_TAG v1.5.7
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR build/cmake
     OVERRIDE_FIND_PACKAGE
