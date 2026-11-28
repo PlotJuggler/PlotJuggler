@@ -263,8 +263,10 @@ struct DatasetFileMatch {
 //  2. the only file still unclaimed with the saved file name (for a path-less label, the label);
 //  3. per format (case-insensitive suffix), the saved paths and files still left, paired in order when their counts
 //     are equal. A path-less label never pairs: it has no format and may name no file at all.
-// Datasets are ordered by `source_order` (the layout's <fileInfo> paths, resolved), then by first appearance in the
-// document. Opaque identities (pj-upload://, pj-stream://) never match. Run after resolveDatasetSourcePaths.
+// The datasets the document's qualifiers name come first, ordered by `source_order`, then by first appearance in the
+// document; the `source_order` paths no qualifier names (the layout's <fileInfo> paths, resolved) then take, in that
+// order and by the same rules, only the files left. Opaque identities (pj-upload://, pj-stream://) never match. Run
+// after resolveDatasetSourcePaths.
 [[nodiscard]] QList<DatasetFileMatch> matchDatasetsToFiles(
     const QDomDocument& doc, const QStringList& files, const QStringList& source_order);
 

@@ -2,11 +2,11 @@
 # not in seconds.
 # app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
 # needs: plugins
-until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
-playback {"action":"seek","time_s":500}
-until ui_plot {"title":"Periodic"} "time : 500.000"
+until ui_plot {"title":"Periodic"} "x":["0.000","20.000"]
+playback {"action":"seek","time_s":10}
+until ui_plot {"title":"Periodic"} "time : 10.000"
 ui_click {"name":"buttonUseDateTime","wait_ms":300}
 ui_tree {}
-expect "0:08:20.000"
-until ui_plot {"title":"Periodic"} "time : 0:08:20.000"
-absent "time : 500.000"
+expect "0:00:10.000"
+until ui_plot {"title":"Periodic"} "time : 0:00:10.000"
+absent "time : 10.000"

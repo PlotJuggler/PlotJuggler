@@ -36,6 +36,7 @@
 #include <string>
 #include <vector>
 
+#include "FanoutConfig.h"
 #include "FileLoader.h"
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
@@ -89,6 +90,20 @@ class MainWindowLayoutDatasetPathsTestPeer {
 
   static void loadLayout(MainWindow& window, const QString& path) {
     window.loadLayoutFromPath(path, MainWindow::LayoutLoadInteractivity::kAutomated);
+  }
+
+  /// The startup load of `-d` files with `-l layout`, as an attended (interactive) run does it.
+  static void loadAtStartup(
+      MainWindow& window, const QStringList& files, const QString& layout_path, bool interactive = true) {
+    window.loadAtStartup(files, layout_path, interactive);
+  }
+
+  /// Whether startup would load `file` with a loader configuration saved in the layout at `layout_path`.
+  static bool layoutConfigures(const QString& layout_path, const QString& file) {
+    QFile layout(layout_path);
+    QDomDocument doc;
+    return layout.open(QIODevice::ReadOnly) && static_cast<bool>(doc.setContent(&layout)) &&
+           MainWindow::layoutSourcesOfFiles(doc, QFileInfo(layout_path).dir(), {file}).contains(file);
   }
 
   /// A load the way startup applies a layout to its explicit `-d` files.
@@ -515,6 +530,15 @@ class LayoutRelocatedSourceTest : public ::testing::Test {
 
   // Loads A/data/run.echo through the loader and saves A/layout.pj4.xml, then
   // drops the dataset so the replay has to load the file again.
+  enum class StartupLayout {
+    kAsSaved,
+    kSavedFileGone,
+    kNamedByLabelOnly,
+    kEmptyConfiguration,
+    kGivenFileIsAnotherSource
+  };
+  void expectStartupFileTakesTheLayoutsLoaderConfiguration(StartupLayout shape, bool attended = true);
+
   void saveLayoutFromLoadedFile(const QStringList& lines_a) {
     data_a_ = pj_app_test::writeEchoFile(root_ + u"/A/data/run.echo"_s, lines_a);
     PJ::LoadHints hints;
@@ -577,6 +601,112 @@ TEST_F(LayoutRelocatedSourceTest, ReplayAfterMovingTheFolderLoadsTheMovedFile) {
   EXPECT_EQ(valuesLoadedFrom(QFileInfo(root_ + u"/B"_s).canonicalFilePath()), (std::vector<double>{1, 2, 3}));
   const QJsonObject last = pj_app_test::parseJsonObject(probe.configs.back());
   EXPECT_EQ(last.value(u"__pj_saved_filepath"_s).toString(), data_a_);
+}
+
+// `-d file -l layout` where the layout carries that file's loader configuration: the file loads with it, as a layout
+// replay does, so no configuration dialog asks again; the configuration reads the file given, not the saved one.
+// With `saved_file_gone`, the layout's own file no longer exists (a layout from another machine).
+void LayoutRelocatedSourceTest::expectStartupFileTakesTheLayoutsLoaderConfiguration(
+    StartupLayout shape, bool attended) {
+  saveLayoutFromLoadedFile({u"1"_s, u"2"_s, u"3"_s});
+  const QString layout_path = root_ + u"/A/layout.pj4.xml"_s;
+  QDomDocument doc = readXml(layout_path);
+  QDomElement plugin = firstElement(doc, u"plugin"_s);
+  ASSERT_FALSE(plugin.isNull());
+  QJsonObject config = pj_app_test::parseJsonObject(plugin.text().toStdString());
+  config.insert(u"marker"_s, u"from-layout"_s);
+  while (plugin.hasChildNodes()) {
+    plugin.removeChild(plugin.firstChild());
+  }
+  if (shape != StartupLayout::kEmptyConfiguration) {  // a plugin with no settings saves an empty <plugin>
+    plugin.appendChild(doc.createCDATASection(QString::fromUtf8(QJsonDocument(config).toJson(QJsonDocument::Compact))));
+  }
+  const QString other_source = root_ + u"/B/other.echo"_s;
+  if (shape == StartupLayout::kGivenFileIsAnotherSource) {
+    // A second source of the layout that no element names, with its own configuration; an element names the first
+    // source, whose file is not given, so the datasets pair by position with the file that is.
+    QDomElement own = firstElement(doc, u"fileInfo"_s).cloneNode(true).toElement();
+    own.setAttribute(u"filename"_s, other_source);
+    QDomElement own_plugin = own.firstChildElement(u"plugin"_s);
+    while (own_plugin.hasChildNodes()) {
+      own_plugin.removeChild(own_plugin.firstChild());
+    }
+    own_plugin.appendChild(doc.createCDATASection(pj_app_test::compactJson({{u"marker"_s, u"own"_s}})));
+    firstElement(doc, u"fileInfo"_s).parentNode().appendChild(own);
+    QDomElement named = doc.createElement(u"agent_note"_s);
+    named.setAttribute(u"dataset_source"_s, u"run.echo"_s);
+    named.setAttribute(u"dataset_path"_s, data_a_);
+    doc.documentElement().appendChild(named);
+  }
+  if (shape == StartupLayout::kNamedByLabelOnly) {
+    // A hand-written layout: an element names the file's dataset by its label alone.
+    QDomElement named = doc.createElement(u"agent_note"_s);
+    named.setAttribute(u"dataset_source"_s, u"run.echo"_s);
+    doc.documentElement().appendChild(named);
+  }
+  {
+    QFile file(layout_path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(doc.toByteArray());
+  }
+  if (shape == StartupLayout::kSavedFileGone) {
+    ASSERT_TRUE(QFile::remove(data_a_));
+  }
+  QString given_path = root_ + u"/C/given.echo"_s;
+  if (shape == StartupLayout::kNamedByLabelOnly) {
+    given_path = root_ + u"/C/run.echo"_s;
+  } else if (shape == StartupLayout::kGivenFileIsAnotherSource) {
+    given_path = other_source;
+  }
+  const QString given = pj_app_test::writeEchoFile(given_path, {u"4"_s, u"5"_s});
+
+  QSignalSpy settled(&window, &PJ::MainWindow::layoutRestoreSettled);
+  Peer::loadAtStartup(window, {given}, layout_path, attended);
+  ASSERT_TRUE(pj_app_test::pumpUntil([&settled] { return !settled.isEmpty(); }));
+  EXPECT_TRUE(settled.front().at(0).toBool()) << "the startup load and its layout must both apply";
+
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_FALSE(probe.configs.empty());
+  const QJsonObject first = pj_app_test::parseJsonObject(probe.configs.front());
+  if (shape == StartupLayout::kGivenFileIsAnotherSource) {
+    EXPECT_EQ(first.value(u"marker"_s).toString(), u"own"_s)
+        << "a file that is a source of the layout takes its own configuration: " << probe.configs.front();
+  } else if (shape == StartupLayout::kEmptyConfiguration) {
+    // Nothing in the configuration tells a mapped load from a plain one: an empty one has no path to record.
+    EXPECT_TRUE(Peer::layoutConfigures(layout_path, given)) << "a plugin with no settings must not ask again";
+  } else {
+    EXPECT_EQ(first.value(u"marker"_s).toString(), u"from-layout"_s) << probe.configs.front();
+    // As a replay does: the loader learns where the layout's file was, to find the files saved beside it.
+    EXPECT_EQ(first.value(PJ::detail::kSavedFilepathKey).toString(), data_a_) << probe.configs.front();
+  }
+  ASSERT_FALSE(probe.opened.empty());
+  EXPECT_EQ(
+      QFileInfo(QString::fromStdString(probe.opened.front())).canonicalFilePath(),
+      QFileInfo(given).canonicalFilePath());
+}
+
+TEST_F(LayoutRelocatedSourceTest, StartupFileTakesTheLayoutsLoaderConfiguration) {
+  expectStartupFileTakesTheLayoutsLoaderConfiguration(StartupLayout::kAsSaved);
+}
+
+TEST_F(LayoutRelocatedSourceTest, StartupFileTakesTheLayoutsLoaderConfigurationWhenItsFileIsGone) {
+  expectStartupFileTakesTheLayoutsLoaderConfiguration(StartupLayout::kSavedFileGone);
+}
+
+TEST_F(LayoutRelocatedSourceTest, StartupFileTakesTheLayoutsLoaderConfigurationWhenALabelNamesIt) {
+  expectStartupFileTakesTheLayoutsLoaderConfiguration(StartupLayout::kNamedByLabelOnly);
+}
+
+TEST_F(LayoutRelocatedSourceTest, UnattendedStartupFileTakesTheLayoutsLoaderConfiguration) {
+  expectStartupFileTakesTheLayoutsLoaderConfiguration(StartupLayout::kAsSaved, /*attended=*/false);
+}
+
+TEST_F(LayoutRelocatedSourceTest, StartupFileTakesAnEmptySavedConfiguration) {
+  expectStartupFileTakesTheLayoutsLoaderConfiguration(StartupLayout::kEmptyConfiguration);
+}
+
+TEST_F(LayoutRelocatedSourceTest, StartupFileThatIsAnotherSourceTakesItsOwnConfiguration) {
+  expectStartupFileTakesTheLayoutsLoaderConfiguration(StartupLayout::kGivenFileIsAnotherSource);
 }
 
 TEST_F(LayoutRelocatedSourceTest, ReplayOfACopiedFolderReadsTheCopyNotTheOriginal) {

@@ -8,9 +8,10 @@
 namespace PJ {
 
 // LoadHints for replaying one layout-recorded source, shared by the desktop layout load, the browser source-bound
-// replay and the import batch's stock loads: a layout that names a plugin requires it, no dialog runs and the saved
-// preset is authoritative. The preset's filepath becomes the path actually loaded, so a moved layout folder replays
-// the data beside it; side files resolve beside that data file unless the caller fills in their paths.
+// replay, the import batch's stock loads and the startup load of a `-d` file the layout configures (which relaxes
+// the plugin requirement and, attended, the dialog policy): a layout that names a plugin requires it, no dialog runs
+// and the saved preset is authoritative. The preset's filepath becomes the path actually loaded, so a moved layout
+// folder replays the data beside it; side files resolve beside that data file unless the caller fills in their paths.
 [[nodiscard]] inline LoadHints layoutReplayHints(const layout_xml::DataSourceRef& source, bool prefer_reuse) {
   const bool names_plugin = !source.plugin_manifest_id.isEmpty() || !source.plugin_id.isEmpty();
   QHash<QString, QString> side_file_paths;

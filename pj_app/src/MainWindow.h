@@ -198,12 +198,15 @@ class MainWindow : public QMainWindow {
   // Loads explicit files, then applies the optional layout against their data (with no files, the layout reloads its
   // own sources without prompting). A failed or cancelled file aborts the layout and settles it false. Only an
   // attended (`interactive`) start may open dialogs: the batch question before two or more files load
-  // (BatchLoadDialog), the files' own, and the layout's dataset question.
+  // (BatchLoadDialog), the files' own, and the layout's dataset question. A file the layout maps to a source with a
+  // saved loader configuration loads with it instead of its dialog (the dialog opens only if the plugin refuses it).
   void loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive);
-  // loadAtStartup's loads, once any batch question is answered. `load_batch`: null outside a batch. `compared`: the
-  // files checked in that question when a layout came with them (empty: the layout asks its own question).
+  // loadAtStartup's loads, once any batch question is answered. `layout_sources`: layoutSourcesOfFiles. `load_batch`:
+  // null outside a batch. `compared`: the files checked in that question when a layout came with them (empty: the
+  // layout asks its own question).
   void loadStartupFiles(
-      const QStringList& absolute_files, const QString& layout_path, bool interactive,
+      const QStringList& absolute_files, const QString& layout_path,
+      const QHash<QString, layout_xml::DataSourceRef>& layout_sources, bool interactive,
       const std::shared_ptr<LoadBatch>& load_batch, const QStringList& compared);
 
   // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
@@ -422,6 +425,10 @@ class MainWindow : public QMainWindow {
       return file_path.isEmpty() ? std::nullopt : std::optional<QDir>(QFileInfo(file_path).absoluteDir());
     }
   };
+  // The <fileInfo> of `doc` (read from `layout_dir`) each of `files` maps to, by the matching the layout's own load
+  // applies to them next (layout_xml::matchDatasetsToFiles); only sources that carry a loader configuration.
+  [[nodiscard]] static QHash<QString, layout_xml::DataSourceRef> layoutSourcesOfFiles(
+      QDomDocument doc, const QDir& layout_dir, const QStringList& files);
   // The layout file at `path`, parsed; nullopt with `error` when it cannot be read or does not parse, and then in
   // `failure_id` the diagnostic id of the step that failed (layout-open-failed, layout-parse-failed).
   [[nodiscard]] static std::optional<QDomDocument> readLayoutFile(

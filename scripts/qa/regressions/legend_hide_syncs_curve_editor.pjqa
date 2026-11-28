@@ -1,12 +1,12 @@
 # A curve hidden by clicking its legend entry is hidden like any other: the curve editor's eye unchecks, the tracker's
-# value box drops its row, and Ctrl+Z shows the curve again. Periodic is the upper plot of the signals layout; at row
-# 400 sine=0, cosine=1, square=1. Window geometry is fixed offscreen: the right panel's toggle is the TitleBar's last
+# value box drops its row, and Ctrl+Z shows the curve again. Periodic is the upper plot of the signals layout; at 8 s
+# sine=0, cosine=1, square=1. Window geometry is fixed offscreen: the right panel's toggle is the TitleBar's last
 # button; with it open, Periodic's top-right legend lists data/cosine at (809,112) of the tab widget.
 # app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
 # needs: plugins
-until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
-playback {"action":"seek","time_s":400}
-until ui_plot {"title":"Periodic"} "tracker":["time : 400.000","1.000","1.000","0.000"]
+until ui_plot {"title":"Periodic"} "x":["0.000","20.000"]
+playback {"action":"seek","time_s":8}
+until ui_plot {"title":"Periodic"} "tracker":["time : 8.000","1.000","1.000","0.000"]
 ui_click {"name":"TitleBar","x":1536,"y":15,"wait_ms":500}
 ui_click {"name":"tabbedPlotWidget","x":700,"y":200,"wait_ms":400}
 ui_click {"name":"buttonLegendPosition","wait_ms":400}
@@ -16,7 +16,7 @@ absent "Toggle curve visibility" (unchecked)
 ui_click {"name":"tabbedPlotWidget","x":809,"y":112,"wait_ms":500}
 ui_plot {"title":"Periodic"}
 expect {"title":"data/cosine","visible":false}
-expect "tracker":["time : 400.000","1.000","0.000"]
+expect "tracker":["time : 8.000","1.000","0.000"]
 ui_tree {}
 expect "Toggle curve visibility" (unchecked)
 ui_key {"keys":"Ctrl+Z","wait_ms":700}

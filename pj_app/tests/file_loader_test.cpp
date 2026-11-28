@@ -1176,6 +1176,46 @@ TEST_F(FileLoaderTest, ExactPluginOptInSelectsRequestedNonFirstExtensionMatch) {
       << "a manifest-id hint must select the requested non-first match";
 }
 
+// Hints that name a plugin select it when it is installed, required or not (a reload, `-d` with a layout): another
+// extension match could read the same bytes differently and would get a configuration written for that plugin.
+TEST_F(FileLoaderTest, NamedPluginIsSelectedWhenInstalledEvenIfNotRequired) {
+  auto& extensions = app_session_->extensionCatalog();
+  const auto original_matches = extensions.findSourcesForExtension(u".mock"_s);
+  ASSERT_EQ(original_matches.size(), 1u);
+  ASSERT_TRUE(extensions.pluginCatalog().registerStaticDataSource(
+      alternateMockSourceVtable(original_matches.front()->library.vtable())));
+
+  PJ::LoadHints hints = loadHints();
+  hints.expected_plugin_id = u"Alternate Mock File Source"_s;
+  ASSERT_FALSE(hints.require_expected_plugin);
+  QString selected_plugin;
+  const auto loaded = QObject::connect(
+      loader_.get(), &PJ::FileLoader::fileLoaded,
+      [&](const QString&, const QString&, const QString& plugin_id, const QString&, const QString&) {
+        selected_plugin = plugin_id;
+      });
+  ASSERT_TRUE(loadAndWait(mock_path_, hints));
+  QObject::disconnect(loaded);
+  EXPECT_EQ(selected_plugin, u"Alternate Mock File Source"_s);
+}
+
+// With kNever, a preset written for a plugin that is not installed is not replayed into the plugin that loads instead:
+// that one gets a bare filepath configuration.
+TEST_F(FileLoaderTest, NeverPolicyDoesNotReplayAnotherPluginsPreset) {
+  PJ::LoadHints hints = loadHints(uR"({"written_for":"uninstalled"})"_s);
+  hints.expected_plugin_id = u"Uninstalled File Source"_s;
+  hints.dialog_policy = PJ::DialogPolicy::kNever;
+  QString config;
+  const auto loaded = QObject::connect(
+      loader_.get(), &PJ::FileLoader::fileLoaded,
+      [&](const QString&, const QString&, const QString&, const QString& plugin_config_json, const QString&) {
+        config = plugin_config_json;
+      });
+  ASSERT_TRUE(loadAndWait(mock_path_, hints));
+  QObject::disconnect(loaded);
+  EXPECT_FALSE(config.contains(u"written_for"_s)) << config.toStdString();
+}
+
 // A manifest-id mismatch FALLS BACK to the saved display name: the two identities ride separate fields, so an
 // uninstalled manifest id does not doom a layout whose display name still matches.
 TEST_F(FileLoaderTest, ManifestIdMismatchFallsBackToDisplayName) {
