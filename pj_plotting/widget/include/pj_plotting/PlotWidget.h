@@ -293,6 +293,9 @@ class PlotWidget : public PlotWidgetBase {
   // with the curve's current colour. Does not replot.
   void updateXYMarkers(double display_time_sec);
   void beforeCanvasReplot() override;
+  void timeAxisFormatChanged() override {
+    trackers_stale_ = true;  // the tracker's time line reads the axis format
+  }
   // Vertical-only auto-fit when a curve is added or removed, gated by Preferences::auto_zoom_plots: rescales Y to the
   // data over the current X window; the shared time axis (and sibling plots) is never touched. No-op during layout
   // restore (the saved range wins), when empty and for XY plots (no shared time axis).

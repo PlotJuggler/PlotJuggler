@@ -44,14 +44,15 @@ namespace {
 
 // Samples 0..10 s, one per second, so a tracker sits inside the plotted range.
 PJ::TopicId addRampTopic(
-    PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name, double scale = 1.0) {
+    PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name, double scale = 1.0,
+    int last_second = 10) {
   PJ::DataWriter writer = session.dataEngine().createWriter();
   auto handle = writer.registerScalarSeries(dataset_id, topic_name, PJ::NumericType::kFloat64);
   EXPECT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
   if (!handle.has_value()) {
     return 0;
   }
-  for (int k = 0; k <= 10; ++k) {
+  for (int k = 0; k <= last_second; ++k) {
     writer.appendScalar(*handle, static_cast<PJ::Timestamp>(k) * 1'000'000'000, scale * static_cast<double>(k));
   }
   EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
@@ -182,6 +183,30 @@ TEST(PlotCurveVisibility, ThemeSwitchRedrawsTheTrackerBox) {
   const std::optional<QColor> row_ink = fixture.rowInk(fixture.toggled);
   ASSERT_TRUE(row_ink.has_value()) << fixture.plot->trackerValueBoxText().toStdString();
   EXPECT_GE(PJ::contrastRatio(*row_ink, backdrop), 4.5) << "the box kept the light theme's ink";
+}
+
+// The date-time toggle redraws the tracker's time line at once, not at the next cursor move, also when the clock
+// scale divides the axis like the seconds scale (a new tick division used to be the only redraw trigger).
+TEST(PlotCurveVisibility, ClockTimeToggleRedrawsTheTrackerTime) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.csv"});
+  ASSERT_TRUE(dataset.has_value());
+  // 0..20 s: the span where the clock scale divides the axis exactly like the seconds scale.
+  const QString key = keyForTopic(catalog, addRampTopic(session, *dataset, "/ramp", 1.0, 20));
+  VisibilityPlot plot(&session, &catalog);
+  plot.setTrackerParameter(PJ::CurveTracker::kValueName);
+  ASSERT_NE(plot.addCurve(key), nullptr);
+  plot.zoomOut(false);
+  plot.setTrackerPosition(10.0);
+  plot.replot();  // settles the redraw the added curve left pending
+  const QRegularExpression clock_time(u"time : \\d+:\\d\\d:\\d\\d"_s);
+  const QString seconds = plot.trackerValueBoxText();
+  ASSERT_TRUE(seconds.contains(u"time : "_s)) << seconds.toStdString();
+  ASSERT_FALSE(seconds.contains(clock_time)) << seconds.toStdString();
+  plot.setTimeLabelFormat(PJ::TimeLabelFormat::kUtcClock);
+  const QString clock = plot.trackerValueBoxText();
+  EXPECT_TRUE(clock.contains(clock_time)) << clock.toStdString();
 }
 
 // Where the tracker's value box is drawn, in canvas pixels, with the tracker line at each pixel column in turn.
