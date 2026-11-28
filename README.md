@@ -8,6 +8,11 @@ PlotJuggler 4 is an extensible, performant and open-source multi-modal visualiza
 Explore recorded or live data, compare test runs, and analyze and transform your data,
 in a single application.
 
+**[Try it in your browser](https://app.plotjuggler.io): no install, no account.** It is the same
+multi-threaded C++ application, compiled to WebAssembly and rendering with hardware acceleration
+(WebGL2), in a download under 16 MB. Your files are opened in the browser tab and stay on your machine.
+Open one of the sample datasets to see it in action, or drop in your own file.
+
 <!-- Original screenshots: https://plotjuggler.io/videos/pj-scene3D-800.jpg,
      https://plotjuggler.io/videos/pj-plotting-800.jpg,
      https://plotjuggler.io/videos/pj-waymo-800.jpg. -->
@@ -94,11 +99,18 @@ Then ask, for example: *"Open ~/logs/run3.mcap in PlotJuggler and plot the wheel
 
 ## How to get started
 
-Every build is attached to the
+### In your browser
+
+Open [app.plotjuggler.io](https://app.plotjuggler.io) in Chrome or Edge 91+, Firefox 89+ or Safari 16.4+,
+on any operating system. Nothing to install.
+
+### Desktop
+
+Every desktop build is attached to the
 [latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest).
 Pick the one that fits your system.
 
-### Windows
+#### Windows
 
 Download `PlotJuggler-<version>-Windows-x64.exe` from the
 [latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest)
@@ -108,7 +120,7 @@ To run it without installing, download
 `PlotJuggler-<version>-Windows-x64-portable.zip` instead, extract it anywhere
 and start `bin\PlotJuggler4.exe`.
 
-### Debian and Ubuntu (apt repository)
+#### Debian and Ubuntu (apt repository)
 
 Recommended on Ubuntu 22.04+ and Debian 12+: add the apt repository once, and
 future releases arrive with `sudo apt upgrade`.
@@ -117,7 +129,7 @@ future releases arrive with `sudo apt upgrade`.
 curl -fsSL https://apt.plotjuggler.io/pj4_install.sh | sudo sh
 ```
 
-### Any Linux distribution (AppImage)
+#### Any Linux distribution (AppImage)
 
 Download `PlotJuggler-<version>-x86_64.AppImage` from the
 [latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest),
@@ -130,7 +142,7 @@ chmod +x PlotJuggler-*-x86_64.AppImage
 
 It needs glibc 2.35 or newer (Ubuntu 22.04 and later, or equivalent).
 
-### Conda and pixi
+#### Conda and pixi
 
 The `plotjuggler4` package on the
 [prefix.dev `plotjuggler` channel](https://prefix.dev/channels/plotjuggler)
@@ -149,4 +161,6 @@ For the code layout, the conventions and what CI checks on a pull request, see t
 ## License
 
 Released under the [Mozilla Public License 2.0](LICENSE).
+The browser build at app.plotjuggler.io is distributed under GPL-3.0, because it statically links
+Qt's GPL-3.0 WebAssembly plugin.
 Third-party dependencies retain their own licenses.
