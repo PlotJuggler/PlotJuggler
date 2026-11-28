@@ -1,7 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A source attaches a JSON metadata object to a field; the store keeps it per column.
+// Plugins attach a metadata document (a flat JSON object of strings) to a field or a topic; the store keeps it per
+// column and per topic.
 
 #include <gtest/gtest.h>
 
@@ -75,15 +76,10 @@ struct FieldMetadataTest : ::testing::Test {
     return topicMetadataIn(engine, t);
   }
 
-  // {"k":{"k":...{"k":1}...}} with `depth` objects.
-  static std::string nested(int depth) {
-    std::string json;
-    for (int i = 0; i < depth; ++i) {
-      json += R"({"k":)";
-    }
-    json += "1";
-    json.append(static_cast<std::size_t>(depth), '}');
-    return json;
+  // {"description":"aaa…"} of exactly `bytes` bytes.
+  static std::string documentOfSize(std::size_t bytes) {
+    const std::string frame = R"({"description":""})";
+    return R"({"description":")" + std::string(bytes - frame.size(), 'a') + R"("})";
   }
 };
 
@@ -132,11 +128,15 @@ TEST_F(FieldMetadataTest, EmptyTextAndEmptyObjectClear) {
   ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"x"})").has_value());
   ASSERT_TRUE(writer->setFieldMetadata(ax, sdk::MetadataDocumentBuilder().build()).has_value());
   EXPECT_TRUE(metadata(ax).empty());
+
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"x"})").has_value());
+  ASSERT_TRUE(writer->setFieldMetadata(ax, " { } ").has_value());
+  EXPECT_TRUE(metadata(ax).empty());
 }
 
 TEST_F(FieldMetadataTest, KeepsKeysTheHostDoesNotKnow) {
   const auto ax = field("ax");
-  const std::string json = R"({"vendor.range":[0,10],"description":"x"})";
+  const std::string json = R"({"vendor.range":"0..10","description":"x"})";
 
   ASSERT_TRUE(writer->setFieldMetadata(ax, json).has_value());
   EXPECT_EQ(metadata(ax), json);
@@ -156,36 +156,40 @@ TEST_F(FieldMetadataTest, RejectsDocumentsThatAreNotJsonObjects) {
   EXPECT_EQ(metadata(ax), kept);
 }
 
-TEST_F(FieldMetadataTest, RejectsOversizedDocument) {
+TEST_F(FieldMetadataTest, RejectsValuesThatAreNotStrings) {
   const auto ax = field("ax");
-  const std::string huge = sdk::MetadataDocumentBuilder().description(std::string(70 * 1024, 'a')).build();
+  const std::string kept = sdk::MetadataDocumentBuilder().description("kept").build();
+  ASSERT_TRUE(writer->setFieldMetadata(ax, kept).has_value());
 
-  EXPECT_FALSE(writer->setFieldMetadata(ax, huge).has_value());
-  EXPECT_TRUE(metadata(ax).empty());
+  for (const char* doc :
+       {R"({"description":"x","gain":2})", R"({"range":[0,10]})", R"({"a":{"b":"c"}})", R"({"a":null})",
+        R"({"a":true})", R"({"description":"x","eps":1e-400})"}) {
+    const auto status = writer->setFieldMetadata(ax, doc);
+    EXPECT_FALSE(status.has_value()) << doc;
+  }
+  EXPECT_EQ(metadata(ax), kept);
 }
 
-TEST_F(FieldMetadataTest, BoundsNestingDepth) {
+TEST_F(FieldMetadataTest, AcceptsUpToTheByteBound) {
   const auto ax = field("ax");
 
-  // Root object = depth 1, innermost value one deeper.
-  EXPECT_TRUE(writer->setFieldMetadata(ax, nested(31)).has_value());
-  EXPECT_FALSE(writer->setFieldMetadata(ax, nested(32)).has_value());
-  EXPECT_FALSE(writer->setFieldMetadata(ax, nested(5000)).has_value());
+  EXPECT_TRUE(writer->setFieldMetadata(ax, documentOfSize(4096)).has_value());
+  EXPECT_FALSE(writer->setFieldMetadata(ax, documentOfSize(4097)).has_value());
+  EXPECT_EQ(metadata(ax), documentOfSize(4096));
 }
 
-TEST_F(FieldMetadataTest, BoundsNodeCount) {
-  const auto ax = field("ax");
-  const auto array_of = [](int count) {
-    std::string json = R"({"v":[)";
-    for (int i = 0; i < count; ++i) {
-      json += i == 0 ? "1" : ",1";
-    }
-    return json + "]}";
-  };
+TEST_F(FieldMetadataTest, RejectsAFieldOfAnotherDataset) {
+  const auto other_ds =
+      *engine.createDataset(DatasetDescriptor{.source_name = "other", .time_domain_id = time_domain_id});
+  DatastoreSourceWriteHost other_host(engine, PJ_data_source_handle_t{static_cast<uint32_t>(other_ds)});
+  sdk::SourceWriteHostView other_writer(other_host.raw());
+  const auto other_topic = *other_writer.ensureTopic("gps");
+  const auto other_field = *other_writer.ensureField(other_topic, "lat", PrimitiveType::kFloat64);
 
-  // The root object and the array are two values, and each element is one more.
-  EXPECT_TRUE(writer->setFieldMetadata(ax, array_of(16382)).has_value());
-  EXPECT_FALSE(writer->setFieldMetadata(ax, array_of(16383)).has_value());
+  EXPECT_FALSE(writer->setFieldMetadata(other_field, R"({"description":"not mine"})").has_value());
+  EXPECT_FALSE(writer->setTopicMetadata(other_topic, R"({"description":"not mine"})").has_value());
+  EXPECT_TRUE(metadata(other_field).empty());
+  EXPECT_TRUE(topicMetadata(other_topic).empty());
 }
 
 TEST_F(FieldMetadataTest, UnknownFieldIsRejected) {
@@ -244,7 +248,7 @@ TEST_F(FieldMetadataTest, TopicMetadataRejectsBadDocumentsAndKeepsThePrevious) {
 
   EXPECT_FALSE(writer->setTopicMetadata(topic, "not json").has_value());
   EXPECT_FALSE(writer->setTopicMetadata(topic, R"(["description"])").has_value());
-  EXPECT_FALSE(writer->setTopicMetadata(topic, nested(32)).has_value());
+  EXPECT_FALSE(writer->setTopicMetadata(topic, R"({"a":{"b":"c"}})").has_value());
   EXPECT_FALSE(writer->setTopicMetadata(topic, std::string(2 * 1024 * 1024, ' ')).has_value());
 
   EXPECT_EQ(topicMetadata(topic), kept);
@@ -317,6 +321,36 @@ TEST_F(FieldMetadataTest, ToolboxHostStoresFieldAndTopicMetadata) {
   EXPECT_EQ(metadata(derived_field), field_json);
 }
 
+TEST_F(FieldMetadataTest, ToolboxDescribesOnlyTheDataSourcesItCreated) {
+  const auto ax = field("ax");  // the fixture's source owns it
+  ObjectStore object_store;
+  DatastoreToolboxHost toolbox_impl(engine, object_store);
+  sdk::ToolboxHostView toolbox(toolbox_impl.raw());
+
+  EXPECT_FALSE(toolbox.setFieldMetadata(ax, R"({"description":"not mine"})").has_value());
+  EXPECT_FALSE(toolbox.setTopicMetadata(topic, R"({"description":"not mine"})").has_value());
+  EXPECT_TRUE(metadata(ax).empty());
+  EXPECT_TRUE(topicMetadata(topic).empty());
+}
+
+TEST_F(FieldMetadataTest, ToolboxReadsAnyFieldsAndTopicsDocument) {
+  const auto ax = field("ax");
+  const auto ay = field("ay");
+  const std::string field_json = sdk::MetadataDocumentBuilder().description("ax").unit("m/s^2").build();
+  ASSERT_TRUE(writer->setFieldMetadata(ax, field_json).has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"imu"})").has_value());
+  ObjectStore object_store;
+  DatastoreToolboxHost toolbox_impl(engine, object_store);
+  sdk::ToolboxHostView toolbox(toolbox_impl.raw());
+  ASSERT_TRUE(toolbox.supportsMetadataRead());
+
+  EXPECT_EQ(toolbox.fieldMetadata(ax).value(), field_json);
+  EXPECT_EQ(toolbox.fieldMetadata(ay).value(), "");
+  EXPECT_EQ(toolbox.topicMetadata(topic).value(), R"({"description":"imu"})");
+  EXPECT_FALSE(toolbox.fieldMetadata(sdk::FieldHandle{.topic = topic, .id = 99}).has_value());
+  EXPECT_FALSE(toolbox.topicMetadata(sdk::TopicHandle{.id = 9999}).has_value());
+}
+
 // --- streaming pause/resume: the write core writes the live engine and its staging mirror -------------------------
 
 TEST_F(FieldMetadataTest, WritesTheStagingMirrorToo) {
@@ -370,7 +404,44 @@ TEST_F(FieldMetadataTest, MirrorWithoutTheFieldIsSkipped) {
   EXPECT_EQ(staging.getTopicStorage(topic.id), nullptr);
 }
 
-// --- reload: replaceDatasetFrom() takes the staged layout's metadata ------------------------------------------------
+// --- reload, in place (the path FileLoader takes): a refill starts without documents, a rollback restores them -----
+
+TEST_F(FieldMetadataTest, RefillStartsWithoutDocuments) {
+  const auto ax = field("ax");
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"old"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"old topic"})").has_value());
+
+  auto snapshot = engine.detachDatasetChunks(dataset_id);
+  EXPECT_TRUE(metadata(ax).empty());
+  EXPECT_TRUE(topicMetadata(topic).empty());
+  ASSERT_EQ(field("ax").id, ax.id);  // the refill rebinds the same column
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"new"})").has_value());
+  // The refill commits: the snapshot is dropped, not reattached.
+
+  EXPECT_EQ(metadata(ax), R"({"description":"new"})");
+  EXPECT_TRUE(topicMetadata(topic).empty());
+}
+
+TEST_F(FieldMetadataTest, RefillRollbackRestoresTheDocuments) {
+  const auto ax = field("ax");
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"old"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"old topic"})").has_value());
+
+  auto snapshot = engine.detachDatasetChunks(dataset_id);
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"failed"})").has_value());
+  const auto az = field("az");  // a column only the failed refill has
+  ASSERT_TRUE(writer->setFieldMetadata(az, R"({"description":"failed az"})").has_value());
+  engine.reattachDatasetChunks(dataset_id, std::move(snapshot));
+
+  EXPECT_EQ(metadata(ax), R"({"description":"old"})");
+  EXPECT_EQ(topicMetadata(topic), R"({"description":"old topic"})");
+  // az is gone; the next column takes its id and must not inherit its document.
+  const auto bz = *engine.createTopicField(topic.id, "bz", PrimitiveType::kFloat32);
+  EXPECT_EQ(bz, az.id);
+  EXPECT_TRUE(metadata(sdk::FieldHandle{.topic = topic, .id = bz}).empty());
+}
+
+// --- reload, staged: replaceDatasetFrom() takes the staged layout's metadata -----------------------------------------
 
 struct ReloadedSource {
   DataEngine staged;

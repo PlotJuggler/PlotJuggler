@@ -95,6 +95,8 @@ class TopicStorage {
     uint32_t truncated_sample_count = 0;
     std::unordered_map<std::string, uint32_t> array_expansion_counts;
     std::unordered_set<FieldId> retired_columns;
+    std::unordered_map<FieldId, std::string> field_metadata;
+    std::string topic_metadata;
   };
 
   /// Takes the chunks and metadata out, leaving the storage as clearChunks() would, so restoreChunks() can undo a

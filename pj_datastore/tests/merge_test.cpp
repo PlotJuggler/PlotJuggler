@@ -452,20 +452,27 @@ TEST(MergeDatasets, SourceRetiredColumnOfAnotherTypeDoesNotSkipTheTopic) {
   EXPECT_EQ(readColumn(engine, data, 1).size(), 4U);
 }
 
-TEST(MergeDatasets, RebuiltTopicsLoseTheirMetadataOthersKeepIt) {
+TEST(MergeDatasets, DocumentsFollowTheirColumnsAnchorFirst) {
   DataEngine engine;
   const DatasetId anchor = makeDataset(engine, "anchor");
   const DatasetId source = makeDataset(engine, "source");
   const TopicId shared = writeScalar(engine, anchor, "shared", {0}, {0.0});
+  const TopicId shared_bare = writeScalar(engine, anchor, "shared_bare", {0}, {0.0});
   const TopicId anchor_only = writeScalar(engine, anchor, "anchor_only", {0}, {1.0});
   const TopicId source_shared = writeScalar(engine, source, "shared", {0}, {2.0});
+  const TopicId source_shared_bare = writeScalar(engine, source, "shared_bare", {0}, {2.0});
   const TopicId source_only = writeScalar(engine, source, "source_only", {0}, {3.0});
   {
     auto lock = engine.lockEngine();
-    for (const TopicId tid : {shared, anchor_only, source_shared, source_only}) {
-      engine.getTopicStorage(tid)->setTopicMetadata(R"({"description":"topic"})");
-      engine.getTopicStorage(tid)->setFieldMetadata(0, R"({"description":"field"})");
-    }
+    const auto describe = [&](TopicId tid, const std::string& who) {
+      engine.getTopicStorage(tid)->setTopicMetadata(R"({"description":")" + who + R"( topic"})");
+      engine.getTopicStorage(tid)->setFieldMetadata(0, R"({"description":")" + who + R"( field"})");
+    };
+    describe(shared, "anchor");
+    describe(anchor_only, "anchor");
+    describe(source_shared, "source");
+    describe(source_shared_bare, "source");  // its anchor twin has none
+    describe(source_only, "source");
   }
 
   ASSERT_TRUE(engine.mergeDatasets(anchor, {{source, 1000}}).has_value());
@@ -473,12 +480,14 @@ TEST(MergeDatasets, RebuiltTopicsLoseTheirMetadataOthersKeepIt) {
   const TopicId merged_source_only = topicIdByName(engine, anchor, "source_only");
   ASSERT_NE(merged_source_only, 0U);
   auto lock = engine.lockEngine();
-  for (const TopicId tid : {shared, merged_source_only}) {
-    EXPECT_TRUE(engine.getTopicStorage(tid)->topicMetadata().empty()) << tid;
-    EXPECT_TRUE(engine.getTopicStorage(tid)->fieldMetadata(0).empty()) << tid;
-  }
-  EXPECT_EQ(engine.getTopicStorage(anchor_only)->topicMetadata(), R"({"description":"topic"})");
-  EXPECT_EQ(engine.getTopicStorage(anchor_only)->fieldMetadata(0), R"({"description":"field"})");
+  const auto expect_described_by = [&](TopicId tid, const std::string& who) {
+    EXPECT_EQ(engine.getTopicStorage(tid)->topicMetadata(), R"({"description":")" + who + R"( topic"})") << tid;
+    EXPECT_EQ(engine.getTopicStorage(tid)->fieldMetadata(0), R"({"description":")" + who + R"( field"})") << tid;
+  };
+  expect_described_by(shared, "anchor");
+  expect_described_by(shared_bare, "source");
+  expect_described_by(anchor_only, "anchor");
+  expect_described_by(merged_source_only, "source");
 }
 
 }  // namespace

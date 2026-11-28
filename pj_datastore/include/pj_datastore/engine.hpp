@@ -183,7 +183,8 @@ class DataEngine {
   void clearDatasetChunks(PJ::DatasetId dataset_id);
 
   /// The chunks detachDatasetChunks() moved out, plus the per-topic metadata a refill can change. The metadata is
-  /// stored because the public ratchet setters only increase, so they cannot restore a smaller prior value.
+  /// stored because the public ratchet setters only increase, so they cannot restore a smaller prior value. The
+  /// plugin documents are moved out rather than copied: a refill starts without any, as the SDK contract promises.
   /// `prior_topic_ids` lets reattach retire topics a failed refill added. `valid == false`: nothing was detached.
   struct DatasetChunkSnapshot {
     struct TopicSnapshot {
@@ -195,6 +196,8 @@ class DataEngine {
       uint32_t truncated_sample_count = 0;
       std::unordered_map<std::string, uint32_t> array_expansion_counts;
       std::unordered_set<PJ::FieldId> retired_columns;
+      std::unordered_map<PJ::FieldId, std::string> field_metadata;
+      std::string topic_metadata;
     };
     PJ::DatasetId dataset_id = 0;
     std::vector<PJ::TopicId> prior_topic_ids;

@@ -25,6 +25,7 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -646,114 +647,29 @@ Status scanSeriesValues(
   return lockEnginePair(live, staging);
 }
 
-// Refuses an oversized, too deep or non-object field or topic metadata document while it parses, before any tree is
-// built. Depth and node limits mirror SessionManager::validateDatasetMetadata (pj_runtime, Qt-based): keep them in
-// step. kMaxBytes is lower: the document only feeds a tooltip, but is stored for every field.
-class MetadataDocumentBounds final : public nlohmann::json::json_sax_t {
- public:
-  static constexpr std::size_t kMaxBytes = 64 * 1024;
-  static constexpr int kMaxDepth = 32;
-  static constexpr int kMaxNodes = 16384;
+// PlotJuggler's byte bound on a field or topic metadata document; the SDK contract quotes it, so raising it is
+// compatible and lowering it breaks plugins.
+constexpr std::size_t kMaxMetadataBytes = 4 * 1024;
 
-  bool null() override {
-    return value(false);
-  }
-  bool boolean(bool) override {
-    return value(false);
-  }
-  bool number_integer(nlohmann::json::number_integer_t) override {
-    return value(false);
-  }
-  bool number_unsigned(nlohmann::json::number_unsigned_t) override {
-    return value(false);
-  }
-  bool number_float(nlohmann::json::number_float_t, const nlohmann::json::string_t&) override {
-    return value(false);
-  }
-  bool string(nlohmann::json::string_t&) override {
-    return value(false);
-  }
-  bool binary(nlohmann::json::binary_t&) override {
-    return value(false);
-  }
-  bool start_object(std::size_t) override {
-    if (!value(true)) {
-      return false;
-    }
-    ++open_;
-    return true;
-  }
-  bool key(nlohmann::json::string_t&) override {
-    if (open_ == 1) {
-      ++root_keys_;
-    }
-    return true;
-  }
-  bool end_object() override {
-    --open_;
-    return true;
-  }
-  bool start_array(std::size_t) override {
-    if (!value(false)) {
-      return false;
-    }
-    ++open_;
-    return true;
-  }
-  bool end_array() override {
-    --open_;
-    return true;
-  }
-  bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override {
-    return false;
-  }
-
-  // Valid after a successful parse: whether the root object has a key.
-  [[nodiscard]] bool hasKeys() const noexcept {
-    return root_keys_ > 0;
-  }
-  [[nodiscard]] const std::string& reason() const noexcept {
-    return reason_;
-  }
-
- private:
-  // Depth is open containers plus one (root = 1).
-  bool value(bool is_object) {
-    if (nodes_ == 0 && !is_object) {
-      reason_ = "metadata is not a JSON object";
-      return false;
-    }
-    if (++nodes_ > kMaxNodes) {
-      reason_ = fmt::format("metadata exceeds {} values", kMaxNodes);
-      return false;
-    }
-    if (open_ + 1 > kMaxDepth) {
-      reason_ = fmt::format("metadata nesting exceeds depth {}", kMaxDepth);
-      return false;
-    }
-    return true;
-  }
-
-  int nodes_ = 0;
-  int open_ = 0;
-  int root_keys_ = 0;
-  std::string reason_;
-};
-
-// True if the text is kept as sent; false if it clears the metadata (empty text or an object with no key).
-[[nodiscard]] PJ::Expected<bool> checkMetadataDocument(std::string_view text) {
+// Checks a set_field_metadata / set_topic_metadata document against the SDK rules (a flat JSON object of string
+// values) and returns the text to store: verbatim, or empty when the document clears (empty text, or no key).
+[[nodiscard]] PJ::Expected<std::string> checkMetadataDocument(std::string_view text) {
   if (text.empty()) {
-    return false;
+    return std::string();
   }
-  if (text.size() > MetadataDocumentBounds::kMaxBytes) {
-    return PJ::unexpected(
-        fmt::format("metadata is {} bytes; the limit is {}", text.size(), MetadataDocumentBounds::kMaxBytes));
+  if (text.size() > kMaxMetadataBytes) {
+    return PJ::unexpected(fmt::format("metadata is {} bytes; the limit is {}", text.size(), kMaxMetadataBytes));
   }
-  MetadataDocumentBounds bounds;
-  if (!nlohmann::json::sax_parse(text.begin(), text.end(), &bounds)) {
-    return PJ::unexpected(bounds.reason().empty() ? std::string("metadata is not valid JSON") : bounds.reason());
+  const auto doc = nlohmann::json::parse(text.begin(), text.end(), nullptr, /*allow_exceptions=*/false);
+  if (doc.is_discarded() || !doc.is_object()) {
+    return PJ::unexpected(std::string("metadata is not a JSON object"));
   }
-  return bounds.hasKeys();
+  for (const auto& [key, value] : doc.items()) {
+    if (!value.is_string()) {
+      return PJ::unexpected(fmt::format("metadata value of \"{}\" is not a string", key));
+    }
+  }
+  return doc.empty() ? std::string() : std::string(text);
 }
 
 struct WriteCore {
@@ -982,44 +898,37 @@ struct WriteCore {
     return true;
   }
 
-  // Sets the metadata on the live engine and the staging mirror, so it survives the pause/resume swap.
-  // The field must exist on the live engine; a mirror without it is skipped silently.
-  [[nodiscard]] bool setFieldMetadata(FieldHandle field, std::string_view metadata_json) {
-    const PJ::Expected<bool> has_keys = checkMetadataDocument(metadata_json);
-    if (!has_keys.has_value()) {
-      setError(has_keys.error());
-      return false;
-    }
-    const std::string stored = *has_keys ? std::string(metadata_json) : std::string();
-    auto engine_locks = lockWriteEngines(engine, secondary_engine);
-    auto status = engine.setFieldMetadata(field.topic.id, field.id, stored);
-    if (!status.has_value()) {
-      setError(status.error());
-      return false;
-    }
-    if (secondary_engine != nullptr) {
-      (void)secondary_engine->setFieldMetadata(field.topic.id, field.id, stored);
-    }
-    last_error.clear();
-    return true;
+  // Stores a document checkMetadataDocument() accepted on the live engine and the staging mirror, so it survives the
+  // pause/resume swap. `owns(dataset_id)` says whether the topic's dataset is the caller's to describe.
+  template <typename Owns>
+  [[nodiscard]] bool setFieldMetadata(FieldHandle field, const std::string& doc, Owns&& owns) {
+    return storeMetadata(
+        field.topic, owns, [&](DataEngine& e) { return e.setFieldMetadata(field.topic.id, field.id, doc); });
   }
 
-  // Same as setFieldMetadata(), for the topic's own document.
-  [[nodiscard]] bool setTopicMetadata(TopicHandle topic, std::string_view metadata_json) {
-    const PJ::Expected<bool> has_keys = checkMetadataDocument(metadata_json);
-    if (!has_keys.has_value()) {
-      setError(has_keys.error());
+  template <typename Owns>
+  [[nodiscard]] bool setTopicMetadata(TopicHandle topic, const std::string& doc, Owns&& owns) {
+    return storeMetadata(topic, owns, [&](DataEngine& e) { return e.setTopicMetadata(topic.id, doc); });
+  }
+
+  template <typename Owns, typename Apply>
+  [[nodiscard]] bool storeMetadata(TopicHandle topic, Owns& owns, Apply&& apply) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
+    const TopicStorage* storage = engine.getTopicStorage(topic.id);
+    if (storage == nullptr) {
+      setError(fmt::format("topic {} not found", topic.id));
       return false;
     }
-    const std::string stored = *has_keys ? std::string(metadata_json) : std::string();
-    auto engine_locks = lockWriteEngines(engine, secondary_engine);
-    auto status = engine.setTopicMetadata(topic.id, stored);
-    if (!status.has_value()) {
+    if (!owns(storage->descriptor().dataset_id)) {
+      setError(fmt::format("topic {} belongs to another plugin: only its writer describes it", topic.id));
+      return false;
+    }
+    if (auto status = apply(engine); !status.has_value()) {
       setError(status.error());
       return false;
     }
     if (secondary_engine != nullptr) {
-      (void)secondary_engine->setTopicMetadata(topic.id, stored);
+      (void)apply(*secondary_engine);  // a mirror without the topic has nothing to describe
     }
     last_error.clear();
     return true;
@@ -1691,6 +1600,8 @@ struct DatastoreToolboxHostState {
   ToolboxCore core;
   ObjectStore& object_store;
   std::string object_last_error;
+  // The datasets create_data_source made: the only ones whose topics the toolbox may describe.
+  std::unordered_set<DatasetId> created;
 
   void setObjectError(std::string msg) {
     object_last_error = std::move(msg);
@@ -1776,12 +1687,18 @@ bool sourceEnsureField(
   });
 }
 
+// Checked before pinCore(), so parsing never holds the engine locks the GUI reads under.
 bool sourceSetFieldMetadata(
     void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
     auto [core, engine_locks] = pinCore(*impl);
-    if (!core->setFieldMetadata(field, toStringView(metadata_json))) {
+    if (!core->setFieldMetadata(field, *doc, [&](DatasetId ds) { return ds == impl->source.id; })) {
       propagateError(out_error, core->lastError());
       return false;
     }
@@ -1793,8 +1710,13 @@ bool sourceSetTopicMetadata(
     void* ctx, TopicHandle topic, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
     auto [core, engine_locks] = pinCore(*impl);
-    if (!core->setTopicMetadata(topic, toStringView(metadata_json))) {
+    if (!core->setTopicMetadata(topic, *doc, [&](DatasetId ds) { return ds == impl->source.id; })) {
       propagateError(out_error, core->lastError());
       return false;
     }
@@ -1867,13 +1789,17 @@ bool parserSetFieldMetadata(
     void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    auto [core, engine_locks] = pinCore(*impl);
-    // The parser is bound to one topic: a handle for another topic is not its to modify.
     if (field.topic.id != impl->topic.id) {
       propagateError(out_error, "set_field_metadata: field does not belong to the parser's bound topic");
       return false;
     }
-    if (!core->setFieldMetadata(field, toStringView(metadata_json))) {
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    auto [core, engine_locks] = pinCore(*impl);
+    if (!core->setFieldMetadata(field, *doc, [](DatasetId) { return true; })) {  // the bound topic is the check
       propagateError(out_error, core->lastError());
       return false;
     }
@@ -1933,6 +1859,7 @@ bool toolboxCreateDataSource(
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
+    impl->created.insert(out_source->id);
     return true;
   });
 }
@@ -1967,7 +1894,12 @@ bool toolboxSetFieldMetadata(
     void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
-    if (!impl->core.write.setFieldMetadata(field, toStringView(metadata_json))) {
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    if (!impl->core.write.setFieldMetadata(field, *doc, [&](DatasetId ds) { return impl->created.count(ds) != 0; })) {
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
@@ -1979,10 +1911,57 @@ bool toolboxSetTopicMetadata(
     void* ctx, TopicHandle topic, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
-    if (!impl->core.write.setTopicMetadata(topic, toStringView(metadata_json))) {
+    const auto doc = checkMetadataDocument(toStringView(metadata_json));
+    if (!doc.has_value()) {
+      propagateError(out_error, doc.error().c_str());
+      return false;
+    }
+    if (!impl->core.write.setTopicMetadata(topic, *doc, [&](DatasetId ds) { return impl->created.count(ds) != 0; })) {
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
+    return true;
+  });
+}
+
+// The getters' view stays valid until the next get_field_metadata / get_topic_metadata on the same thread (the SDK
+// contract): one buffer per thread, whichever host serves the call.
+thread_local std::string tl_metadata_read;
+
+bool toolboxGetFieldMetadata(void* ctx, FieldHandle field, PJ_string_view_t* out_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    if (out_json == nullptr) {
+      propagateError(out_error, "out_json must not be null");
+      return false;
+    }
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    const auto lock = impl->core.engine.lockEngine();
+    const auto column = lookupFieldColumn(impl->core.engine, field);
+    if (!column.has_value()) {
+      propagateError(out_error, column.error().c_str());
+      return false;
+    }
+    tl_metadata_read = column->storage->fieldMetadata(field.id);
+    *out_json = PJ_string_view_t{tl_metadata_read.data(), tl_metadata_read.size()};
+    return true;
+  });
+}
+
+bool toolboxGetTopicMetadata(void* ctx, TopicHandle topic, PJ_string_view_t* out_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    if (out_json == nullptr) {
+      propagateError(out_error, "out_json must not be null");
+      return false;
+    }
+    auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+    const auto lock = impl->core.engine.lockEngine();
+    const TopicStorage* storage = impl->core.engine.getTopicStorage(topic.id);
+    if (storage == nullptr) {
+      propagateError(out_error, fmt::format("topic {} not found", topic.id).c_str());
+      return false;
+    }
+    tl_metadata_read = storage->topicMetadata();
+    *out_json = PJ_string_view_t{tl_metadata_read.data(), tl_metadata_read.size()};
     return true;
   });
 }
@@ -2671,6 +2650,8 @@ const PJ_toolbox_host_vtable_t kToolboxVTable = {
     toolboxAcquireCatalogSnapshotV2,
     toolboxSetFieldMetadata,
     toolboxSetTopicMetadata,
+    toolboxGetFieldMetadata,
+    toolboxGetTopicMetadata,
 };
 
 const PJ_object_write_host_vtable_t kSourceObjectWriteVTable = {
