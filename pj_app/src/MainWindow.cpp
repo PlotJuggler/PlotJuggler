@@ -6902,18 +6902,27 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
   // The file list only for a layout naming at most one dataset: one naming several keeps its own bindings, mapped to
   // the files ("Command-line startup"), and never asks which datasets to show.
   bool list_files = false;
+  QHash<QString, layout_xml::DataSourceRef> layout_sources;
   if (!layout_path.isEmpty()) {
-    QFile file(layout_path);
-    QDomDocument doc;
-    list_files =
-        file.open(QIODevice::ReadOnly) && doc.setContent(&file) && layout_xml::datasetIdentities(doc).size() <= 1;
+    QString error;
+    if (std::optional<QDomDocument> doc = readLayoutFile(layout_path, error, nullptr)) {  // the layout load reports it
+      list_files = layout_xml::datasetIdentities(*doc).size() <= 1;
+      layout_sources = layoutSourcesOfFiles(*doc, QFileInfo(layout_path).absoluteDir(), absolute_files);
+    }
   }
-  const bool ask_mode = file_loader_->batchRepeatsADialog(absolute_files);
+  // A file the layout configures opens no dialog, so it has nothing to ask about.
+  QStringList dialog_files;
+  for (const QString& path : absolute_files) {
+    if (!layout_sources.contains(path)) {
+      dialog_files.push_back(path);
+    }
+  }
+  const bool ask_mode = file_loader_->batchRepeatsADialog(dialog_files);
   if (interactive && absolute_files.size() >= 2 && (ask_mode || list_files)) {
     QPointer<MainWindow> self(this);
     BatchLoadDialog::ask(
         this, absolute_files, ask_mode, list_files,
-        [self, absolute_files, layout_path](std::optional<BatchLoadDialog::Answer> answer) {
+        [self, absolute_files, layout_path, layout_sources](std::optional<BatchLoadDialog::Answer> answer) {
           if (self.isNull()) {
             return;
           }
@@ -6923,15 +6932,60 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
             }
             return;
           }
-          self->loadStartupFiles(absolute_files, layout_path, /*interactive=*/true, answer->batch, answer->compared);
+          self->loadStartupFiles(
+              absolute_files, layout_path, layout_sources, /*interactive=*/true, answer->batch, answer->compared);
         });
     return;
   }
-  loadStartupFiles(absolute_files, layout_path, interactive, nullptr, {});
+  loadStartupFiles(absolute_files, layout_path, layout_sources, interactive, nullptr, {});
+}
+
+QHash<QString, layout_xml::DataSourceRef> MainWindow::layoutSourcesOfFiles(
+    QDomDocument doc, const QDir& layout_dir, const QStringList& files) {
+  QHash<QString, layout_xml::DataSourceRef> by_file;
+  static_cast<void>(layout_xml::resolveDatasetSourcePaths(doc, layout_dir));
+  const QList<layout_xml::DataSourceRef> sources = layout_xml::extractDataSource(doc, layout_dir);
+  QStringList source_order;
+  for (const layout_xml::DataSourceRef& source : sources) {
+    source_order.push_back(source.resolved_path);
+  }
+  // A source that names its loader, even with an empty configuration: a plugin with no settings saves one.
+  const auto names_loader = [](const layout_xml::DataSourceRef& source) {
+    return !source.resolved_path.isEmpty() && (!source.plugin_id.isEmpty() || !source.plugin_manifest_id.isEmpty());
+  };
+  // By the path string first: isSamePath needs both files on disk, and the saved one may be gone.
+  const auto same_file = [](const QString& a, const QString& b) {
+    return QDir::cleanPath(a) == QDir::cleanPath(b) || layout_xml::isSamePath(a, b);
+  };
+  // A file that is itself a source of the layout takes its own configuration, whichever dataset it stands for.
+  for (const QString& file : files) {
+    for (const layout_xml::DataSourceRef& source : sources) {
+      if (names_loader(source) && same_file(source.resolved_path, file)) {
+        by_file.insert(file, source);
+        break;
+      }
+    }
+  }
+  for (const layout_xml::DatasetFileMatch& match : layout_xml::matchDatasetsToFiles(doc, files, source_order)) {
+    if (match.rule == layout_xml::DatasetFileMatch::Rule::kAlias || by_file.contains(match.file)) {
+      continue;
+    }
+    // A label-only identity (an element naming the dataset by its file name alone) is the source of that name.
+    const bool by_label = !QFileInfo(match.identity).isAbsolute();
+    for (const layout_xml::DataSourceRef& source : sources) {
+      if (names_loader(source) && (by_label ? QFileInfo(source.resolved_path).fileName() == match.identity
+                                            : same_file(source.resolved_path, match.identity))) {
+        by_file.insert(match.file, source);
+        break;
+      }
+    }
+  }
+  return by_file;
 }
 
 void MainWindow::loadStartupFiles(
-    const QStringList& absolute_files, const QString& layout_path, bool interactive,
+    const QStringList& absolute_files, const QString& layout_path,
+    const QHash<QString, layout_xml::DataSourceRef>& layout_sources, bool interactive,
     const std::shared_ptr<LoadBatch>& load_batch, const QStringList& compared) {
   const LayoutLoadInteractivity layout_interactivity =
       interactive ? LayoutLoadInteractivity::kStartupAttended : LayoutLoadInteractivity::kAutomated;
@@ -6972,6 +7026,23 @@ void MainWindow::loadStartupFiles(
   for (const QString& path : absolute_files) {
     LoadHints hints;
     hints.dialog_policy = interactive ? DialogPolicy::kInteractive : DialogPolicy::kNever;
+    // The layout's saved loader configuration answers the dialog, pointed at this file as a replay points it at a
+    // moved one (the saved path is recorded, so the loader finds the files saved beside it). One that is not a JSON
+    // object cannot be pointed anywhere: the file then loads as a plain -d file.
+    const auto source = layout_sources.constFind(path);
+    if (auto pointed = source != layout_sources.cend()
+                           ? detail::rewriteReplayFilepaths(
+                                 source->plugin_config_json.toStdString(), path, detail::SavedFilepath::kRecord)
+                           : std::nullopt) {
+      hints = layoutReplayHints(*source, /*prefer_reuse=*/false);
+      hints.require_expected_plugin = false;
+      if (interactive) {
+        // kPreferPreset replays a preset byte-exact, so it is pointed here; a configuration the plugin refuses
+        // still opens the dialog. kNever points the saved one itself.
+        hints.preset_config_json = QString::fromStdString(*pointed);
+        hints.dialog_policy = DialogPolicy::kPreferPreset;
+      }
+    }
     hints.batch = load_batch;
     const auto ticket =
         file_loader_->loadFileTicketed(LoadInput::fromNativePath(path), interactive ? this : nullptr, hints);

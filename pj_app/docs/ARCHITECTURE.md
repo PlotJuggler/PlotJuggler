@@ -69,12 +69,23 @@ most once: a saved path that is one of the files; then the only file still uncla
 path-less source label, with that label); then, per format (case-insensitive file suffix), the saved paths and files
 still left, in order, when that format's counts are equal. A path-less label never pairs by position: it has no format
 and may be a toolbox's own source. Dataset order is the layout's `<fileInfo>` list, then first appearance in the
-document; files keep command-line order. A dataset is its saved path, or its source label without one; `pj-upload://`
+document; files keep command-line order. A `<fileInfo>` source no element names is a dataset too, matched by the same
+rules afterwards, to the files the named datasets left. A dataset is its saved path, or its source label without one; `pj-upload://`
 and `pj-stream://` identities never map. Each mapped dataset is reported once (`Layout`/`dataset-mapped`: `Layout
 dataset "<label>" -> <file>` and how; a path-less label that follows its dataset's path adds no line); everything left
 unmapped is stripped and binds only where unique. A kept label the loader derived from the saved file name (the file
 name, or `<base>/<entry>` for a fan-out) follows the new name, since the identity resolver compares labels exactly.
 `removeDatasetQualifiersForGenericLayout` applies the mapping to every consumer, after `resolveDatasetSourcePaths`.
+The same mapping, made before the files load (`MainWindow::layoutSourcesOfFiles`, on the layout `loadAtStartup` has
+already read), hands each mapped file its source's saved loader configuration as a preset
+(`DialogPolicy::kPreferPreset` attended, `kNever` unattended) with its `filepath` pointed at that file: the file loads
+as a replay would, its configuration dialog opens only when the plugin refuses the preset, and the batch question
+for two or more files leaves it out. A source binds by its saved path string as well as by the file on disk, so a
+layout whose recording moved still hands its configuration over; the saved path is recorded in the configuration
+(`__pj_saved_filepath`), so the loader finds the files saved beside it. A file that is itself a source of the layout
+takes its own configuration, whichever dataset it stands for. A source needs only to name its loader: a plugin with
+no settings saves an empty configuration. A saved configuration that is not a JSON object maps nothing, and the file
+loads as a plain `-d` file.
 Without explicit files, `--layout` replays its saved sources and starts its recorded streams with no prompt.
 A startup layout prompts only for which dataset(s) to show, and only when someone is at the display ("One layout over
 several datasets"); with two or more files that question is part of the batch question asked before they load ("Several
@@ -320,7 +331,8 @@ stay absolute; browser layouts skip both steps; a generic layout has no dataset 
 for its explicit files ("Command-line startup").
 
 **`__pj_saved_filepath`** exists only in the config handed to a plugin's `loadConfig` on a layout replay of a native
-file (`rewriteReplayFilepaths` with `SavedFilepath::kRecord`) and never reaches host state: the rewrite drops any
+file, or on the startup load of a `-d` file the layout configures (`rewriteReplayFilepaths` with
+`SavedFilepath::kRecord`) and never reaches host state: the rewrite drops any
 incoming value first, `captureSavedConfig` strips a plugin's echo, and a `prefer_reuse` hit (no plugin runs) goes
 through the rewrite with `SavedFilepath::kOmit`.
 
@@ -791,6 +803,14 @@ Suites with their own executable and ctest entry, and why:
 
 ## Known gaps
 
+- Startup with `-d` and `-l`: the batch question leaves out every file the layout configures, on the prediction that
+  its preset is used. A plugin that refuses the preset, or a named plugin that is not installed, then opens one
+  dialog per file with no "ask once" choice. Unattended, a preset the plugin refuses fails that file.
+- Startup with `-d` and `-l`, three or more saved sources and fewer files: an unnamed `<fileInfo>` source can pair by
+  position with a file the named datasets could not take, which then loads with that source's configuration.
+- A layout saved on Linux or macOS with data outside its folder, opened on Windows: the element qualifiers
+  (`QDir::cleanPath`) and the `<fileInfo>` paths (`QFileInfo::absoluteFilePath`) may normalise a drive-less absolute
+  path differently, so a `-d` file can miss its saved configuration (reasoning from the code, not run on Windows).
 - The title-bar ingest strip is wired but hidden (`kShowTitleBarIngestStrip`); its keep/discard prompt path is
   exercised only when the flag is turned on.
 - `StreamingSourceManager` supports several sessions, but the left panel drives one active stream at a time.

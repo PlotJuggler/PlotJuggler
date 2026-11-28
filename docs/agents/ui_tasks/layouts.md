@@ -11,7 +11,8 @@ bar.
   (`dialogMode`): "Show all" (every file shows its loader's dialog), "Show first" (the first file of each format
   shows it, the others reuse its settings) or "Skip" (every file uses its format's last settings).
 - **Command line:** `plotjuggler4 -d a.mcap -d b.mcap -l layout.pj4.xml` or `plotjuggler4 recording.csv`; explicit
-  files replace the sources saved in the layout.
+  files replace the sources saved in the layout, and a file that maps to one of them loads with its saved loader
+  settings, without the loader's dialog.
 - **MCP:** `open_file` (`path`; `ask_user: true` to show the loader's dialog; `config` for loader settings). Each
   call is one file; call it once per file.
 - **Gotchas:** the loader is chosen by extension ([formats.md](../formats.md)). Each file becomes its own dataset.

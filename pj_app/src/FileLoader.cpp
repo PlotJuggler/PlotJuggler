@@ -1224,14 +1224,17 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  // The first match, unless a layout names its plugin: another match could parse the same bytes differently.
+  // The first match, unless the hints name an installed plugin: another match could parse the same bytes differently.
   // `source` points into the GUI-owned catalog, which a marketplace reload can reallocate: use it only before the
   // dialog suspends; after that, the snapshots below (the handle pins the DSO).
   const LoadedDataSource* source = matches.front();
-  if (hints.require_expected_plugin) {
+  const bool names_plugin = !hints.expected_manifest_id.isEmpty() || !hints.expected_plugin_id.isEmpty();
+  if (names_plugin || hints.require_expected_plugin) {
     const LoadedDataSource* expected =
         findDataSourceByIdentity(matches, hints.expected_manifest_id, hints.expected_plugin_id);
-    if (expected == nullptr) {
+    if (expected != nullptr) {
+      source = expected;
+    } else if (hints.require_expected_plugin) {
       const QString expected_label = !hints.expected_plugin_id.isEmpty()     ? hints.expected_plugin_id
                                      : !hints.expected_manifest_id.isEmpty() ? hints.expected_manifest_id
                                                                              : tr("(unspecified)");
@@ -1239,7 +1242,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
                      .arg(expected_label, ext));
       co_return;
     }
-    source = expected;
   }
   const QString source_name = QString::fromStdString(source->name);
   const QString source_manifest_id = QString::fromStdString(source->id);
@@ -1398,11 +1400,16 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   bool skip_dialog = false;
   // Side-file names already resolved to the files this replay reads.
   const std::string preset_bytes = withSideFilePaths(hints.preset_config_json.toStdString(), hints, input.backing_path);
+  // Each hint identity compares only against its own field of the selected plugin.
+  const bool expected_matches_selected =
+      (!hints.expected_manifest_id.isEmpty() && hints.expected_manifest_id == source_manifest_id) ||
+      (!hints.expected_plugin_id.isEmpty() && hints.expected_plugin_id == source_name);
 
   if (hints.dialog_policy == DialogPolicy::kNever) {
     // A rejected preset fails the source: the QSettings pre-fill would replay a configuration the user never saved.
+    // A preset written for another plugin (the named one is not installed) is not replayed: a bare filepath config.
     auto rewritten = detail::rewriteReplayFilepaths(
-        preset_bytes, input.backing_path,
+        !names_plugin || expected_matches_selected ? preset_bytes : std::string(), input.backing_path,
         hints.record_saved_filepath && !isBrowserUploadIdentity(source_identity) ? detail::SavedFilepath::kRecord
                                                                                  : detail::SavedFilepath::kOmit);
     if (!rewritten.has_value()) {
@@ -1419,10 +1426,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     config = preset;
     skip_dialog = true;
   } else {
-    // Each hint identity compares only against its own field of the selected plugin.
-    const bool expected_matches_selected =
-        (!hints.expected_manifest_id.isEmpty() && hints.expected_manifest_id == source_manifest_id) ||
-        (!hints.expected_plugin_id.isEmpty() && hints.expected_plugin_id == source_name);
     if (hints.dialog_policy == DialogPolicy::kPreferPreset && !preset_bytes.empty() && expected_matches_selected) {
       if (auto status = handle.loadConfig(preset_bytes); status) {
         config = preset_bytes;

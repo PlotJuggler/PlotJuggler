@@ -2112,6 +2112,23 @@ TEST_F(KeptFileQualifiers, PositionalPairingStaysWithinOneFormat) {
   EXPECT_FALSE(by_id[u"imu"_s].hasAttribute(u"dataset_path"_s));
 }
 
+// A <fileInfo> source no element names is matched only to the files the named datasets left: it neither breaks their
+// positional pairing nor takes their file by name.
+TEST_F(KeptFileQualifiers, UnnamedSourceTakesOnlyTheFilesTheNamedDatasetsLeave) {
+  const QString elements =
+      u"<curve id=\"a\" dataset_source=\"a.csv\" dataset_path=\"%1\"/>"
+      u"<curve id=\"b\" dataset_source=\"b.csv\" dataset_path=\"%2\"/>"_s.arg(
+          path(u"gone/a.csv"_s), path(u"gone/b.csv"_s));
+  auto by_id =
+      rewrite(elements, {other_, a_run_}, {path(u"gone/a.csv"_s), path(u"gone/b.csv"_s), path(u"gone/c.csv"_s)});
+  EXPECT_EQ(by_id[u"a"_s].attribute(u"dataset_path"_s), other_) << "the unnamed third source must not stop pairing";
+  EXPECT_EQ(by_id[u"b"_s].attribute(u"dataset_path"_s), a_run_);
+
+  by_id = rewrite(u"<curve id=\"label\" dataset_source=\"run.csv\"/>"_s, {a_run_}, {path(u"gone/run.csv"_s)});
+  EXPECT_EQ(by_id[u"label"_s].attribute(u"dataset_path"_s), a_run_)
+      << "the label an element names takes its file before an unnamed source of the same name";
+}
+
 // A label-only identity (a toolbox's own source) is matched by name only: it neither pairs nor counts.
 TEST_F(KeptFileQualifiers, LabelOnlyDatasetNeverPairsByPosition) {
   const auto by_id = rewrite(

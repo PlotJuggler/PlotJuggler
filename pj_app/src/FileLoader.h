@@ -57,7 +57,9 @@ enum class DialogPolicy {
   kPreferPreset,
   // Layout replay: no dialog, the preset is authoritative (an empty one gets a bare filepath config). The preset's
   // `filepath`, and each fan-out child's, become LoadInput::backing_path, so a moved layout replays the file beside
-  // it. A non-object or rejected preset fails the source. Does not persist the config to QSettings.
+  // it. A non-object or rejected preset fails the source; a preset written for a plugin that is not the selected
+  // one (the named plugin is not installed) is not replayed, the source gets a bare filepath config. Does not
+  // persist the config to QSettings.
   kNever,
 };
 
@@ -91,7 +93,8 @@ struct LoadHints {
   DialogPolicy dialog_policy = DialogPolicy::kInteractive;
   // Reuse a matching DatasetId instead of reloading it (layout replay).
   bool prefer_reuse = false;
-  // Fail the load when no extension match is the plugin the hints name, instead of taking the first match.
+  // The plugin the hints name is selected when it is installed for the extension; this fails the load when it is not,
+  // instead of taking the first match.
   bool require_expected_plugin = false;
   // With kNever, native inputs: the plugin also gets the replaced absolute path as `__pj_saved_filepath`, to rebase
   // sidecar files that lived beside the old source.

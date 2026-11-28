@@ -806,31 +806,13 @@ QString keptSourceLabel(const QString& saved_source, const QString& saved_file, 
 
 }  // namespace
 
-QList<DatasetFileMatch> matchDatasetsToFiles(
-    const QDomDocument& doc, const QStringList& files, const QStringList& source_order) {
-  // Distinct identities (the saved path, else the label) in first-appearance order, each with the first label seen
-  // for it.
-  QList<DatasetFileMatch> saved;
-  for (const DatasetIdentity& pair : qualifierPairs(doc)) {
-    if (isOpaqueSourceIdentity(pair.path)) {
-      continue;
-    }
-    const QString identity = pair.path.isEmpty() ? pair.source : pair.path;
-    const auto it = std::find_if(saved.begin(), saved.end(), [&](const auto& s) { return s.identity == identity; });
-    if (it == saved.end()) {
-      saved.push_back({.identity = identity, .label = pair.source, .file = {}, .rule = DatasetFileMatch::Rule::kPath});
-    } else if (it->label.isEmpty()) {
-      it->label = pair.source;
-    }
-  }
-  const auto order = [&source_order](const DatasetFileMatch& entry) {
-    const auto it = std::find_if(source_order.begin(), source_order.end(), [&entry](const QString& path) {
-      return QDir::cleanPath(path) == entry.identity;
-    });
-    return it == source_order.end() ? source_order.size() : std::distance(source_order.begin(), it);
-  };
-  std::stable_sort(saved.begin(), saved.end(), [&order](const auto& a, const auto& b) { return order(a) < order(b); });
+namespace {
 
+// The three rules over `saved` (in order), claiming files from `unclaimed` into `matched`; rule 1 looks in
+// `candidates`. Aliases follow a matched path of the same pass.
+void matchSavedToFiles(
+    const QList<DatasetFileMatch>& saved, const QStringList& candidates, QStringList& unclaimed,
+    QList<DatasetFileMatch>& matched) {
   const auto has_path = [](const DatasetFileMatch& entry) { return QFileInfo(entry.identity).isAbsolute(); };
   // A path-less label that some saved path also carries names that path's dataset: it follows that path's match.
   QList<DatasetFileMatch> aliases;
@@ -842,8 +824,6 @@ QList<DatasetFileMatch> matchDatasetsToFiles(
     (alias ? aliases : datasets).push_back(entry);
   }
 
-  QStringList unclaimed = files;
-  QList<DatasetFileMatch> matched;
   const auto take = [&](DatasetFileMatch entry, const QString& file, DatasetFileMatch::Rule rule) {
     entry.file = file;
     entry.rule = rule;
@@ -855,9 +835,9 @@ QList<DatasetFileMatch> matchDatasetsToFiles(
   };
   QList<DatasetFileMatch> left;
   for (const DatasetFileMatch& entry : datasets) {
-    const auto same =
-        std::find_if(files.begin(), files.end(), [&entry](const QString& f) { return isSamePath(f, entry.identity); });
-    if (same != files.end()) {
+    const auto same = std::find_if(
+        candidates.begin(), candidates.end(), [&entry](const QString& f) { return isSamePath(f, entry.identity); });
+    if (same != candidates.end()) {
       take(entry, *same, DatasetFileMatch::Rule::kPath);
     } else {
       left.push_back(entry);
@@ -903,6 +883,53 @@ QList<DatasetFileMatch> matchDatasetsToFiles(
       take(alias, file, DatasetFileMatch::Rule::kAlias);
     }
   }
+}
+
+}  // namespace
+
+QList<DatasetFileMatch> matchDatasetsToFiles(
+    const QDomDocument& doc, const QStringList& files, const QStringList& source_order) {
+  // Distinct identities (the saved path, else the label) in first-appearance order, each with the first label seen
+  // for it.
+  QList<DatasetFileMatch> named;
+  for (const DatasetIdentity& pair : qualifierPairs(doc)) {
+    if (isOpaqueSourceIdentity(pair.path)) {
+      continue;
+    }
+    const QString identity = pair.path.isEmpty() ? pair.source : pair.path;
+    const auto it = std::find_if(named.begin(), named.end(), [&](const auto& s) { return s.identity == identity; });
+    if (it == named.end()) {
+      named.push_back({.identity = identity, .label = pair.source, .file = {}, .rule = DatasetFileMatch::Rule::kPath});
+    } else if (it->label.isEmpty()) {
+      it->label = pair.source;
+    }
+  }
+  // A <fileInfo> source is a dataset of the layout even when no element names it; it takes only what the named
+  // datasets leave, so it neither changes their positional pairing nor claims their file by name.
+  QList<DatasetFileMatch> unnamed;
+  for (const QString& path : source_order) {
+    const QString identity = path.isEmpty() ? QString() : QDir::cleanPath(path);
+    if (identity.isEmpty() || isOpaqueSourceIdentity(identity) ||
+        std::any_of(named.begin(), named.end(), [&](const auto& s) { return s.identity == identity; }) ||
+        std::any_of(unnamed.begin(), unnamed.end(), [&](const auto& s) { return s.identity == identity; })) {
+      continue;
+    }
+    unnamed.push_back({.identity = identity, .label = {}, .file = {}, .rule = DatasetFileMatch::Rule::kPath});
+  }
+  const auto order = [&source_order](const DatasetFileMatch& entry) {
+    const auto it = std::find_if(source_order.begin(), source_order.end(), [&entry](const QString& path) {
+      return QDir::cleanPath(path) == entry.identity;
+    });
+    return it == source_order.end() ? source_order.size() : std::distance(source_order.begin(), it);
+  };
+  const auto by_order = [&order](const auto& a, const auto& b) { return order(a) < order(b); };
+  std::stable_sort(named.begin(), named.end(), by_order);
+
+  QStringList unclaimed = files;
+  QList<DatasetFileMatch> matched;
+  matchSavedToFiles(named, files, unclaimed, matched);
+  const QStringList left = unclaimed;
+  matchSavedToFiles(unnamed, left, unclaimed, matched);
   return matched;
 }
 
