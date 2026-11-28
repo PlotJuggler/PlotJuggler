@@ -131,7 +131,10 @@ nanoseconds, so its CSV time column is exact; `format: "npy"` writes a numpy str
 field per series path, NaN before a series starts) that `numpy.load` reads much faster than `numpy.loadtxt` reads the
 CSV ("Evidence"), with no package beyond numpy. `add_filter` takes its class from `pj_scripting`'s
 `FilterCatalogue::standaloneClassScript`. `screenshot` composites each visible QRhi view's next presented frame
-(`grabPresentedFrame`) into the window grab, and replies when the frames arrive.
+(`grabPresentedFrame`) into the window grab, and replies when the frames arrive. `get_status`' `rendering` counts the
+`QEvent::UpdateRequest`s the main window handles (`McpServer::eventFilter`; each one paints and flushes its backing
+store, the swap included), so an agent can tell a window that stopped drawing from one that plays; floating docks are
+windows of their own and are not counted, and what the compositor then shows is out of its sight.
 
 ## Tokens and identity
 

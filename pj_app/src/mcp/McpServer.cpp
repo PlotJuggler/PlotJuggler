@@ -143,6 +143,7 @@ McpServer::McpServer(MainWindow& window) : QObject(nullptr), window_(window) {
   });
   resume_tick_.setInterval(kResumeIntervalMs);
   connect(&resume_tick_, &QTimer::timeout, this, &McpServer::resumeDeferred);
+  window_.installEventFilter(this);
 #ifndef PJ_TARGET_WASM
   connect(&server_, &QTcpServer::newConnection, this, [this] {
     while (QTcpSocket* socket = server_.nextPendingConnection()) {
@@ -192,6 +193,30 @@ McpServer::~McpServer() {
   resume_tick_.stop();
   jobs_.clear();
   agent_sessions_.clear();
+}
+
+bool McpServer::eventFilter(QObject* watched, QEvent* event) {
+  // Qt 6.12's QWidgetRepaintManager sends or posts UpdateRequest to the top-level QWidget, and handling it paints
+  // and flushes the backing store, the swap included; QWindow::requestUpdate is not on that path, so the window
+  // handle's own UpdateRequest would not count widget repaints.
+  if (watched == &window_ && event->type() == QEvent::UpdateRequest) {
+    const auto now = std::chrono::steady_clock::now();
+    frames_.push_back(now);
+    while (now - frames_.front() > kFrameHistory) {
+      frames_.pop_front();
+    }
+  }
+  return QObject::eventFilter(watched, event);
+}
+
+json McpServer::renderingStatus() const {
+  const auto now = std::chrono::steady_clock::now();
+  const auto last_second = std::count_if(
+      frames_.begin(), frames_.end(), [now](auto frame) { return now - frame <= std::chrono::seconds(1); });
+  json since = frames_.empty()
+                   ? json()
+                   : json(std::chrono::duration_cast<std::chrono::milliseconds>(now - frames_.back()).count());
+  return {{"frames_last_s", last_second}, {"ms_since_last_frame", since}};
 }
 
 void McpServer::openPublicAccess() {

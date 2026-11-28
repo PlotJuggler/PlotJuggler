@@ -718,6 +718,7 @@ void McpServer::getStatus(const json&, const Caller& caller, Reply reply) {
           {"agent", caller.owner.toStdString()},
           {"agent_tabs", tab_ids},
           {"focused", QApplication::activeWindow() != nullptr},
+          {"rendering", renderingStatus()},
           {"user_dialog", modal != nullptr ? json(shownTitle(*modal)) : json()}}));
 }
 

@@ -373,7 +373,10 @@ json appToolEntries() {
           "Start here. Loaded datasets (id, name, path, loader config; live streams carry stream), the stream "
           "sources start_stream can start, time range, current time, your agent id and tabs, whether "
           "PlotJuggler has the user's focus and any dialog the user has open. A config's secrets (passwords, "
-          "tokens) read as \"<redacted>\".",
+          "tokens) read as \"<redacted>\". rendering: how many times the main window drew in the last second "
+          "(frames_last_s; floating docks not counted) and ms_since_last_frame (null before the first). While "
+          "playing, frames_last_s near the display or playback rate means the window draws, 0 or 1 means it is "
+          "stalled; whether the compositor shows those frames it cannot see.",
           schema(json::object())),
 #ifndef PJ_TARGET_WASM
       toolEntry(

@@ -1281,6 +1281,28 @@ TEST_F(McpServerTest, AWronglyTypedArgumentIsAToolError) {
   EXPECT_NE(text.find("bad arguments for open_file"), std::string::npos) << text;
 }
 
+// get_status says whether the main window draws: a playing session whose window is stalled reads the same otherwise.
+TEST_F(McpServerTest, GetStatusCountsTheMainWindowsFrames) {
+  const auto rendering = [this] {
+    const auto [text, error] = result(call("get_status", json::object()));
+    EXPECT_FALSE(error) << text;
+    return json::parse(text, nullptr, false).value("rendering", json());
+  };
+  const json hidden = rendering();
+  ASSERT_TRUE(hidden.is_object()) << hidden.dump();
+  EXPECT_EQ(hidden.value("frames_last_s", -1), 0);
+  EXPECT_TRUE(hidden.at("ms_since_last_frame").is_null()) << hidden.dump();
+
+  window_->show();
+  ASSERT_TRUE(pumpUntil([&] { return window_->isVisible(); }));
+  window_->update();
+  QApplication::processEvents();
+  window_->repaint();
+  const json shown = rendering();
+  EXPECT_GT(shown.value("frames_last_s", 0), 0) << shown.dump();
+  EXPECT_TRUE(shown.at("ms_since_last_frame").is_number_integer()) << shown.dump();
+}
+
 // initialize and server/discover tell an agent what is loaded, with a path it can use as is, so it need not start with
 // list_topics and describe_topic; with nothing loaded it says nothing about data.
 TEST_F(McpServerTest, InitializeSaysWhatIsLoaded) {
