@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """Drive an isolated PlotJuggler 4 for QA, through its MCP server's tools (the UI tools included).
 
-  pjqa.py [--home DIR] start [--xvfb] [--plugin-dir DIR] [-- APP_ARGS...]
+  pjqa.py [--home DIR] start [--xvfb | --display :N|wayland] [--plugin-dir DIR] [-- APP_ARGS...]
   pjqa.py [--home DIR] start --browser DEPLOY_DIR   the browser build: prints the page URL to open
   pjqa.py call TOOL ['{"json": "args"}']     prints the result text; exit 1 when the tool failed
   pjqa.py run SCRIPT                         replays a script (see below); exit 1 on the first failure
@@ -15,6 +15,9 @@
 
 The app runs from this checkout's run.sh with --mcp-ui-tools, offscreen (or under xvfb-run), under a
 private HOME, so it never touches the user's settings, windows or running instances. Linux only.
+--display puts its windows on that display instead: an X display `:N` (a private GPU display, say), or
+`wayland` for the session's own compositor; a user's own display only when they asked. `-geometry`
+among the app arguments is a Qt option of X11 only.
 
 --browser serves a packaged WebAssembly build (scripts/package_wasm.mjs output) and runs a stand-in for
 the agent relay (docs/MCP_SERVER.md, "Browser relay"); `call` and `run` then reach the page that opens the
@@ -122,6 +125,12 @@ def start(args):
         command = ["xvfb-run", "-a", "-s", "-screen 0 1920x1080x24"] + command
         env["QT_QPA_PLATFORM"] = "xcb"  # a Wayland session would otherwise put the app on the user's desktop
         env.pop("WAYLAND_DISPLAY", None)
+    elif args.display == "wayland":
+        env["QT_QPA_PLATFORM"] = "wayland"
+    elif args.display:
+        env["QT_QPA_PLATFORM"] = "xcb"
+        env["DISPLAY"] = args.display
+        env.pop("WAYLAND_DISPLAY", None)
     else:
         env["QT_QPA_PLATFORM"] = "offscreen"
     instances = home / ".local/share/PlotJuggler/PlotJuggler4/mcp-instances"
@@ -152,6 +161,12 @@ def start(args):
     except BaseException:  # a timeout, an interrupt or an error: no state file names the app, so end it here
         terminate(app)
         raise
+
+
+def display_value(value):
+    if value == "wayland" or (value.startswith(":") and value[1:].replace(".", "", 1).isdigit()):
+        return value
+    raise argparse.ArgumentTypeError("expected :N (an X display) or wayland")
 
 
 def free_port():
@@ -431,7 +446,7 @@ def regress(args):
     results = []
     for script in scripts:
         home = Path(tempfile.mkdtemp(prefix=f"pjqa-{script.stem}-"))
-        instance = argparse.Namespace(home=str(home), browser=None, xvfb=False, plugin_dir=plugin_dir, app_args=[])
+        instance = argparse.Namespace(home=str(home), browser=None, xvfb=False, display=None, plugin_dir=plugin_dir, app_args=[])
         print(f"== {script.name}")
         try:
             if header(script, "needs") == "plugins" and not plugin_dir:
@@ -490,7 +505,15 @@ def main():
     parser.add_argument("--home", help=f"the instance's private HOME (default $PJQA_HOME or {DEFAULT_HOME})")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("start")
-    p.add_argument("--xvfb", action="store_true", help="a virtual X display instead of offscreen")
+    where = p.add_mutually_exclusive_group()
+    where.add_argument("--xvfb", action="store_true", help="a virtual X display instead of offscreen")
+    where.add_argument(
+        "--display",
+        type=display_value,
+        metavar=":N|wayland",
+        help="run on this X display, or natively on the session's Wayland compositor; windows appear there "
+        "(a user's own display only when they asked). -geometry is an X11-only Qt option",
+    )
     p.add_argument("--plugin-dir", help="a folder of built plugins (data loaders, parsers)")
     p.add_argument("--browser", metavar="DEPLOY_DIR", help="serve this packaged browser build instead")
     p.add_argument("app_args", nargs="*", help="after --: more app arguments, e.g. a file to open")
