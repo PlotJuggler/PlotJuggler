@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """Drive an isolated PlotJuggler 4 for QA, through its MCP server's tools (the UI tools included).
 
-  pjqa.py [--home DIR] start [--xvfb | --display :N|wayland] [--plugin-dir DIR] [-- APP_ARGS...]
+  pjqa.py [--home DIR] start [--xvfb [WxH] | --display :N|wayland] [--plugin-dir DIR] [-- APP_ARGS...]
   pjqa.py [--home DIR] start --browser DEPLOY_DIR   the browser build: prints the page URL to open
   pjqa.py call TOOL ['{"json": "args"}']     prints the result text; exit 1 when the tool failed
   pjqa.py run SCRIPT                         replays a script (see below); exit 1 on the first failure
@@ -18,6 +18,8 @@ private HOME, so it never touches the user's settings, windows or running instan
 --display puts its windows on that display instead: an X display `:N` (a private GPU display, say), or
 `wayland` for the session's own compositor; a user's own display only when they asked. `-geometry`
 among the app arguments works on every platform; a Wayland compositor places the window itself.
+Offscreen has no QRhi, so plots still draw but 2D/3D scenes and image views draw nothing; `start` says so on
+stderr. --xvfb (default screen 1920x1080, or e.g. --xvfb 2560x1440) renders them in software.
 
 --browser serves a packaged WebAssembly build (scripts/package_wasm.mjs output) and runs a stand-in for
 the agent relay (docs/MCP_SERVER.md, "Browser relay"); `call` and `run` then reach the page that opens the
@@ -42,6 +44,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -122,7 +125,7 @@ def start(args):
         command += ["--plugin-dir", str(Path(args.plugin_dir).resolve())]
     command += args.app_args
     if args.xvfb:
-        command = ["xvfb-run", "-a", "-s", "-screen 0 1920x1080x24"] + command
+        command = ["xvfb-run", "-a", "-s", f"-screen 0 {args.xvfb}x24"] + command
         env["QT_QPA_PLATFORM"] = "xcb"  # a Wayland session would otherwise put the app on the user's desktop
         env.pop("WAYLAND_DISPLAY", None)
     elif args.display == "wayland":
@@ -155,12 +158,24 @@ def start(args):
                 with os.fdopen(fd, "w") as out:
                     json.dump(state, out)
                 print(f"pjqa: ready (pid {found['pid']}, home {home})")
+                if env["QT_QPA_PLATFORM"] == "offscreen":
+                    print(
+                        "pjqa: offscreen has no QRhi: 2D/3D scenes and image views draw nothing (blank in "
+                        "screenshots); start with --xvfb to see them",
+                        file=sys.stderr,
+                    )
                 return
             time.sleep(0.2)
         sys.exit(f"pjqa: no MCP server within 60 s; see {home / 'app.log'}")
     except BaseException:  # a timeout, an interrupt or an error: no state file names the app, so end it here
         terminate(app)
         raise
+
+
+def screen_size(value):
+    if re.fullmatch(r"[1-9][0-9]*x[1-9][0-9]*", value):
+        return value
+    raise argparse.ArgumentTypeError("expected WIDTHxHEIGHT, e.g. 2560x1440")
 
 
 def display_value(value):
@@ -446,7 +461,7 @@ def regress(args):
     results = []
     for script in scripts:
         home = Path(tempfile.mkdtemp(prefix=f"pjqa-{script.stem}-"))
-        instance = argparse.Namespace(home=str(home), browser=None, xvfb=False, display=None, plugin_dir=plugin_dir, app_args=[])
+        instance = argparse.Namespace(home=str(home), browser=None, xvfb=None, display=None, plugin_dir=plugin_dir, app_args=[])
         print(f"== {script.name}")
         try:
             if header(script, "needs") == "plugins" and not plugin_dir:
@@ -506,7 +521,14 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("start")
     where = p.add_mutually_exclusive_group()
-    where.add_argument("--xvfb", action="store_true", help="a virtual X display instead of offscreen")
+    where.add_argument(
+        "--xvfb",
+        nargs="?",
+        const="1920x1080",
+        type=screen_size,
+        metavar="WxH",
+        help="a virtual X display instead of offscreen, with this screen size (default 1920x1080)",
+    )
     where.add_argument(
         "--display",
         type=display_value,
