@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="generic" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="log-tab" tab_name="Log">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockArea id="log-panel" name="...">
+            <log category_filter="" future_rows="hide" levels="debug,info,warn,error,fatal" source_filter="" text_filter="">
+              <topic topic="/rosout" dataset_id="1" dataset_source="rosout_a.mcap" dataset_path="rosout_a.mcap"/>
+            </log>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+</root>

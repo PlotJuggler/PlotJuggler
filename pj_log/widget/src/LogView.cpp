@@ -11,8 +11,10 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QStringList>
 #include <QStyle>
 #include <QTextDocument>
 #include <algorithm>
@@ -30,7 +32,6 @@
 namespace PJ {
 
 using log_view::LogRow;
-using log_view::LogStore;
 using log_view::LogTableModel;
 using log_view::StoreChange;
 
@@ -132,6 +133,7 @@ LogView::LogView(QWidget* parent)
   // The detail shows the current row when it is selected: follow both, since Qt moves the current row
   // before it selects it on a click, and a keyboard move can change one without the other.
   connect(ui_->logView->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &LogView::updateDetail);
+  connect(ui_->logView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &LogView::onSelectionChanged);
   connect(ui_->logView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &LogView::updateDetail);
   connect(model_, &QAbstractItemModel::modelReset, this, &LogView::updateDetail);
   connect(model_, &LogTableModel::filterApplied, this, &LogView::onFilterApplied);
@@ -150,13 +152,32 @@ void LogView::setTopicLabel(uint32_t topic, const QString& label) {
   if (topics_.contains(topic) && topics_.at(topic) == label) {
     return;
   }
-  // A topic named, or renamed, from or to a label the user hid: its rows follow the label.
-  const bool was_hidden = topics_.contains(topic) && hidden_topics_.contains(topics_.at(topic));
   topics_[topic] = label;
   refreshTopics();
-  if (was_hidden || hidden_topics_.contains(label)) {
-    applyFilters();
+  ui_->logView->viewport()->update();  // the Topic column
+}
+
+void LogView::setTopicHidden(uint32_t topic, bool hidden) {
+  if (hidden == topicHidden(topic)) {
+    return;
   }
+  if (hidden) {
+    hidden_topics_.insert(topic);
+  } else {
+    hidden_topics_.erase(topic);
+  }
+  for (QAction* action : ui_->topicsButton->menu()->actions()) {
+    if (action->data().toUInt() == topic) {
+      const QSignalBlocker blocker(action);
+      action->setChecked(!hidden);
+    }
+  }
+  updateTopicsButton();
+  applyFilters();
+}
+
+bool LogView::topicHidden(uint32_t topic) const {
+  return hidden_topics_.contains(topic);
 }
 
 std::array<QToolButton*, log_view::kToggleLevelCount> LogView::levelToggles() const {
@@ -166,8 +187,7 @@ std::array<QToolButton*, log_view::kToggleLevelCount> LogView::levelToggles() co
 
 void LogView::changeStore(const std::function<StoreChange()>& mutate) {
   const std::optional<size_t> selected = selectedStoreRow();
-  const auto key = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
-  followChange(mutate(), selected, key);
+  followChange(mutate(), selected);
 }
 
 void LogView::appendEntries(uint32_t topic, std::vector<LogEntry> entries) {
@@ -187,12 +207,15 @@ void LogView::appendEntries(uint32_t topic, std::vector<LogEntry> entries) {
 void LogView::replaceEntries(uint32_t topic, std::vector<LogEntry> entries) {
   auto source = std::make_shared<VectorLogRowSource>();
   source->merge(std::move(entries));
-  entry_sources_[topic] = source;
-  changeStore([&] { return store_.replaceWire(topic, source); });  // RowKey re-finds the selection
+  setTopicRows(topic, source);
+  entry_sources_[topic] = std::move(source);
 }
 
 void LogView::setTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source) {
   entry_sources_.erase(topic);
+  // The rows under the viewport are rebuilt (a merge, a reload, a display-offset change): the scroll offset would point
+  // at other rows, so the list finds the tracker again.
+  shown_rows_ = false;
   changeStore([&] { return store_.replaceWire(topic, std::move(source)); });
 }
 
@@ -205,32 +228,35 @@ void LogView::removeTopic(uint32_t topic) {
   topics_.erase(topic);
   entry_sources_.erase(topic);
   refreshTopics();
+  if (chosen_ && chosen_->wire == topic) {
+    chosen_.reset();  // a topic that takes the id later is not the user's choice
+  }
   changeStore([&] { return store_.removeWire(topic); });
+  setTopicHidden(topic, false);  // the model's filter still hides the id, which a later topic may take
 }
 
-void LogView::followChange(
-    const StoreChange& change, std::optional<size_t> selected, std::optional<LogStore::RowKey> selected_key) {
+void LogView::followChange(const StoreChange& change, std::optional<size_t> selected) {
+  // Taken in the model's old rows: a list on the tracker stays on it however many rows land before it.
+  const bool on_tracker = !playing_ && trackerRowInView();
   // The detail pane's row is stale from old_tail on, and an eviction shifts every index. Checked before the model
   // follows the store: its signals may refresh the pane, in new coordinates.
   if (detail_row_ && (change.reset || change.dropped_front > 0 || *detail_row_ >= change.old_tail)) {
     detail_valid_ = false;
   }
-  model_->applyStoreChange(change);
-  refreshOptionalColumns();
-  model_->setTracker(tracker_);
-  if (selected) {
+  {
+    const QScopedValueRollback adjusting(adjusting_, true);
+    model_->applyStoreChange(change);
+    refreshOptionalColumns();
+    model_->setTracker(tracker_);
     // A row the change left in place moves by the eviction alone; its rank among equal times may not hold.
-    std::optional<size_t> now = change.kept(*selected);
-    if (!now && (change.reset || *selected >= change.old_tail)) {
-      now = store_.indexOf(*selected_key);
+    if (const std::optional<size_t> kept = selected ? change.kept(*selected) : std::nullopt) {
+      chosen_ = store_.keyOf(*kept);
     }
-    if (now && now != selectedStoreRow()) {
-      selectStoreRow(now);
-    }
+    showChosen();
   }
   if (playing_) {
     scrollToTracker(true);
-  } else if (!shown_rows_ && model_->rowCount() > 0) {
+  } else if ((!shown_rows_ || on_tracker) && model_->rowCount() > 0) {
     scrollToTracker(false);
   }
   if (model_->rowCount() > 0) {
@@ -243,7 +269,11 @@ void LogView::followChange(
 void LogView::setTrackerTime(double time) {
   const bool moved = std::isnan(tracker_) != std::isnan(time) || (!std::isnan(time) && !sameTime(time, tracker_));
   tracker_ = time;
-  model_->setTracker(time);
+  {
+    const QScopedValueRollback adjusting(adjusting_, true);
+    model_->setTracker(time);
+    showChosen();
+  }
   if (playing_) {
     pending_seek_.reset();
     scrollToTracker(true);
@@ -285,9 +315,9 @@ void LogView::setShowFuture(bool show) {
   ui_->futureButton->setIconPath(QString::fromLatin1(show ? kFutureShownIcon : kFutureHiddenIcon));
   ui_->futureButton->setToolTip(
       show ? tr("Show the entries after the playhead, greyed") : tr("Hide the entries after the playhead"));
-  const std::optional<size_t> selected = selectedStoreRow();
+  const QScopedValueRollback adjusting(adjusting_, true);
   model_->setFutureRows(show ? log_view::FutureRows::kGrey : log_view::FutureRows::kHide);
-  selectStoreRow(selected);
+  showChosen();
 }
 
 log_view::LogFilter LogView::currentFilter() const {
@@ -299,25 +329,18 @@ log_view::LogFilter LogView::currentFilter() const {
   filter.source = now.source.trimmed().toStdString();
   filter.category = now.category.trimmed().toStdString();
   filter.text = now.text.trimmed().toStdString();
-  for (const auto& [id, label] : topics_) {
-    if (hidden_topics_.contains(label)) {
-      filter.hidden_wires.push_back(id);
-    }
-  }
+  filter.hidden_wires.assign(hidden_topics_.begin(), hidden_topics_.end());
   return filter;
 }
 
 void LogView::applyFilters() {
   text_timer_.stop();
-  const std::optional<size_t> selected = selectedStoreRow();
-  filter_selection_ = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
+  const QScopedValueRollback adjusting(adjusting_, true);
   model_->setFilter(currentFilter());
 }
 
 void LogView::onFilterApplied() {
-  if (const auto key = std::exchange(filter_selection_, std::nullopt)) {
-    selectStoreRow(store_.indexOf(*key));
-  }
+  showChosen();
   if (playing_) {
     scrollToTracker(true);
   } else if (const QModelIndex current = ui_->logView->currentIndex(); current.isValid()) {
@@ -325,30 +348,56 @@ void LogView::onFilterApplied() {
   } else {
     scrollToTracker(false);
   }
+  shown_rows_ = shown_rows_ || model_->rowCount() > 0;
   updateDetail();
 }
 
 std::optional<size_t> LogView::selectedStoreRow() const {
-  const QModelIndex current = ui_->logView->currentIndex();
-  if (!current.isValid() || !ui_->logView->selectionModel()->isRowSelected(current.row(), QModelIndex())) {
+  // The selection, not currentIndex(): a mouse drag selects a row before it makes it current.
+  const QModelIndexList rows = ui_->logView->selectionModel()->selectedRows();
+  if (rows.isEmpty()) {
     return std::nullopt;
   }
-  return model_->storeIndex(current.row());
+  return model_->storeIndex(rows.front().row());
 }
 
-void LogView::selectStoreRow(std::optional<size_t> store_index) {
-  if (!store_index) {
+bool LogView::trackerRowInView() const {
+  // Vertical extent only: a list scrolled sideways still shows the row.
+  const QRect rect = ui_->logView->visualRect(model_->index(model_->revealedRows() - 1, 0));
+  return rect.isValid() && rect.bottom() >= 0 && rect.top() < ui_->logView->viewport()->height();
+}
+
+void LogView::onSelectionChanged() {
+  if (adjusting_) {
     return;
   }
-  const int row = model_->rowOf(*store_index);
-  if (row < 0) {
-    return;
+  const std::optional<size_t> selected = selectedStoreRow();
+  chosen_ = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
+}
+
+void LogView::showChosen() {
+  const QScopedValueRollback adjusting(adjusting_, true);
+  const std::optional<size_t> index = chosen_ ? store_.indexOf(*chosen_) : std::nullopt;
+  if (const int row = index ? model_->rowOf(*index) : -1; row >= 0) {
+    if (selectedStoreRow() != index) {
+      selectRow(row);
+    }
+  } else if (chosen_ || ui_->logView->selectionModel()->hasSelection()) {
+    ui_->logView->selectionModel()->clear();  // no neighbour in its place
   }
+}
+
+void LogView::selectRow(int row) {
   const bool auto_scroll = ui_->logView->hasAutoScroll();
   ui_->logView->setAutoScroll(false);  // re-selecting must not move the view by itself
   ui_->logView->selectionModel()->setCurrentIndex(
       model_->index(row, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
   ui_->logView->setAutoScroll(auto_scroll);
+}
+
+void LogView::updateTopicsButton() {
+  // A hidden topic keeps the menu that unhides it, the only one left too.
+  ui_->topicsButton->setVisible(topics_.size() > 1 || !hidden_topics_.empty());
 }
 
 void LogView::refreshTopics() {
@@ -357,19 +406,13 @@ void LogView::refreshTopics() {
   for (const auto& [id, label] : topics_) {
     QAction* action = menu->addAction(label);
     action->setCheckable(true);
-    action->setChecked(!hidden_topics_.contains(label));
-    connect(action, &QAction::toggled, this, [this, label](bool shown) {
-      if (shown) {
-        hidden_topics_.removeAll(label);
-      } else if (!hidden_topics_.contains(label)) {
-        hidden_topics_.append(label);
-      }
-      applyFilters();
-    });
+    action->setChecked(!topicHidden(id));
+    action->setData(id);
+    connect(action, &QAction::toggled, this, [this, id](bool shown) { setTopicHidden(id, !shown); });
     connect(action, &QAction::triggered, this, &LogView::stateEdited);
   }
   const bool several = topics_.size() > 1;
-  ui_->topicsButton->setVisible(several);
+  updateTopicsButton();
   ui_->logView->setColumnHidden(LogTableModel::kTopic, !several);
   ui_->pages->setCurrentWidget(topics_.empty() ? ui_->emptyPage : ui_->contentPage);
 }
@@ -516,7 +559,6 @@ LogViewState LogView::state() const {
   state.source = ui_->sourceEdit->text();
   state.category = ui_->categoryEdit->text();
   state.text = ui_->filterEdit->text();
-  state.hidden_topics = hidden_topics_;
   state.show_future = ui_->futureButton->isChecked();
   return state;
 }
@@ -534,8 +576,6 @@ void LogView::applyState(const LogViewState& state) {
     edit->setText(*text);
   }
   refreshOptionalColumns();  // a restored filter keeps its field visible
-  hidden_topics_ = state.hidden_topics;
-  refreshTopics();
   setShowFuture(state.show_future);
   applyFilters();
 }

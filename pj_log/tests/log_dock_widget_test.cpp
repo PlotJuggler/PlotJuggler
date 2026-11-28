@@ -7,9 +7,12 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QList>
+#include <QMenu>
 #include <QSet>
 #include <QSignalSpy>
 #include <QTest>
+#include <QToolButton>
+#include <QTreeView>
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -20,6 +23,7 @@
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_log/LogDockWidget.h"
+#include "pj_log/LogTableModel.h"
 #include "pj_log/LogView.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/PlaybackEngine.h"
@@ -37,13 +41,8 @@ constexpr auto kLogMetadata = R"({"builtin_object_type":"kLog"})";
 class LogDockWidgetTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto domain = session_.dataEngine().createTimeDomain("robot.mcap");
-    ASSERT_TRUE(domain.has_value());
-    auto dataset_or =
-        session_.dataEngine().createDataset(DatasetDescriptor{.source_name = "robot.mcap", .time_domain_id = *domain});
-    ASSERT_TRUE(dataset_or.has_value());
-    dataset_id_ = *dataset_or;
-    session_.setDatasetSourcePath(dataset_id_, u"/data/robot.mcap"_s);
+    dataset_id_ = addDataset("robot.mcap");
+    ASSERT_NE(dataset_id_, 0U);
     rosout_ = registerTopic("/rosout", kLogMetadata);
     diagnostics_ = registerTopic("/diagnostics_log", kLogMetadata);
     image_ = registerTopic("/camera", R"({"builtin_object_type":"kImage"})");
@@ -56,10 +55,31 @@ class LogDockWidgetTest : public ::testing::Test {
   }
 
   ObjectTopicId registerTopic(const std::string& name, const char* metadata) {
+    return registerTopicIn(dataset_id_, name, metadata);
+  }
+
+  ObjectTopicId registerTopicIn(DatasetId dataset, const std::string& name, const char* metadata) {
     auto topic = session_.objectStore().registerTopic(
-        ObjectTopicDescriptor{.dataset_id = dataset_id_, .topic_name = name, .metadata_json = metadata});
+        ObjectTopicDescriptor{.dataset_id = dataset, .topic_name = name, .metadata_json = metadata});
     EXPECT_TRUE(topic.has_value());
     return topic.has_value() ? *topic : ObjectTopicId{};
+  }
+
+  /// A second file, "/data/<name>", in its own time domain.
+  DatasetId addDataset(const std::string& name) {
+    auto domain = session_.dataEngine().createTimeDomain(name);
+    if (!domain.has_value()) {
+      ADD_FAILURE() << "time domain";
+      return 0;
+    }
+    auto dataset =
+        session_.dataEngine().createDataset(DatasetDescriptor{.source_name = name, .time_domain_id = *domain});
+    if (!dataset.has_value()) {
+      ADD_FAILURE() << "dataset";
+      return 0;
+    }
+    session_.setDatasetSourcePath(*dataset, QString::fromStdString("/data/" + name));
+    return *dataset;
   }
 
   void push(ObjectTopicId topic, int second, const std::string& message) {
@@ -93,6 +113,26 @@ class LogDockWidgetTest : public ::testing::Test {
       out.push_back(store.row(i).message);
     }
     return out;
+  }
+
+  /// A layout `<topic>` of @p file, loaded from "/data/<file>" as dataset @p dataset.
+  [[nodiscard]] static QDomElement topicElement(
+      QDomDocument& doc, DatasetId dataset, const QString& file, const QString& name) {
+    QDomElement topic = doc.createElement(u"topic"_s);
+    topic.setAttribute(u"dataset_id"_s, QString::number(dataset));
+    topic.setAttribute(u"dataset_source"_s, file);
+    topic.setAttribute(u"dataset_path"_s, u"/data/"_s + file);
+    topic.setAttribute(u"topic"_s, name);
+    return topic;
+  }
+
+  /// Folds @p source into @p anchor as AppSession does (the store, then the catalog), then waits out the panel's
+  /// rate-limit window.
+  void mergeInto(DatasetId anchor, DatasetId source) {
+    ASSERT_TRUE(session_.mergeDatasets(anchor, {DatasetMergeSource{.dataset_id = source}}).has_value());
+    catalog_->removeDataset(source);
+    catalog_->rebuildFromDatastore();
+    QTest::qWait(LogDockWidget::kEntriesLandedIntervalMs + 50);
   }
 
   /// Ingest landed: the panel follows at once, or at the end of its rate-limit window.
@@ -316,12 +356,7 @@ TEST_F(LogDockWidgetTest, XmlRoundTripKeepsTopicsFiltersAndUnresolvedTopics) {
   EXPECT_EQ(topic.attribute(u"dataset_source"_s), u"robot.mcap"_s);
   EXPECT_EQ(topic.attribute(u"dataset_path"_s), catalog_->datasetSourcePath(dataset_id_));
   // A topic whose dataset is not loaded.
-  QDomElement missing = doc.createElement(u"topic"_s);
-  missing.setAttribute(u"dataset_id"_s, u"999"_s);
-  missing.setAttribute(u"dataset_source"_s, u"other.mcap"_s);
-  missing.setAttribute(u"dataset_path"_s, u"/data/other.mcap"_s);
-  missing.setAttribute(u"topic"_s, u"/rosout"_s);
-  saved.appendChild(missing);
+  saved.appendChild(topicElement(doc, 999, u"other.mcap"_s, u"/rosout"_s));
 
   auto restored = makeDock();
   QSignalSpy changed(restored.get(), &LogDockWidget::workspaceChanged);
@@ -429,27 +464,58 @@ TEST_F(LogDockWidgetTest, UnresolvedRestoresListThePendingTopicsOnly) {
   EXPECT_EQ(dock->unresolvedRestores(), QStringList{u"/missing"_s});
 }
 
+// Two datasets' /rosout in one panel: the Topics menu tells them apart by dataset, and hiding one hides its rows only,
+// also after a layout round trip.
+TEST_F(LogDockWidgetTest, SameNameTopicsOfTwoDatasetsAreToldApartAndHideApart) {
+  const DatasetId base = addDataset("base.mcap");
+  const ObjectTopicId base_rosout = registerTopicIn(base, "/rosout", kLogMetadata);
+  push(base_rosout, 2, "base 2");
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(base_rosout, sdk::BuiltinObjectType::kLog, {}));
+
+  QMenu* menu = dock->view()->findChild<QToolButton*>(u"topicsButton"_s)->menu();
+  ASSERT_EQ(menu->actions().size(), 2);
+  // Listed by topic id: robot.mcap's first.
+  EXPECT_EQ(menu->actions()[0]->text(), u"robot.mcap:/rosout"_s);
+  EXPECT_EQ(menu->actions()[1]->text(), u"base.mcap:/rosout"_s);
+  // A dataset renamed (a replacing reload's commit) relabels its topic.
+  catalog_->setDatasetDisplayName(base, u"base (2).mcap"_s);
+  EXPECT_EQ(menu->actions()[1]->text(), u"base (2).mcap:/rosout"_s);
+
+  menu->actions()[1]->setChecked(false);
+  const std::vector<QString> robot_rows{u"rosout 1"_s, u"rosout 2"_s, u"rosout 3"_s};
+  EXPECT_EQ(modelMessages(*dock), robot_rows);
+
+  QDomDocument doc;
+  auto restored = makeDock();
+  ASSERT_TRUE(restored->xmlLoadState(dock->xmlSaveState(doc)));
+  EXPECT_EQ(modelMessages(*restored), robot_rows);
+}
+
 TEST_F(LogDockWidgetTest, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
   auto dock = makeDock();
   ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(diagnostics_, sdk::BuiltinObjectType::kLog, {}));
   LogViewState state = dock->view()->state();
   state.levels = {false, true, true, true, true};
   state.source = u"/node"_s;
   state.category = u"motors"_s;
   state.text = u"stall"_s;
   state.show_future = true;
-  state.hidden_topics = {u"/diagnostics_log"_s};
   dock->view()->applyState(state);
+  dock->view()->setTopicHidden(diagnostics_.id, true);
 
   QDomDocument doc;
   const QDomElement saved = dock->xmlSaveState(doc);
   ASSERT_FALSE(saved.firstChildElement(u"topic"_s).isNull());
-  ASSERT_FALSE(saved.firstChildElement(u"hidden_topic"_s).isNull());
+  ASSERT_EQ(saved.firstChildElement(u"topic"_s).nextSiblingElement(u"topic"_s).attribute(u"hidden"_s), u"true"_s);
   EXPECT_EQ(
       xmlSelfDescriptionProblems(
           [&](const QDomElement& e) { return dock->xmlValidateState(e); }, saved,
           {.check_bad_values = true,
-           .tolerates_bad = {u"log.levels"_s, u"log.future_rows"_s, u"topic.dataset_id"_s},
+           .tolerates_bad = {u"log.levels"_s, u"log.future_rows"_s, u"topic.dataset_id"_s, u"topic.hidden"_s},
            .load = [&](const QDomElement& e) { return dock->xmlLoadState(e); }}),
       QStringList());
 
@@ -468,7 +534,108 @@ TEST_F(LogDockWidgetTest, ValidationListsTheTopicOptionsOfAStateWithoutTopics) {
     reported.append(option.element + u'.' + option.attribute);
   }
   EXPECT_TRUE(reported.contains(u"topic.dataset_path"_s));
-  EXPECT_TRUE(reported.contains(u"hidden_topic.topic"_s));
+  EXPECT_TRUE(reported.contains(u"topic.hidden"_s));
+}
+
+// A layout saved while hidden topics were kept by name only: every topic of that name is hidden.
+TEST_F(LogDockWidgetTest, AHiddenTopicSavedByNameHidesEveryTopicOfThatName) {
+  const DatasetId base = addDataset("base.mcap");
+  push(registerTopicIn(base, "/rosout", kLogMetadata), 2, "base 2");
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"log"_s);
+  state.appendChild(topicElement(doc, dataset_id_, u"robot.mcap"_s, u"/rosout"_s));
+  state.appendChild(topicElement(doc, dataset_id_, u"robot.mcap"_s, u"/diagnostics_log"_s));
+  state.appendChild(topicElement(doc, base, u"base.mcap"_s, u"/rosout"_s));
+  QDomElement hidden = doc.createElement(u"hidden_topic"_s);
+  hidden.setAttribute(u"topic"_s, u"/rosout"_s);
+  state.appendChild(hidden);
+  ASSERT_TRUE(dock->xmlLoadState(state));
+  ASSERT_EQ(dock->displayedTopics().size(), 3U);
+  EXPECT_EQ(modelMessages(*dock), std::vector<QString>{u"diagnostics"_s});
+}
+
+// A layout's dataset id is its saved session's: deleting this session's dataset of that id leaves a restored topic of
+// another file waiting, and drops only the topics of the deleted dataset.
+TEST_F(LogDockWidgetTest, DeletingADatasetKeepsARestoredTopicOfAnotherFile) {
+  const DatasetId base = addDataset("base.mcap");
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"log"_s);
+  state.appendChild(topicElement(doc, base, u"other.mcap"_s, u"/elsewhere"_s));
+  ASSERT_TRUE(dock->xmlLoadState(state));
+  dock->addPendingTopic(base, u"/later"_s);
+  ASSERT_EQ(savedTopics(*dock), 2);
+
+  dock->discardDataset(base);
+  EXPECT_EQ(dock->unresolvedRestores(), QStringList{u"/elsewhere"_s});
+}
+
+// A pending topic of a dataset a merge consumed waits for the merged dataset: deleting that one drops it too.
+TEST_F(LogDockWidgetTest, DeletingAMergedDatasetDropsItsSourcesPendingTopics) {
+  const DatasetId base = addDataset("base.mcap");
+  push(registerTopicIn(base, "/base_log", kLogMetadata), 2, "base 2");
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  dock->addPendingTopic(base, u"/later"_s);
+  mergeInto(dataset_id_, base);
+  ASSERT_EQ(dock->unresolvedRestores(), QStringList{u"/later"_s});
+
+  dock->discardDataset(dataset_id_);
+  EXPECT_TRUE(dock->unresolvedRestores().isEmpty());
+}
+
+// A merge reparents a topic only the consumed dataset had: the panel keeps showing it, under the anchor, with the
+// user's pick, and says so, so topic demand and the curve tree follow. A pending topic of the consumed dataset waits
+// for the anchor now.
+TEST_F(LogDockWidgetTest, AMergeMovesItsTopicsAndSaysSo) {
+  const DatasetId base = addDataset("base.mcap");
+  const ObjectTopicId base_log = registerTopicIn(base, "/base_log", kLogMetadata);
+  push(base_log, 2, "base 2");
+  push(base_log, 3, "base 3");
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(base_log, sdk::BuiltinObjectType::kLog, {}));
+  dock->addPendingTopic(base, u"/later"_s);
+  auto* list = dock->view()->findChild<QTreeView*>(u"logView"_s);
+  ASSERT_NE(list, nullptr);
+  list->setCurrentIndex(list->model()->index(1, 0));
+  QSignalSpy changed(dock.get(), &LogDockWidget::topicsChanged);
+
+  mergeInto(dataset_id_, base);
+
+  EXPECT_GE(changed.count(), 1);
+  EXPECT_EQ(dock->displayedTopics(), (std::vector<std::pair<DatasetId, QString>>{{dataset_id_, u"/base_log"_s}}));
+  EXPECT_EQ(messages(*dock), (std::vector<std::string>{"base 2", "base 3"}));
+  const QModelIndexList selected = list->selectionModel()->selectedRows();
+  ASSERT_EQ(selected.size(), 1);
+  EXPECT_EQ(selected.front().row(), 1);
+  EXPECT_EQ(dock->pendingDemands(), (std::vector<LogDockWidget::PendingDemand>{{u"/later"_s, dataset_id_}}));
+}
+
+// A topic restored from a layout names its file by the saved session's dataset id, which another file may hold in
+// this session: a merge of that dataset leaves the restored topic waiting for its own file.
+TEST_F(LogDockWidgetTest, AMergeLeavesARestoredTopicOfAnotherFileWaiting) {
+  const DatasetId base = addDataset("base.mcap");
+  push(registerTopicIn(base, "/base_log", kLogMetadata), 2, "base 2");
+  catalog_->rebuildFromDatastore();
+  auto dock = makeDock();
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"log"_s);
+  state.appendChild(topicElement(doc, base, u"other.mcap"_s, u"/elsewhere"_s));
+  ASSERT_TRUE(dock->xmlLoadState(state));
+  ASSERT_EQ(dock->unresolvedRestores(), QStringList{u"/elsewhere"_s});
+
+  mergeInto(dataset_id_, base);
+
+  EXPECT_EQ(dock->unresolvedRestores(), QStringList{u"/elsewhere"_s});
+  EXPECT_EQ(dock->pendingDemands(), (std::vector<LogDockWidget::PendingDemand>{{u"/elsewhere"_s, std::nullopt}}));
+  QDomDocument out;
+  const QDomElement saved = dock->xmlSaveState(out).firstChildElement(u"topic"_s);
+  EXPECT_EQ(saved.attribute(u"dataset_id"_s), QString::number(base));
+  EXPECT_EQ(saved.attribute(u"dataset_source"_s), u"other.mcap"_s);
 }
 
 }  // namespace

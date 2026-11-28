@@ -1,0 +1,15 @@
+# Intended behaviour (pj_log CLAUDE.md, "A hidden topic is a topic, never a label"): a Log panel showing /rosout of two
+# datasets names each by its dataset in the Topics menu, and unchecking one hides that topic's entries only.
+# app: -d scripts/qa/regressions/fixtures/log_panel/rosout_a.mcap -d scripts/qa/regressions/fixtures/log_panel/rosout_b.mcap -l scripts/qa/regressions/fixtures/log_panel/rosout_both.pj4.xml
+# needs: plugins
+until get_status {} "name":"rosout_b.mcap"
+playback {"action":"seek","time_s":30}
+until ui_tree {} "29.750 | Error | node_b"
+ui_click {"name":"topicsButton"}
+ui_tree {}
+expect item "rosout_a.mcap:/rosout" (checked)
+expect item "rosout_b.mcap:/rosout" (checked)
+# The second item: rosout_b.mcap's.
+ui_click {"name":"PJMenu","x":37,"y":39}
+until ui_tree {} "29.500 | Error | node_a"
+absent "node_b"

@@ -1737,6 +1737,26 @@ TEST(SessionManagerMergeTest, MergeInvalidatesContributorRecordsIncludingAnchor)
   EXPECT_EQ(session.sourceRecord(source2), nullptr);
 }
 
+// A merge leaves its source registered, empty, with its name and path: an identity saved for the source (its exact id,
+// a bare id, or its file by name and path) names the anchor now, where its data went. An id that another file's
+// identity carries stays unresolved.
+TEST(SessionManagerMergeTest, AMergedAwayIdentityResolvesToItsAnchor) {
+  PJ::SessionManager session;
+  const PJ::DatasetId anchor = addDataset(session, "anchor.mcap", "/a", {100, 200});
+  const PJ::DatasetId source = addDataset(session, "src.mcap", "/b", {150, 250});
+  session.setDatasetSourcePath(anchor, u"/data/anchor.mcap"_s);
+  session.setDatasetSourcePath(source, u"/data/src.mcap"_s);
+  ASSERT_TRUE(session.mergeDatasets(anchor, {PJ::DatasetMergeSource{.dataset_id = source}}).has_value());
+
+  EXPECT_EQ(session.resolveDatasetIdentity(source, u"src.mcap"_s, u"/data/src.mcap"_s).id, anchor) << "exact id";
+  EXPECT_EQ(session.resolveDatasetIdentity(source, QString()).id, anchor) << "bare id";
+  EXPECT_EQ(session.resolveDatasetIdentity(0, u"src.mcap"_s, u"/data/src.mcap"_s).id, anchor) << "by file";
+  const PJ::DatasetIdentityResolution other =
+      session.resolveDatasetIdentity(source, u"other.mcap"_s, u"/data/other.mcap"_s);
+  EXPECT_FALSE(other.id.has_value()) << "a layout's id of another file";
+  EXPECT_FALSE(other.ambiguous);
+}
+
 TEST(SessionManagerMergeTest, RejectedMergeKeepsSourceRecords) {
   PJ::SessionManager session;
   const PJ::DatasetId anchor = addDataset(session, "anchor.mcap", "/a", {100, 200});

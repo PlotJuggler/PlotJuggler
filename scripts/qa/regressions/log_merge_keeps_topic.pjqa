@@ -1,0 +1,22 @@
+# Intended behaviour (pj_log ARCHITECTURE, LogDockWidget::followMerge): merging two datasets that both carry /rosout
+# keeps a Log panel that showed the one merged into the other (rosout_b.mcap: rosout_a.mcap starts first and anchors
+# the merge, so b's /rosout folds into a's); it shows the merged /rosout, with the entries of both files.
+# app: -d scripts/qa/regressions/fixtures/log_panel/rosout_a.mcap -d scripts/qa/regressions/fixtures/log_panel/rosout_b.mcap -l scripts/qa/regressions/fixtures/log_panel/rosout_b.pj4.xml
+# needs: plugins
+until get_status {} "name":"rosout_b.mcap"
+playback {"action":"seek","time_s":30}
+until ui_tree {} "29.750 | Error | node_b"
+absent "node_a"
+# Select both datasets in the curve tree, then Merge from its context menu and confirm.
+ui_click {"name":"treeView","x":150,"y":32}
+ui_click {"name":"treeView","x":150,"y":54,"modifiers":"Ctrl"}
+ui_click {"name":"treeView","x":150,"y":54,"button":"right"}
+ui_click {"name":"PJMenu","x":70,"y":39}
+expect "Merge"
+until ui_tree {} "Merge datasets"
+ui_key {"keys":"Space"}
+until get_status {} "name":"rosout_a.mcap_merged"
+playback {"action":"seek","time_s":30}
+until ui_tree {} "29.750 | Error | node_b"
+expect "29.500 | Error | node_a"
+absent "Drop a log topic here"

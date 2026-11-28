@@ -14,6 +14,7 @@
 #include <QToolButton>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
@@ -69,18 +70,9 @@ class MainWindowLogPanelTest : public ::testing::Test {
     AppSession& app = Peer::session(*window_);
     dataset_ = pj_test::createDataset(app, "robot.mcap");
     ASSERT_NE(dataset_, 0U);
-    auto topic = app.sessionManager().objectStore().registerTopic(
-        ObjectTopicDescriptor{
-            .dataset_id = dataset_, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
-    ASSERT_TRUE(topic.has_value()) << topic.error();
+    const ObjectTopicId topic = logTopic(dataset_, "/rosout");
     for (int second = 1; second <= 2; ++second) {
-      sdk::Log log;
-      log.level = sdk::Log::Level::kInfo;
-      log.message = "message " + std::to_string(second);
-      ASSERT_TRUE(app.sessionManager()
-                      .objectStore()
-                      .pushOwned(*topic, second * 1'000'000'000LL, serializeLog(log))
-                      .has_value());
+      pushLog(topic, second * 1'000'000'000LL, "message " + std::to_string(second));
     }
     app.catalogModel().rebuildFromDatastore();
     for (const CatalogItem& item : app.catalogModel().items()) {
@@ -93,6 +85,22 @@ class MainWindowLogPanelTest : public ::testing::Test {
     ASSERT_NE(tabs_, nullptr);
     dock_ = tabs_->currentTab()->plotAt(0);
     ASSERT_NE(dock_, nullptr);
+  }
+
+  ObjectTopicId logTopic(DatasetId dataset, const std::string& name) {
+    auto topic = Peer::session(*window_).sessionManager().objectStore().registerTopic(
+        ObjectTopicDescriptor{
+            .dataset_id = dataset, .topic_name = name, .metadata_json = R"({"builtin_object_type":"kLog"})"});
+    EXPECT_TRUE(topic.has_value()) << topic.error();
+    return topic.has_value() ? *topic : ObjectTopicId{};
+  }
+
+  void pushLog(ObjectTopicId topic, Timestamp stamp, const std::string& message) {
+    sdk::Log log;
+    log.level = sdk::Log::Level::kInfo;
+    log.message = message;
+    ASSERT_TRUE(
+        Peer::session(*window_).sessionManager().objectStore().pushOwned(topic, stamp, serializeLog(log)).has_value());
   }
 
   [[nodiscard]] static LogDockWidget* logOf(DockWidget* dock) {
@@ -173,6 +181,34 @@ TEST_F(MainWindowLogPanelTest, RemovingTheDatasetOfAShownTopicLeavesNoPendingDem
   EXPECT_TRUE(log->displayedTopics().empty());
   EXPECT_FALSE(log->hasPendingTopic(u"/rosout"_s));
   EXPECT_TRUE(log->pendingDemands().empty());
+}
+
+// The other dataset starts earlier, so it is the merge's anchor: the shown /rosout folds into its /rosout, and the
+// shown dataset's /robot_log moves under it. The panel follows both topics to the merged dataset.
+TEST_F(MainWindowLogPanelTest, MergingTheShownDatasetIntoAnotherKeepsItsLogs) {
+  AppSession& app = Peer::session(*window_);
+  const ObjectTopicId robot_log = logTopic(dataset_, "/robot_log");
+  pushLog(robot_log, 1'500'000'000LL, "robot 1.5");
+  const DatasetId other = pj_test::createDataset(app, "other.mcap");
+  pushLog(logTopic(other, "/rosout"), 500'000'000LL, "other 0.5");
+  app.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(drop());
+  LogDockWidget* log = logOf(dock_);
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->tryAcceptObjectTopic(robot_log, sdk::BuiltinObjectType::kLog, {}));
+  ASSERT_EQ(log->view()->store().size(), 3U);
+
+  ASSERT_EQ(app.mergeDatasets({dataset_, other}), other);
+  QTest::qWait(LogDockWidget::kEntriesLandedIntervalMs + 50);
+  std::vector<std::string> messages;
+  for (size_t i = 0; i < log->view()->store().size(); ++i) {
+    messages.push_back(log->view()->store().row(i).message);
+  }
+  EXPECT_EQ(messages, (std::vector<std::string>{"other 0.5", "message 1", "robot 1.5", "message 2"}));
+  for (const auto& [dataset, topic] : log->displayedTopics()) {
+    EXPECT_EQ(dataset, other) << topic.toStdString();
+  }
+  EXPECT_TRUE(log->unresolvedRestores().isEmpty());
 }
 
 TEST_F(MainWindowLogPanelTest, TheTimeColumnFollowsTheDateTimeToggle) {

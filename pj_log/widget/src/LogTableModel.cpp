@@ -271,7 +271,8 @@ void LogTableModel::applyStoreChange(const StoreChange& change) {
     return;
   }
   std::vector<uint32_t> added;
-  CompiledFilter(filter_, store_).collect(start, store_.size(), added);
+  // While a sliced filter runs, new rows follow it: the old filter would show them until it completes.
+  CompiledFilter(pending_filter_ ? *pending_filter_ : filter_, store_).collect(start, store_.size(), added);
   if (added.empty()) {
     return;
   }

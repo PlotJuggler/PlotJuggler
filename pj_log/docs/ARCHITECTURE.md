@@ -34,9 +34,20 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
   `FrameworkTokens`.
 - **`LogView`** is the list, the toolbar (level toggles, filters, Topics menu, future-rows choice) and the detail pane
   with Copy. The Source and Category columns and their filter fields show while a row in the store fills them
-  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. It is runtime-agnostic: the host hands it a `LogRowSource` per topic (`setTopicRows`, `updateTopicRows`) or
-  `LogEntry` rows, sets the tracker and the `TimeLabelFormat`, and answers `seekRequested`. It keeps the selection across every data call that leaves the selected row in the
-  store.
+  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. The Topics menu, shown
+  while several topics are or one is hidden (so a lone hidden topic can be shown again), hides a topic by its id
+  (`setTopicHidden`); the dock labels a topic by its name, qualified by its dataset's label
+  (`sdk::qualifiedSeriesName`, `label:topic`) while another shown topic has that name, so two datasets' `/rosout`
+  read apart; labels follow catalog changes, a dataset renamed included. It is runtime-agnostic: the host hands it a `LogRowSource` per topic (`setTopicRows`, `updateTopicRows`) or
+  `LogEntry` rows, sets the tracker and the `TimeLabelFormat`, and answers `seekRequested`. It keeps the entry the
+  user selected (its `RowKey`: time, topic, rank among the topic's rows of that time, so a re-index finds it) and
+  selects it whenever it is shown; while it is not (filtered out, hidden after the tracker, absent while a reload
+  refills its topic) nothing is selected. Qt moves the selection to a neighbour when the selected row is removed, so
+  the view marks every model change as its own and selects the chosen entry again after it. The selected row is read from the
+  selection model, never from `currentIndex()`: a mouse drag selects a row before it makes it current. While paused,
+  a list that shows the tracker's row keeps it in view however many rows land before it (a reload refills over
+  several updates), and a topic indexed anew (`setTopicRows`: a merge, a reload, a display-offset change) rebuilds the
+  rows under the viewport, so the list finds the tracker again, as on its first rows.
 - **`LogDockWidget`** is the panel the dock system hosts (`IDataWidget`, kind and XML tag `log`).
 
 ## Data flow
@@ -52,10 +63,16 @@ per `kEntriesLandedIntervalMs`. Each update reads the topic's identity; unless `
 a merge) or the display offset changed, which re-index the whole topic, it drops the rows the store evicted and indexes
 the entries with a UID above the newest indexed, late ones in their place. A topic no longer stored as `LogEntries`
 leaves the panel and waits as pending. Rows the store's retention evicts leave the panel: a live
-log keeps what the streaming window keeps, like every other topic. A topic that leaves the store (removed, reparented by a merge) goes back to pending and binds again by the identity it
-was added with (its dataset's id, source and path, kept from when the dataset was loaded). A topic or dataset the user
-deletes leaves the panel instead (`discardTopic` / `discardDataset`, called by the shell before the store drops it).
-A pending topic that resolves to a topic shown already counts as resolved.
+log keeps what the streaming window keeps, like every other topic. A topic that leaves the store (removed, reissued)
+goes back to pending and binds again by the identity it was added with (its dataset's id, source and path, kept from
+when the dataset was loaded). A topic or dataset the user deletes leaves the panel instead (`discardTopic` /
+`discardDataset`, called by the shell before the store drops it; a pending topic goes only when its identity resolves
+to that dataset). A merge needs no call: the catalog's changes refresh the panel, a topic the merge reparented stays
+shown under the merged dataset's identity (`DataEngine::mergeDestination`), and one it folded into the merged
+dataset's topic of the same name goes pending and binds to that topic, as does a pending topic of a consumed dataset,
+because `SessionManager::resolveDatasetIdentity` follows a merge. A layout's pending topic keeps its saved identity,
+which names its own file even where its saved id is a consumed dataset's here. A pending topic that resolves to a topic
+shown already counts as resolved.
 
 ## Tracker and seeking
 
@@ -65,8 +82,10 @@ seeks the playback. The shell sets the app-wide `TimeLabelFormat` on every panel
 
 ## Persistence
 
-The filters, enabled levels, hidden topics and future-rows choice are attributes and children of `<log>`, with one
-`<topic>` per topic carrying `dataset_id`, `dataset_source`, `dataset_path` and `topic`. Future rows are hidden unless `future_rows` says `grey`.
+The filters, enabled levels and future-rows choice are attributes of `<log>`, with one `<topic>` per topic carrying
+`dataset_id`, `dataset_source`, `dataset_path` and `topic`, and `hidden="true"` when the Topics menu hides it: hiding
+belongs to a topic, so one of two same-name topics hides alone, and a pending topic keeps it until it binds. A
+`<hidden_topic topic>` child, from layouts that kept hidden topics by name, hides every topic of that name. Future rows are hidden unless `future_rows` says `grey`.
 Topics that do not resolve are written back verbatim and retried on catalog and source-path changes; `finishRestore` makes the last attempt.
 Advertised topics with no storage yet (a placeholder drop) wait as pending, and the shell holds their demand.
 

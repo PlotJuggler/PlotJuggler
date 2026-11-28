@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "pj_log/LogTableModel.h"
 #include "pj_log/LogView.h"
 #include "pj_widgets/Search.h"
 
@@ -126,16 +127,20 @@ TEST_F(LogViewTest, EmptyStateAndTopicColumn) {
   ASSERT_EQ(topics->menu()->actions().size(), 2);
   topics->menu()->actions()[0]->setChecked(false);  // listed by topic id: /rosout first
   EXPECT_EQ(model()->rowCount(), 2);
-  EXPECT_EQ(view_.state().hidden_topics, QStringList{"/rosout"});
+  EXPECT_TRUE(view_.topicHidden(0));
+  EXPECT_FALSE(view_.topicHidden(1));
+  // Renamed, a hidden topic stays hidden: hiding belongs to the topic, not to its label.
+  view_.setTopicLabel(0, "/renamed");
+  EXPECT_EQ(model()->rowCount(), 2);
+  EXPECT_FALSE(topics->menu()->actions()[0]->isChecked());
 
   view_.removeTopic(1);
   EXPECT_EQ(model()->rowCount(), 0);  // /rosout is still hidden
   view_.removeTopic(0);
   EXPECT_EQ(pages->currentWidget()->objectName(), "emptyPage");
-  // A topic coming back under a label the user hid stays hidden.
-  fill(2, "/rosout", 3);
-  EXPECT_EQ(model()->rowCount(), 0);
-  view_.setTopicLabel(2, "/renamed");
+  // A removed topic is forgotten: a topic taking its id shows.
+  fill(0, "/rosout", 3);
+  EXPECT_FALSE(view_.topicHidden(0));
   EXPECT_EQ(model()->rowCount(), 3);
 }
 
@@ -320,7 +325,6 @@ TEST_F(LogViewTest, AppliedStateRoundTripsAndIsNotAGesture) {
   state.source = "/x";
   state.category = "cat";
   state.text = "boom";
-  state.hidden_topics = {"/rosout"};
   state.show_future = false;
   view_.applyState(state);
   EXPECT_EQ(view_.state(), state);
@@ -349,6 +353,141 @@ TEST_F(LogViewTest, AppendsAndReloadsKeepTheSelection) {
   view_.replaceEntries(0, std::move(reloaded));
   EXPECT_EQ(list()->currentIndex().row(), 6);
   EXPECT_EQ(message(6), "/rosout #5");
+}
+
+// The entry the user picked stays theirs: a seek back that hides it selects nothing in its place, and the seek forward
+// that shows it again selects it again.
+TEST_F(LogViewTest, ASelectionHiddenByASeekBackComesBackWithIt) {
+  fill(0, "/rosout", 20);
+  track(10.0);
+  list()->setCurrentIndex(model()->index(5, 0));
+  ASSERT_TRUE(detail().contains("/rosout #5"));
+
+  track(2.0);  // later rows hidden: /rosout #5 with them
+  EXPECT_FALSE(list()->selectionModel()->hasSelection());
+  EXPECT_EQ(detail(), QString());
+
+  track(10.0);
+  EXPECT_EQ(list()->currentIndex().row(), 5);
+  EXPECT_TRUE(list()->selectionModel()->isRowSelected(5, QModelIndex()));
+  EXPECT_TRUE(detail().contains("/rosout #5"));
+}
+
+// A topic indexed anew (a merge folds another log into it) rebuilds the rows under the viewport: the list finds the
+// tracker again instead of keeping a scroll offset that now points at other rows.
+TEST_F(LogViewTest, ATopicIndexedAnewKeepsTheTrackerInView) {
+  fill(0, "/rosout", 200);
+  track(150.0);
+  ASSERT_TRUE(rowVisible(150));
+
+  auto merged = std::make_shared<PJ::VectorLogRowSource>();
+  std::vector<LogEntry> entries;
+  for (int i = 0; i < 200; ++i) {
+    entries.push_back(entry(i, "/rosout #" + std::to_string(i)));
+    entries.push_back(entry(i + 0.5, "/other #" + std::to_string(i)));
+  }
+  merged->merge(std::move(entries));
+  view_.setTopicRows(0, merged);
+  QApplication::processEvents();
+
+  ASSERT_EQ(model()->rowCount(), 301);  // later rows hidden: up to "/rosout #150"
+  EXPECT_TRUE(rowVisible(300)) << "the tracker's row";
+}
+
+// A file reload refills the topic in place: the host shows it empty, then indexes the rows again over several updates.
+// The picked entry is selected again and the list stays on the tracker's row through all of them, not the top.
+TEST_F(LogViewTest, AProgressiveRefillEndsOnTheTracker) {
+  fill(0, "/rosout", 200);
+  track(150.0);
+  list()->setCurrentIndex(model()->index(145, 0));
+  view_.setTopicRows(0, std::make_shared<PJ::VectorLogRowSource>());
+  QApplication::processEvents();
+
+  const std::vector<LogEntry> all = numbered("/rosout", 200);
+  auto refilled = std::make_shared<PJ::VectorLogRowSource>();
+  refilled->merge(std::vector<LogEntry>(all.begin(), all.begin() + 40));
+  view_.updateTopicRows(0, refilled);
+  QApplication::processEvents();
+  refilled->merge(std::vector<LogEntry>(all.begin() + 40, all.end()));
+  view_.updateTopicRows(0, refilled);
+  QApplication::processEvents();
+
+  EXPECT_TRUE(rowVisible(150)) << "the tracker's row";
+  EXPECT_EQ(list()->currentIndex().row(), 145);
+  EXPECT_TRUE(detail().contains("/rosout #145"));
+}
+
+// Rows landing before the tracker's row (another topic refilled) push it down: the list keeps it in view.
+TEST_F(LogViewTest, RowsLandingBeforeTheTrackerKeepItInView) {
+  fill(0, "/rosout", 200);
+  fill(1, "/other", 200);
+  track(150.0);
+  view_.setTopicRows(0, std::make_shared<PJ::VectorLogRowSource>());
+  QApplication::processEvents();
+  ASSERT_TRUE(rowVisible(model()->rowCount() - 1));
+
+  auto refilled = std::make_shared<PJ::VectorLogRowSource>();
+  refilled->merge(numbered("/rosout", 200));
+  view_.updateTopicRows(0, refilled);
+  QApplication::processEvents();
+
+  EXPECT_TRUE(rowVisible(model()->rowCount() - 1)) << "the tracker's row";
+}
+
+// A drag across rows selects the row it ends on before Qt makes it current: that row is the user's choice too.
+TEST_F(LogViewTest, ADraggedSelectionStaysThroughATrackerMove) {
+  fill(0, "/rosout", 20);
+  track(19.0);
+  const auto center = [this](int row) { return list()->visualRect(model()->index(row, 0)).center(); };
+  QTest::mousePress(list()->viewport(), Qt::LeftButton, {}, center(3));
+  QTest::mouseMove(list()->viewport(), center(5));
+  QTest::mouseRelease(list()->viewport(), Qt::LeftButton, {}, center(5));
+  ASSERT_TRUE(list()->selectionModel()->isRowSelected(5, QModelIndex()));
+
+  track(18.0);
+  EXPECT_TRUE(list()->selectionModel()->isRowSelected(5, QModelIndex()));
+  EXPECT_TRUE(detail().contains("/rosout #5"));
+}
+
+// A hidden topic keeps the Topics menu that unhides it, even when it is the only topic left (the other one deleted,
+// or folded into it by a merge) or the only one restored.
+TEST_F(LogViewTest, AHiddenTopicKeepsTheTopicsMenu) {
+  auto* topics = view_.findChild<QToolButton*>("topicsButton");
+  ASSERT_NE(topics, nullptr);
+  fill(0, "/rosout", 3);
+  fill(1, "/other", 3);
+  topics->menu()->actions()[0]->setChecked(false);
+  view_.removeTopic(1);
+  ASSERT_EQ(model()->rowCount(), 0);
+  EXPECT_TRUE(topics->isVisibleTo(&view_));
+  topics->menu()->actions()[0]->setChecked(true);
+  EXPECT_EQ(model()->rowCount(), 3);
+  EXPECT_FALSE(topics->isVisibleTo(&view_)) << "one topic, shown: nothing to choose";
+
+  view_.setTopicHidden(0, true);
+  EXPECT_TRUE(topics->isVisibleTo(&view_));
+}
+
+// A topic removed takes the user's choice along: another topic that takes its id later is not selected by it.
+TEST_F(LogViewTest, ARemovedTopicTakesItsSelectionAlong) {
+  fill(0, "/rosout", 20);
+  list()->setCurrentIndex(model()->index(5, 0));
+  view_.removeTopic(0);
+  fill(0, "/other", 20);  // the same times
+  EXPECT_FALSE(list()->selectionModel()->hasSelection());
+}
+
+// Hiding a topic over a large list filters in slices; rows that land meanwhile follow the new filter at once.
+TEST_F(LogViewTest, ATopicHiddenBeforeItsRowsLandNeverShowsThem) {
+  constexpr int kRows = static_cast<int>(PJ::log_view::LogTableModel::kFilterSliceRows) + 10;
+  fill(0, "/rosout", kRows);
+  view_.setTopicLabel(1, "/other");
+  view_.setTopicHidden(1, true);
+  view_.replaceEntries(1, numbered("/other", 10));
+  EXPECT_EQ(model()->rowCount(), kRows);
+  QApplication::processEvents();
+  QApplication::processEvents();
+  EXPECT_EQ(model()->rowCount(), kRows);
 }
 
 TEST_F(LogViewTest, CategoryColumnAndFilterAppearWithTheFirstCategory) {

@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QString>
-#include <QStringList>
 #include <QTimer>
 #include <QWidget>
 #include <array>
@@ -12,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,8 +33,6 @@ struct LogViewState {
   QString source;
   QString category;
   QString text;
-  /// Labels of the topics the user hid in the Topics menu.
-  QStringList hidden_topics;
   /// Entries later than the tracker are shown greyed (true) or hidden.
   bool show_future = false;
 
@@ -47,8 +45,11 @@ struct LogViewState {
 /// LogEntry lists the view keeps), sets the tracker and the time format, and answers seekRequested().
 ///
 /// Data calls: an entry list is in ascending time; appendEntries() merges it with what the topic holds, earlier entries
-/// included, after the topic's rows of equal time. Topic ids order rows of equal time. A selected row keeps its
-/// selection across every data call that leaves it in the store.
+/// included, after the topic's rows of equal time. Topic ids order rows of equal time.
+///
+/// The entry the user selects stays selected while it is shown. Not shown (filtered out, after the tracker with later
+/// rows hidden, absent while a reload refills its topic), nothing is selected in its place; it is selected again once
+/// it shows.
 ///
 /// While playing (setPlaying) the list follows the tracker and ignores scrolling; paused, a tracker move brings its row
 /// into view, except the move a double click on a row asked for.
@@ -61,6 +62,10 @@ class LogView : public QWidget {
 
   /// Names (or renames) topic @p topic; a topic shows in the Topic column and the Topics menu once named.
   void setTopicLabel(uint32_t topic, const QString& label);
+  /// Hides or shows the rows of @p topic, as its Topics menu item does (without emitting stateEdited()). A topic is
+  /// shown until hidden; removeTopic() forgets it.
+  void setTopicHidden(uint32_t topic, bool hidden);
+  [[nodiscard]] bool topicHidden(uint32_t topic) const;
   void appendEntries(uint32_t topic, std::vector<LogEntry> entries);
   void replaceEntries(uint32_t topic, std::vector<LogEntry> entries);
   /// Shows every row of @p source as topic @p topic, in place of what the topic showed.
@@ -90,7 +95,7 @@ class LogView : public QWidget {
   }
 
  signals:
-  /// A user gesture changed state(): a toggle, a filter edit, the Topics menu.
+  /// A user gesture changed state() or a topic's topicHidden(): a toggle, a filter edit, the Topics menu.
   void stateEdited();
   /// A double click on a row while paused: seek the playback to @p time (display-axis seconds).
   void seekRequested(double time);
@@ -102,20 +107,26 @@ class LogView : public QWidget {
  private:
   /// Applies @p mutate to the store and follows its change, keeping the selection.
   void changeStore(const std::function<log_view::StoreChange()>& mutate);
-  /// Follows a store change in the model, the tracker and the selection; @p selected_key was taken before it.
-  void followChange(
-      const log_view::StoreChange& change, std::optional<size_t> selected,
-      std::optional<log_view::LogStore::RowKey> selected_key);
+  /// Follows a store change in the model, the tracker and the selection; @p selected was taken before it.
+  void followChange(const log_view::StoreChange& change, std::optional<size_t> selected);
   [[nodiscard]] log_view::LogFilter currentFilter() const;
   void applyFilters();
   /// After the model applied a filter: the selection, the scroll position and the detail pane follow.
   void onFilterApplied();
   void refreshTopics();
+  void updateTopicsButton();
   void refreshOptionalColumns();
   [[nodiscard]] std::array<QToolButton*, log_view::kToggleLevelCount> levelToggles() const;
   void updateDetail();
-  void selectStoreRow(std::optional<size_t> store_index);
+  /// Selects model row @p row without scrolling to it.
+  void selectRow(int row);
   [[nodiscard]] std::optional<size_t> selectedStoreRow() const;
+  /// The tracker's row (the last one revealed) is in the viewport.
+  [[nodiscard]] bool trackerRowInView() const;
+  /// A selection change: the user's unless the view is moving it (adjusting_).
+  void onSelectionChanged();
+  /// Selects chosen_ if it is shown, else nothing; its own selection moves are not the user's.
+  void showChosen();
   void scrollToTracker(bool to_bottom);
   void onRowDoubleClicked(const QModelIndex& index);
   [[nodiscard]] int fitWidth(const QString& text, int column) const;
@@ -129,9 +140,12 @@ class LogView : public QWidget {
   std::map<uint32_t, QString> topics_;
   /// The rows of the topics handed as LogEntry lists.
   std::map<uint32_t, std::shared_ptr<VectorLogRowSource>> entry_sources_;
-  /// The row selected when applyFilters() ran, re-selected once the filter is applied.
-  std::optional<log_view::LogStore::RowKey> filter_selection_;
-  QStringList hidden_topics_;
+  /// The entry the user selected, kept while it is not shown.
+  std::optional<log_view::LogStore::RowKey> chosen_;
+  /// Set while the view changes the model or the selection: Qt moves the selection off removed rows, and that move is
+  /// not the user's choice.
+  bool adjusting_ = false;
+  std::set<uint32_t> hidden_topics_;
   QTimer text_timer_;
 
   /// The store row the detail pane shows (nullopt: none); valid while detail_valid_.

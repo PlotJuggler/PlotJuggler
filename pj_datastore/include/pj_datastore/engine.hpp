@@ -80,6 +80,10 @@ class DataEngine {
   /// loads a new dataset. Locks.
   [[nodiscard]] bool isMergedAway(PJ::DatasetId id) const;
 
+  /// The dataset holding @p id's data: @p id, or for a source a mergeDatasets() consumed, the anchor now holding it
+  /// (through later merges). nullopt when that dataset is not registered (removed, or never was). Locks.
+  [[nodiscard]] std::optional<PJ::DatasetId> mergeDestination(PJ::DatasetId id) const;
+
   /// Erases the dataset, its label and all its topics (unlike retireTopic(), which keeps the storage). Auto-assigned
   /// ids are never reused, so a later load gets fresh ids. Time domains stay (they may be shared). Invalidate every
   /// reader bound to the dataset first: a cached TopicChunk* would dangle. Idempotent.
