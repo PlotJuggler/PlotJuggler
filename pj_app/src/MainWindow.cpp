@@ -533,6 +533,13 @@ std::array<PanelToggle, 3> panelToggles(Ui::MainWindow* ui) {
   }};
 }
 
+void setPanelShown(const PanelToggle& toggle, bool visible, const QString& theme) {
+  toggle.target->setVisible(visible);
+  const QString icon = QString::fromLatin1(visible ? toggle.icon_path_on : toggle.icon_path_off);
+  toggle.button->setProperty("iconPath", icon);
+  toggle.button->setIcon(loadSvg(icon, theme));
+}
+
 // MEMFS in the browser; a temporary directory on the desktop, reached only by tests (presets are browser-only),
 // where a crashed process's leased files can linger.
 QString presetStagingRoot() {
@@ -1245,26 +1252,17 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   forEachPlot([this](PlotWidget* plot) { applyGlobalToggles(plot); });
   applyShowPointsTo2DWidgets();
 
-  // Not checkable: the glyph shows the state, through the "iconPath" property applyIcons() tints. Not persisted:
-  // every launch opens with only the left panel.
+  // Not checkable: the glyph shows the state, through the "iconPath" property applyIcons() tints. Every launch opens
+  // with only the left panel; a layout's <chrome_state left_panel_visible> then sets that one.
   for (const PanelToggle& toggle : panelToggles(ui_)) {
-    const bool visible = (toggle.target == ui_->leftColumn);
-    toggle.target->setVisible(visible);
     toggle.button->setCheckable(false);
-    toggle.button->setProperty("iconPath", QString::fromLatin1(visible ? toggle.icon_path_on : toggle.icon_path_off));
-    QPushButton* button = toggle.button;
-    QWidget* target = toggle.target;
-    const QString icon_on = QString::fromLatin1(toggle.icon_path_on);
-    const QString icon_off = QString::fromLatin1(toggle.icon_path_off);
-    connect(button, &QPushButton::clicked, this, [this, button, target, icon_on, icon_off]() {
-      const bool now_visible = !target->isVisible();
-      target->setVisible(now_visible);
-      const QString icon = now_visible ? icon_on : icon_off;
-      button->setProperty("iconPath", icon);
-      button->setIcon(loadSvg(icon, theme_->currentTheme()));
+    setPanelShown(toggle, toggle.target == ui_->leftColumn, theme_->currentTheme());
+    connect(toggle.button, &QPushButton::clicked, this, [this, toggle]() {
+      const bool now_visible = !toggle.target->isVisible();
+      setPanelShown(toggle, now_visible, theme_->currentTheme());
       // The strip's expanded height survives fold cycles; applyBottomPanelConstraints owns the open floor and the
       // closed lock.
-      if (target == ui_->timelineStrip) {
+      if (toggle.target == ui_->timelineStrip) {
         const QList<int> sizes = ui_->timelineSplitter->sizes();
         const int total = sizes[0] + sizes[1];
         if (now_visible) {
@@ -9124,8 +9122,6 @@ void MainWindow::restoreSourceTimelineViewState(const QDomElement& element) {
 QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   QDomElement element = doc.createElement(u"right_panel_state"_s);
 
-  // The panel's open/closed state is a QSettings preference, not document state.
-
   // The value, not the button index, which depends on declaration order.
   if (width_button_group_ != nullptr) {
     const int id = width_button_group_->checkedId();
@@ -9272,7 +9268,8 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
   QDomElement element = doc.createElement(u"chrome_state"_s);
 
-  // Only the main splitter: panel visibility and the timeline-strip height are launch state.
+  // The main splitter and the left panel's visibility; the other panels and the timeline-strip height are launch
+  // state.
   const auto join_sizes = [](QSplitter* splitter) {
     QStringList parts;
     const QList<int> sizes = splitter->sizes();
@@ -9283,9 +9280,12 @@ QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
     return parts.join(QLatin1Char(','));
   };
 
-  if (ui_->mainSplitter != nullptr) {
+  // A hidden panel's size is 0, which a restore would turn into the panel's minimum width.
+  if (ui_->mainSplitter != nullptr && !ui_->leftColumn->isHidden()) {
     element.setAttribute(u"main_splitter_sizes"_s, join_sizes(ui_->mainSplitter));
   }
+  // isHidden, not isVisible: a layout saved before the first show still records the panel as open.
+  element.setAttribute(u"left_panel_visible"_s, ui_->leftColumn->isHidden() ? u"false"_s : u"true"_s);
 
   return element;
 }
@@ -9319,6 +9319,14 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
 
   if (element.hasAttribute(u"main_splitter_sizes"_s)) {
     apply_splitter(ui_->mainSplitter, element.attribute(u"main_splitter_sizes"_s));
+  }
+  // Absent in older layouts: the panel stays as the user has it.
+  if (element.hasAttribute(u"left_panel_visible"_s)) {
+    for (const PanelToggle& toggle : panelToggles(ui_)) {
+      if (toggle.target == ui_->leftColumn) {
+        setPanelShown(toggle, element.attribute(u"left_panel_visible"_s) != "false"_L1, theme_->currentTheme());
+      }
+    }
   }
 }
 

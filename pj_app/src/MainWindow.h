@@ -1144,18 +1144,19 @@ class MainWindow : public QMainWindow {
   // datasets reload, or zoom and scroll map onto the old scene.
   void restoreSourceTimelineViewState(const QDomElement& element);
 
-  // <right_panel_state visible width style splitter_sizes/>, always emitted; the caller appends it.
+  // <right_panel_state width style splitter_sizes/>, always emitted; the caller appends it. The right panel's
+  // open/closed state is not saved.
   [[nodiscard]] QDomElement saveRightPanelState(QDomDocument& doc) const;
 
   // Missing or mismatched values are ignored. Never writes QSettings: a layout must not change the user's
   // defaults.
   void restoreRightPanelState(const QDomElement& element);
 
-  // <chrome_state main_splitter_sizes timeline_splitter_sizes/>. Panel open/closed state is not saved: it is a
-  // QSettings preference, not document state.
+  // <chrome_state main_splitter_sizes left_panel_visible/>. Only the left panel's open/closed state is saved; the
+  // bottom and right panels open as every launch opens them.
   [[nodiscard]] QDomElement saveChromeState(QDomDocument& doc) const;
 
-  // Missing or mismatched values are ignored; panel visibility is left as is.
+  // Missing or mismatched values are ignored: a layout without left_panel_visible leaves the left panel as it is.
   void restoreChromeState(const QDomElement& element);
 
   // Thin wrappers over pj_runtime's DerivedObjects, which owns the <data_processors> persistence. This one is
