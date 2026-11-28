@@ -49,7 +49,8 @@ class LogTableModel : public QAbstractTableModel {
   void setTracker(double tracker);
   void setFutureRows(FutureRows mode);
   /// How the Time column prints a row's display seconds (formatTimeLabel, with the date on a wall-clock instant).
-  void setTimeLabelFormat(TimeLabelFormat format, int decimals);
+  /// Returns whether the format changed.
+  bool setTimeLabelFormat(TimeLabelFormat format, int decimals);
 
   /// Filtered rows with time <= tracker.
   [[nodiscard]] int revealedRows() const {
@@ -60,7 +61,7 @@ class LogTableModel : public QAbstractTableModel {
   /// Model row showing store index @p index, or -1.
   [[nodiscard]] int rowOf(size_t index) const;
   /// The text of @p row's Time column.
-  [[nodiscard]] QString timeText(const LogRow& row) const;
+  [[nodiscard]] QString timeText(double time) const;
 
   static QString levelName(LogLevel level);
 

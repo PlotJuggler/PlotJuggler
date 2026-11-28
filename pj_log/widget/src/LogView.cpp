@@ -106,6 +106,15 @@ LogView::LogView(QWidget* parent)
   policy->setSectionWidth(LogTableModel::kCategory, 110);
   policy->setSectionWidth(LogTableModel::kTopic, 140);
   ui_->logView->setColumnHidden(LogTableModel::kTopic, true);
+  // QTreeView fits a double-clicked divider to the rows it shows: the Time column fits the rows after the playhead too.
+  disconnect(header, &QHeaderView::sectionHandleDoubleClicked, ui_->logView, nullptr);
+  connect(header, &QHeaderView::sectionHandleDoubleClicked, this, [this](int section) {
+    if (section == LogTableModel::kTime) {
+      fitTimeColumn(/*over_user=*/true);
+    } else {
+      ui_->logView->resizeColumnToContents(section);
+    }
+  });
   refreshOptionalColumns();
   setShowFuture(LogViewState{}.show_future);
   attachPillScrollbars(this);
@@ -254,6 +263,8 @@ void LogView::followChange(const StoreChange& change, std::optional<size_t> sele
     }
     showChosen();
   }
+  // Before the scroll: a wider column can bring the horizontal scrollbar, which takes height from the viewport.
+  autoSizeColumns();
   if (playing_) {
     scrollToTracker(true);
   } else if ((!shown_rows_ || on_tracker) && model_->rowCount() > 0) {
@@ -261,7 +272,6 @@ void LogView::followChange(const StoreChange& change, std::optional<size_t> sele
   }
   if (model_->rowCount() > 0) {
     shown_rows_ = true;
-    autoSizeColumns();
   }
   updateDetail();
 }
@@ -300,9 +310,12 @@ void LogView::setPlaying(bool playing) {
 }
 
 void LogView::setTimeLabelFormat(TimeLabelFormat format, int decimals) {
-  model_->setTimeLabelFormat(format, decimals);
+  // The host repeats its format on every Preferences OK: only a different one fits the column again.
+  if (!model_->setTimeLabelFormat(format, decimals)) {
+    return;
+  }
   // The texts change width: fit the column again, even over a width the user set.
-  fitTimeColumn();
+  fitTimeColumn(/*over_user=*/true);
   detail_valid_ = false;
   updateDetail();
 }
@@ -313,8 +326,9 @@ void LogView::setShowFuture(bool show) {
     ui_->futureButton->setChecked(show);
   }
   ui_->futureButton->setIconPath(QString::fromLatin1(show ? kFutureShownIcon : kFutureHiddenIcon));
+  // Names what a click does, like the app's other toggles.
   ui_->futureButton->setToolTip(
-      show ? tr("Show the entries after the playhead, greyed") : tr("Hide the entries after the playhead"));
+      show ? tr("Hide the entries after the playhead") : tr("Show the entries after the playhead, greyed"));
   const QScopedValueRollback adjusting(adjusting_, true);
   model_->setFutureRows(show ? log_view::FutureRows::kGrey : log_view::FutureRows::kHide);
   showChosen();
@@ -442,7 +456,7 @@ void LogView::updateDetail() {
   if (selected && *selected < store_.size()) {
     const LogRow row = store_.row(*selected);
     QStringList lines;
-    lines << tr("Time: %1").arg(model_->timeText(row));
+    lines << tr("Time: %1").arg(model_->timeText(row.time));
     lines << tr("Stamp: %1").arg(formatStamp(row.stamp_ns));
     lines << tr("Level: %1").arg(LogTableModel::levelName(row.level));
     lines << tr("Source: %1").arg(QString::fromStdString(store_.text(row.source)));
@@ -505,23 +519,30 @@ int LogView::fitWidth(const QString& text, int column) const {
       header->fontMetrics().horizontalAdvance(title) + head_pad);
 }
 
-bool LogView::fitTimeColumn() {
-  if (model_->rowCount() == 0) {
-    return false;
+void LogView::fitTimeColumn(bool over_user) {
+  if (store_.size() == 0) {
+    if (over_user) {
+      time_width_ = 0;  // the next rows fit it
+    }
+    return;
   }
-  const std::optional<size_t> last = model_->storeIndex(model_->rowCount() - 1);
-  if (!last || *last >= store_.size()) {
-    return false;
+  // The store is in time order: its first and last rows bound every time text, the rows not shown yet included.
+  const int needed = std::max(
+      fitWidth(model_->timeText(store_.ref(0).time), LogTableModel::kTime),
+      fitWidth(model_->timeText(store_.ref(store_.size() - 1).time), LogTableModel::kTime));
+  QHeaderView* header = ui_->logView->header();
+  const int width = header->sectionSize(LogTableModel::kTime);
+  // Never over a width the user dragged: columns do not move under the user.
+  if (time_width_ != 0 && !over_user && (width != time_width_ || needed == width)) {
+    return;
   }
-  HeaderResizePolicy::install(ui_->logView->header())
-      ->setSectionWidth(
-          LogTableModel::kTime, fitWidth(model_->timeText(store_.row(*last, false)), LogTableModel::kTime));
-  return true;
+  HeaderResizePolicy::install(header)->setSectionWidth(LogTableModel::kTime, needed);
+  time_width_ = header->sectionSize(LogTableModel::kTime);
 }
 
 void LogView::autoSizeColumns() {
-  // Once: later growth of the times does not move the columns under the user.
-  if (columns_fitted_ || !fitTimeColumn()) {
+  fitTimeColumn(/*over_user=*/false);
+  if (level_fitted_ || store_.size() == 0) {
     return;
   }
   QString widest_level;
@@ -534,7 +555,7 @@ void LogView::autoSizeColumns() {
   }
   HeaderResizePolicy::install(ui_->logView->header())
       ->setSectionWidth(LogTableModel::kLevel, fitWidth(widest_level, LogTableModel::kLevel));
-  columns_fitted_ = true;
+  level_fitted_ = true;
 }
 
 void LogView::onRowDoubleClicked(const QModelIndex& index) {

@@ -216,7 +216,7 @@ TEST_F(MainWindowLogPanelTest, TheTimeColumnFollowsTheDateTimeToggle) {
   LogDockWidget* log = logOf(dock_);
   ASSERT_NE(log, nullptr);
   // The Time column's text of the first entry, which sits after the playhead (hidden) right after the drop.
-  const auto time_text = [log]() { return log->view()->model()->timeText(log->view()->store().row(0)); };
+  const auto time_text = [log]() { return log->view()->model()->timeText(log->view()->store().ref(0).time); };
   const double seconds = log->view()->store().row(0).time;
   EXPECT_EQ(time_text(), formatTimeLabel(seconds, TimeLabelFormat::kSeconds, 3, true));
 

@@ -49,8 +49,8 @@ QString LogTableModel::levelName(LogLevel level) {
   return QString::fromLatin1(label.data(), static_cast<qsizetype>(label.size()));
 }
 
-QString LogTableModel::timeText(const LogRow& row) const {
-  return formatTimeLabel(row.time, time_format_, time_decimals_, /*with_date=*/true);
+QString LogTableModel::timeText(double time) const {
+  return formatTimeLabel(time, time_format_, time_decimals_, /*with_date=*/true);
 }
 
 int LogTableModel::visibleCount() const {
@@ -77,13 +77,13 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
   const LogRow row = store_.row(old_index - pending_drop_, wants_message);
   if (!row.present) {
     // Gone from its topic, not re-indexed yet: its time only.
-    return role == Qt::DisplayRole && index.column() == kTime ? QVariant(timeText(row)) : QVariant();
+    return role == Qt::DisplayRole && index.column() == kTime ? QVariant(timeText(row.time)) : QVariant();
   }
   switch (role) {
     case Qt::DisplayRole:
       switch (index.column()) {
         case kTime:
-          return timeText(row);
+          return timeText(row.time);
         case kLevel:
           return levelName(row.level);
         case kSource:
@@ -336,15 +336,16 @@ void LogTableModel::setFutureRows(FutureRows mode) {
   endResetModel();
 }
 
-void LogTableModel::setTimeLabelFormat(TimeLabelFormat format, int decimals) {
+bool LogTableModel::setTimeLabelFormat(TimeLabelFormat format, int decimals) {
   if (format == time_format_ && decimals == time_decimals_) {
-    return;
+    return false;
   }
   time_format_ = format;
   time_decimals_ = decimals;
   if (rowCount() > 0) {
     emit dataChanged(index(0, kTime), index(rowCount() - 1, kTime), {Qt::DisplayRole});
   }
+  return true;
 }
 
 std::optional<size_t> LogTableModel::storeIndex(int row) const {

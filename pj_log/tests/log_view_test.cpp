@@ -12,6 +12,7 @@
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QTest>
 #include <QToolButton>
 #include <QTreeView>
@@ -83,6 +84,15 @@ class LogViewTest : public ::testing::Test {
   }
   [[nodiscard]] QString message(int row) const {
     return model()->index(row, 5).data().toString();
+  }
+  [[nodiscard]] int timeWidth() const {
+    return list()->header()->sectionSize(PJ::log_view::LogTableModel::kTime);
+  }
+  /// The Time column shows @p time whole.
+  [[nodiscard]] bool timeFits(double time, PJ::TimeLabelFormat format = PJ::TimeLabelFormat::kSeconds) const {
+    const QString text = PJ::formatTimeLabel(time, format, 3, true);
+    const int margin = list()->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, list()) + 1;
+    return timeWidth() >= list()->fontMetrics().horizontalAdvance(text) + 2 * margin;
   }
   /// The visible sections end to end, Message filling the rest of the viewport: a hidden column leaves no gap.
   void expectNoGap() const {
@@ -235,11 +245,13 @@ TEST_F(LogViewTest, FutureRowsGreyOrHidden) {
   auto* future = view_.findChild<QToolButton*>("futureButton");
   EXPECT_FALSE(view_.state().show_future);
   EXPECT_FALSE(future->isChecked());
+  EXPECT_EQ(future->toolTip(), "Show the entries after the playhead, greyed") << "the tooltip names what a click does";
   EXPECT_EQ(model()->rowCount(), 50);
   QSignalSpy edited(&view_, &LogView::stateEdited);
   future->click();
   EXPECT_EQ(edited.count(), 1);
   EXPECT_TRUE(view_.state().show_future);
+  EXPECT_EQ(future->toolTip(), "Hide the entries after the playhead");
   EXPECT_EQ(model()->rowCount(), 100);
   const QColor grey = list()->palette().color(QPalette::PlaceholderText);
   EXPECT_EQ(model()->index(60, 5).data(Qt::ForegroundRole).value<QColor>(), grey);
@@ -555,6 +567,78 @@ TEST_F(LogViewTest, VisibleFilterFieldsShareTheRowEvenly) {
   QApplication::processEvents();
   ASSERT_FALSE(category->isVisible());
   EXPECT_NEAR(source->width(), message->width(), 1);
+}
+
+// The Time column fits every time the topics hold, not only the rows shown: an entry after the playhead, hidden now,
+// shows whole when the playhead reaches it. It follows the times both ways; a width the user dragged stays.
+TEST_F(LogViewTest, TheTimeColumnFitsEveryTimeTheTopicsHold) {
+  track(0.0);
+  view_.setTopicLabel(0, "/rosout");
+  view_.replaceEntries(0, {entry(0.0, "first"), entry(1180.25, "after the playhead")});
+  QApplication::processEvents();
+  ASSERT_EQ(model()->rowCount(), 1);
+  EXPECT_TRUE(timeFits(1180.25));
+
+  view_.appendEntries(0, {entry(123456.5, "later")});
+  QApplication::processEvents();
+  EXPECT_TRUE(timeFits(123456.5));
+  const int wide = timeWidth();
+  view_.replaceEntries(0, {entry(0.0, "first"), entry(1.5, "short")});
+  QApplication::processEvents();
+  EXPECT_LT(timeWidth(), wide) << "narrower times narrow it";
+
+  list()->header()->resizeSection(0, timeWidth() + 10);
+  const int dragged = timeWidth();
+  view_.appendEntries(0, {entry(98765432.5, "much later")});
+  QApplication::processEvents();
+  EXPECT_EQ(timeWidth(), dragged);
+}
+
+TEST_F(LogViewTest, TheTimeColumnFitsTheEarliestTimeToo) {
+  track(0.0);
+  view_.setTopicLabel(0, "/rosout");
+  view_.replaceEntries(0, {entry(-123456.5, "before the start"), entry(0.0, "start")});
+  QApplication::processEvents();
+  EXPECT_TRUE(timeFits(-123456.5));
+}
+
+// The host repeats its time format on every Preferences OK: only a different format fits the column again.
+TEST_F(LogViewTest, TheSameTimeFormatKeepsADraggedTimeWidth) {
+  track(0.0);
+  view_.setTopicLabel(0, "/rosout");
+  view_.replaceEntries(0, {entry(0.0, "first"), entry(1180.25, "later")});
+  QApplication::processEvents();
+  list()->header()->resizeSection(0, timeWidth() + 10);
+  const int dragged = timeWidth();
+  view_.setTimeLabelFormat(PJ::TimeLabelFormat::kSeconds);
+  EXPECT_EQ(timeWidth(), dragged);
+}
+
+TEST_F(LogViewTest, AFormatChangeWithNoRowsFitsTheNextOnes) {
+  track(2e9);
+  view_.setTopicLabel(0, "/rosout");
+  view_.replaceEntries(0, {entry(1.0, "first")});
+  QApplication::processEvents();
+  list()->header()->resizeSection(0, timeWidth() + 10);
+  view_.replaceEntries(0, {});
+  view_.setTimeLabelFormat(PJ::TimeLabelFormat::kUtcClock);
+  view_.replaceEntries(0, {entry(1779215727.239, "instant")});
+  QApplication::processEvents();
+  EXPECT_TRUE(timeFits(1779215727.239, PJ::TimeLabelFormat::kUtcClock));
+}
+
+// QTreeView fits a double-clicked divider to the rows it shows; the Time divider fits every time instead.
+TEST_F(LogViewTest, DoubleClickingTheTimeDividerFitsEveryTime) {
+  track(0.0);
+  view_.setTopicLabel(0, "/rosout");
+  view_.replaceEntries(0, {entry(0.0, "first"), entry(1180.25, "after the playhead")});
+  QApplication::processEvents();
+  emit list() -> header()->sectionHandleDoubleClicked(0);
+  QApplication::processEvents();
+  EXPECT_TRUE(timeFits(1180.25));
+  view_.appendEntries(0, {entry(123456.5, "later")});
+  QApplication::processEvents();
+  EXPECT_TRUE(timeFits(123456.5)) << "the fitted width is not mistaken for a drag";
 }
 
 TEST_F(LogViewTest, TimeColumnAndDetailFollowTheHostFormat) {
