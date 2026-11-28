@@ -5,7 +5,7 @@ schema_version: 1
 # committed platform-neutral config (INTERFACE mcap::mcap carrying lz4 + zstd).
 
 context:
-  version: "2.1.1"
+  version: "2.1.3"
 
 package:
   name: libmcap
@@ -13,7 +13,7 @@ package:
 
 source:
   url: https://github.com/foxglove/mcap/archive/refs/tags/releases/cpp/v${{ version }}.tar.gz
-  sha256: f5ec006beccfb6d56a26fee8e460e79bed02f125eb2604159ddfbb9906d57da4
+  sha256: 181a7c52cc982444cdef533087b321538b025fcc5eec258e0489d68b9ce53ded
 
 build:
   number: 0

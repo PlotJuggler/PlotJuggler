@@ -126,8 +126,8 @@ set(PNG_EXECUTABLES ON CACHE BOOL "" FORCE)
 set(PNG_HARDWARE_OPTIMIZATIONS OFF CACHE BOOL "" FORCE)
 set(PNG_FRAMEWORK OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(pj_wasm_libpng
-    URL https://codeload.github.com/pnggroup/libpng/tar.gz/refs/tags/v1.6.58
-    URL_HASH SHA256=a9d4df463d36a6e5f9c29bd6f4967312d17e996c1854f3511f833924eb1993cf
+    URL https://codeload.github.com/pnggroup/libpng/tar.gz/refs/tags/v1.6.59
+    URL_HASH SHA256=2540302a1844ad2b2b501977abecfa850f265f97b78f065a712ab4074a89f5b5
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     EXCLUDE_FROM_ALL
     SYSTEM)
@@ -140,6 +140,6 @@ set_target_properties(png_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(PNG::PNG ALIAS png_static)
 
 message(STATUS
-    "WASM Scene2D codecs: libjpeg-turbo 3.1.4.1, libpng 1.6.58, zlib ${ZLIB_VERSION}")
+    "WASM Scene2D codecs: libjpeg-turbo 3.1.4.1, libpng 1.6.59, zlib ${ZLIB_VERSION}")
 
 include(${CMAKE_CURRENT_LIST_DIR}/PjWasmFfmpeg.cmake)
