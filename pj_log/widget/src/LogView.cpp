@@ -326,8 +326,9 @@ void LogView::setShowFuture(bool show) {
     ui_->futureButton->setChecked(show);
   }
   ui_->futureButton->setIconPath(QString::fromLatin1(show ? kFutureShownIcon : kFutureHiddenIcon));
+  // Names what a click does, like the app's other toggles.
   ui_->futureButton->setToolTip(
-      show ? tr("Show the entries after the playhead, greyed") : tr("Hide the entries after the playhead"));
+      show ? tr("Hide the entries after the playhead") : tr("Show the entries after the playhead, greyed"));
   const QScopedValueRollback adjusting(adjusting_, true);
   model_->setFutureRows(show ? log_view::FutureRows::kGrey : log_view::FutureRows::kHide);
   showChosen();

@@ -159,7 +159,7 @@
          <item>
           <widget class="PJ::SvgButton" name="futureButton">
            <property name="toolTip">
-            <string>Hide the entries after the playhead</string>
+            <string>Show the entries after the playhead, greyed</string>
            </property>
            <property name="checkable">
             <bool>true</bool>

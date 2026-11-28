@@ -245,11 +245,13 @@ TEST_F(LogViewTest, FutureRowsGreyOrHidden) {
   auto* future = view_.findChild<QToolButton*>("futureButton");
   EXPECT_FALSE(view_.state().show_future);
   EXPECT_FALSE(future->isChecked());
+  EXPECT_EQ(future->toolTip(), "Show the entries after the playhead, greyed") << "the tooltip names what a click does";
   EXPECT_EQ(model()->rowCount(), 50);
   QSignalSpy edited(&view_, &LogView::stateEdited);
   future->click();
   EXPECT_EQ(edited.count(), 1);
   EXPECT_TRUE(view_.state().show_future);
+  EXPECT_EQ(future->toolTip(), "Hide the entries after the playhead");
   EXPECT_EQ(model()->rowCount(), 100);
   const QColor grey = list()->palette().color(QPalette::PlaceholderText);
   EXPECT_EQ(model()->index(60, 5).data(Qt::ForegroundRole).value<QColor>(), grey);
