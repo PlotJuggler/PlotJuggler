@@ -9,5 +9,5 @@ describe_topic {"topic":"data"}
 expect "data/time"
 absent "data/cosine"
 # Every row is kept: rows that share an X value become consecutive samples.
-read_series {"series":["data/time"]}
+read_series {"paths":["data/time"]}
 expect "count":1001

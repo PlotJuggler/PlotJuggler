@@ -13,6 +13,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -125,6 +126,10 @@ class McpServer : public QObject {
   /// made one for a while or public access closed. Drives the status-bar indicator.
   void activeClientChanged(const QString& client);
 
+ protected:
+  /// Counts the main window's paint-and-flush cycles for get_status.
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
  private:
   friend class McpTestPeer;
 
@@ -227,7 +232,8 @@ class McpServer : public QObject {
       Caller caller, const QByteArray& body, const QString& header_client,
       std::function<void(int status, QByteArray body)> respond);
   void noteClient(const QString& client);
-  /// An app tool `caller` may not call reads as unknown. Under the user's modal dialog only what
+  /// An app tool `caller` may not call reads as unknown, and an argument its tools/list schema does not declare is
+  /// refused (mcp::undeclaredArgument). Under the user's modal dialog only what
   /// mcp::runsUnderUsersDialog allows runs. A throwing handler (a wrongly typed argument) becomes a
   /// tool error.
   void callTool(const std::string& name, const nlohmann::json& args, const Caller& caller, Reply reply);
@@ -350,6 +356,10 @@ class McpServer : public QObject {
   /// killed, and ends when the stream does (stopped by anyone, ended on its own, or failed).
   void followStream(quint64 job, quint32 id);
 
+  /// get_status' `rendering`: the main window's frames in the last second and the milliseconds since the latest (null
+  /// before the first). Floating docks are windows of their own and are not counted.
+  [[nodiscard]] nlohmann::json renderingStatus() const;
+
   // The app tools, one per tools/list entry (McpServerTools.cpp).
   void getStatus(const nlohmann::json& args, const Caller& caller, Reply reply);
   void about(const nlohmann::json& args, const Caller& caller, Reply reply);
@@ -416,6 +426,9 @@ class McpServer : public QObject {
   /// nested call queued as due, again and again; so it returns at once.
   bool draining_ = false;
   QTimer resume_tick_;
+  static constexpr std::chrono::seconds kFrameHistory{2};
+  /// When the main window last handled an UpdateRequest, oldest first, at most kFrameHistory back.
+  std::deque<std::chrono::steady_clock::time_point> frames_;
 #ifndef PJ_TARGET_WASM
   /// Used only when mcp::uiToolsEnabled().
   mcp::UiDriver ui_driver_;

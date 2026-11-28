@@ -791,29 +791,22 @@ JoinForecast forecastJoin(
   return out;
 }
 
-// Collects the requested paths from a bare string or an array. The parameter is named `paths` rather than `series` on
-// purpose: the object store holds point clouds, images and occupancy grids behind the same read view, so `series`
-// would be the wrong word if this call ever summarizes those (reasoning, not measured). The model learns the name from
-// the description, so renaming later costs more. `series` still works, undocumented, so a conversation in flight does
-// not break.
-std::vector<std::string> requestedPaths(const json& args, std::initializer_list<const char*> keys) {
+// The parameter is named `paths` rather than `series` on purpose: the object store holds point clouds, images and
+// occupancy grids behind the same read view, so `series` would be the wrong word if this call ever summarizes those
+// (reasoning, not measured).
+std::vector<std::string> requestedPaths(const json& args, const char* key) {
   std::vector<std::string> out;
-  for (const char* key : keys) {
-    if (!args.contains(key)) {
-      continue;
-    }
-    const json& v = args[key];
-    if (v.is_string()) {
-      out.push_back(canonicalSeriesPath(v.get<std::string>()));
-    } else if (v.is_array()) {
-      for (const auto& e : v) {
-        if (e.is_string()) {
-          out.push_back(canonicalSeriesPath(e.get<std::string>()));
-        }
+  const auto v = args.find(key);
+  if (v == args.end()) {
+    return out;
+  }
+  if (v->is_string()) {
+    out.push_back(canonicalSeriesPath(v->get<std::string>()));
+  } else if (v->is_array()) {
+    for (const auto& e : *v) {
+      if (e.is_string()) {
+        out.push_back(canonicalSeriesPath(e.get<std::string>()));
       }
-    }
-    if (!out.empty()) {
-      break;
     }
   }
   return out;
@@ -983,7 +976,7 @@ json withCoarsenedBuckets(
 }
 
 ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
-  const std::vector<std::string> paths = requestedPaths(args);
+  const std::vector<std::string> paths = requestedPaths(args, "paths");
   if (paths.empty()) {
     return ToolResult::failure(
         "read_series requires 'paths': one topic/field path, or an array of them to read several in "
@@ -1264,7 +1257,7 @@ struct SeriesWatch : std::enable_shared_from_this<SeriesWatch> {
 }  // namespace
 
 ToolResult waitForTool(const json& args, ToolContext& ctx) {
-  const std::vector<std::string> paths = requestedPaths(args, {"series"});
+  const std::vector<std::string> paths = requestedPaths(args, "series");
   if (paths.size() != 1) {
     return ToolResult::failure("'series' must be one topic/field path");
   }

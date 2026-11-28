@@ -647,7 +647,7 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   if (action != "add" && action != "remove") {
     return ToolResult::failure("unknown plot_tab action '" + action + "'; use create/add/remove/zoom/focus/close/list");
   }
-  const std::vector<std::string> paths = requestedPaths(args, {"curves"});
+  const std::vector<std::string> paths = requestedPaths(args, "curves");
   if (paths.empty()) {
     return ToolResult::failure("'" + action + "' needs 'curves': one topic/field path, or an array of them");
   }
@@ -773,7 +773,7 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
   if (action != "attach" && action != "detach") {
     return ToolResult::failure("unknown scene_view action '" + action + "'; use create/attach/detach/focus/close/list");
   }
-  const std::vector<std::string> paths = requestedPaths(args, {"topics"});
+  const std::vector<std::string> paths = requestedPaths(args, "topics");
   if (paths.empty()) {
     return ToolResult::failure("'" + action + "' needs 'topics': one object-topic path, or an array of them");
   }

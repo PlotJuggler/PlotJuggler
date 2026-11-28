@@ -70,6 +70,11 @@ Derived series hold numbers unless asked for text: `create_derived_series` takes
 Transitions panel. A formula, script series or filter takes one as an input: the script receives each value as a
 string, and the join check reads only its timestamps.
 
+A call that passes an argument its tool's `inputSchema.properties` does not declare, as `tools/list` publishes it for
+the caller's set, is refused with a tool error naming the arguments the tool takes (`mcp::undeclaredArgument`):
+dropped silently, a misspelt or invented one would leave the agent believing the call did what it asked. In the
+browser `open_file` also declares the `url` and `name` the relay adds.
+
 `ToolSet::kFull` serves the agent, app and job tools. `ToolSet::kAgentOnly` is used for plugin tokens: `tools/list`
 and the `initialize` instructions leave the app tools out, and calling one gets the unknown-tool error.
 Every tool's title and MCP hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) come from one
@@ -131,7 +136,10 @@ nanoseconds, so its CSV time column is exact; `format: "npy"` writes a numpy str
 field per series path, NaN before a series starts) that `numpy.load` reads much faster than `numpy.loadtxt` reads the
 CSV ("Evidence"), with no package beyond numpy. `add_filter` takes its class from `pj_scripting`'s
 `FilterCatalogue::standaloneClassScript`. `screenshot` composites each visible QRhi view's next presented frame
-(`grabPresentedFrame`) into the window grab, and replies when the frames arrive.
+(`grabPresentedFrame`) into the window grab, and replies when the frames arrive. `get_status`' `rendering` counts the
+`QEvent::UpdateRequest`s the main window handles (`McpServer::eventFilter`; each one paints and flushes its backing
+store, the swap included), so an agent can tell a window that stopped drawing from one that plays; floating docks are
+windows of their own and are not counted, and what the compositor then shows is out of its sight.
 
 ## Tokens and identity
 
@@ -651,8 +659,8 @@ dock with no state).
 ## The user comes first
 
 - While a modal dialog is open, only read-only tools run (`screenshot` and `widget_state` among them); the rest are
-  told to wait. `screenshot` takes no `tab`: a call that passes one is a tool error naming `plot_tab` / `scene_view`
-  `focus`.
+  told to wait. `screenshot` takes no `tab`: its description says to bring a tab forward with `plot_tab` /
+  `scene_view` `focus` first.
   The UI tools are the exception: they are the user, in a run that asked for them.
 - `unload_file` with dependent derived series waits for the user's answer to the prompt (the `cancelled` hook of
   `confirmAndRemoveDependentTransforms`), as a job: past `wait_s` the agent gets its job id. `load_layout` asks the
@@ -742,7 +750,8 @@ dock with no state).
     redaction and the sentinel (refused for a changed configuration), for a file and a stream.
     `ANamedExportNeedsItsExtension…`, `ANamedExportKeepsAFileThatAppearedWhileItRan`: the export guard.
 - `pj_app/tests/mcp_protocol_test.cpp` (runner `pj_app_unit_tests`): the HTTP and JSON-RPC gates, `redactSecrets` and
-  `restoreSecrets`, and `McpAnnotations`: every listed tool has a title, the four hints and described parameters.
+  `restoreSecrets`, `undeclaredArgument`, and `McpAnnotations`: every listed tool has a title, the four hints and
+  described parameters.
 - `pj_app/tests/mcp_skills_test.cpp` (runner `pj_app_unit_tests`): the skill's entry (name, sorted files, digests
   and sizes that match what `resources/read` returns), refused URIs, `resources/list`, that every relative link
   between the guide's pages resolves inside the skill, and that only the public token's handshake advertises it.

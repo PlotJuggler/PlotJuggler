@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <set>
 
 #include "SecretKeys.h"
@@ -367,13 +368,27 @@ json appToolEntries() {
     property["description"] = description;
     return property;
   };
+  json open_file_args = {
+      {"path", {{"type", "string"}, {"description", "absolute path"}}},
+      {"ask_user", described(ask_user, "open PlotJuggler's loader dialog so the user picks topics and options")},
+      {"config",
+       {{"type", "object"},
+        {"description", "loader settings JSON; get_status shows the config each loaded dataset used, as a template"}}}};
+#ifdef PJ_TARGET_WASM
+  // The relay (pj_mcp_relay.py) adds these next to `path`: the page cannot read the agent's disk.
+  open_file_args["url"] = described(str, "set by the PlotJuggler relay: where it serves the file at path");
+  open_file_args["name"] = described(str, "set by the PlotJuggler relay: the file's name");
+#endif
   return json::array({
       toolEntry(
           "get_status",
           "Start here. Loaded datasets (id, name, path, loader config; live streams carry stream), the stream "
           "sources start_stream can start, time range, current time, your agent id and tabs, whether "
           "PlotJuggler has the user's focus and any dialog the user has open. A config's secrets (passwords, "
-          "tokens) read as \"<redacted>\".",
+          "tokens) read as \"<redacted>\". rendering: how many times the main window drew in the last second "
+          "(frames_last_s; floating docks not counted) and ms_since_last_frame (null before the first). While "
+          "playing, frames_last_s near the display or playback rate means the window draws, 0 or 1 means it is "
+          "stalled; whether the compositor shows those frames it cannot see.",
           schema(json::object())),
 #ifndef PJ_TARGET_WASM
       toolEntry(
@@ -393,15 +408,7 @@ json appToolEntries() {
           "with a job_id while a large file still loads: its topics are readable as they arrive, job_wait returns "
           "the outcome and job_kill stops the import. By default the loader's own defaults apply (e.g. every "
           "topic). Returns the config the loader used, its secrets as \"<redacted>\"" PJ_MCP_OPEN_FILE_SECRETS,
-          schema(
-              {{"path", {{"type", "string"}, {"description", "absolute path"}}},
-               {"ask_user",
-                described(ask_user, "open PlotJuggler's loader dialog so the user picks topics and options")},
-               {"config",
-                {{"type", "object"},
-                 {"description",
-                  "loader settings JSON; get_status shows the config each loaded dataset used, as a template"}}}},
-              {"path"})),
+          schema(open_file_args, {"path"})),
       toolEntry(
           "unload_file",
           "Remove a loaded dataset and its data. If derived series depend on it, the user is asked to confirm in "
@@ -802,6 +809,36 @@ json toolList(ToolSet set) {
     tools.push_back(std::move(entry));
   }
   return tools;
+}
+
+std::optional<std::string> undeclaredArgument(ToolSet set, const std::string& name, const json& args) {
+  // tools/list never changes within a run but for the UI tools' switch: one table per set and switch position.
+  static std::map<std::pair<ToolSet, bool>, std::map<std::string, std::set<std::string>>> tables;
+  auto& table = tables[{set, uiToolsEnabled()}];
+  if (table.empty()) {
+    for (const json& tool : toolList(set)) {
+      std::set<std::string>& accepted = table[tool.value("name", "")];
+      const json properties = tool["inputSchema"].value("properties", json::object());
+      for (const auto& [property, unused] : properties.items()) {
+        accepted.insert(property);
+      }
+    }
+  }
+  const auto tool = table.find(name);
+  if (tool == table.end()) {
+    return std::nullopt;
+  }
+  for (const auto& [argument, unused] : args.items()) {
+    if (!tool->second.contains(argument)) {
+      std::string accepted;
+      for (const std::string& property : tool->second) {
+        accepted += (accepted.empty() ? "" : ", ") + property;
+      }
+      return name + " takes no argument '" + argument + "'; " +
+             (accepted.empty() ? std::string("it takes no arguments") : "it takes: " + accepted);
+    }
+  }
+  return std::nullopt;
 }
 
 json bridgeToolEntries() {

@@ -344,3 +344,27 @@ TEST(McpAnnotations, ReportStatusIsOnlyForPluginTokens) {
   EXPECT_FALSE(listed(PJ::mcp::ToolSet::kFull)) << "get_status and the instructions cover it";
   EXPECT_TRUE(listed(PJ::mcp::ToolSet::kAgentOnly));
 }
+
+// A misspelt or invented argument would otherwise be dropped silently, and the agent would believe the call did what
+// it asked (screenshot {"path": ...} writes no file).
+TEST(McpArguments, AnArgumentTheSchemaDoesNotDeclareIsRefusedWithTheAcceptedNames) {
+  using PJ::mcp::ToolSet;
+  using PJ::mcp::undeclaredArgument;
+  EXPECT_EQ(
+      undeclaredArgument(ToolSet::kFull, "screenshot", {{"path", "/tmp/a.png"}}),
+      "screenshot takes no argument 'path'; it takes: max_width");
+  EXPECT_EQ(
+      undeclaredArgument(ToolSet::kFull, "get_status", {{"verbose", true}}),
+      "get_status takes no argument 'verbose'; it takes no arguments");
+  EXPECT_EQ(undeclaredArgument(ToolSet::kFull, "screenshot", {{"max_width", 640}}), std::nullopt);
+  EXPECT_EQ(undeclaredArgument(ToolSet::kFull, "get_status", json::object()), std::nullopt);
+  EXPECT_EQ(undeclaredArgument(ToolSet::kFull, "open_file", {{"path", "/a.csv"}, {"wait_s", 1}}), std::nullopt);
+  EXPECT_EQ(undeclaredArgument(ToolSet::kAgentOnly, "job_wait", {{"job_id", 1}, {"timeout_s", 1}}), std::nullopt);
+  // A tool the set lacks is the unknown-tool error's to answer.
+  EXPECT_EQ(undeclaredArgument(ToolSet::kAgentOnly, "open_file", {{"bogus", 1}}), std::nullopt);
+  EXPECT_EQ(undeclaredArgument(ToolSet::kFull, "no_such_tool", {{"bogus", 1}}), std::nullopt);
+  EXPECT_EQ(undeclaredArgument(ToolSet::kFull, "ui_tree", {{"bogus", 1}}), std::nullopt);
+  PJ::mcp::setUiToolsEnabled(true);
+  EXPECT_NE(undeclaredArgument(ToolSet::kFull, "ui_tree", {{"bogus", 1}}), std::nullopt);
+  PJ::mcp::setUiToolsEnabled(false);
+}

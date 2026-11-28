@@ -24,6 +24,8 @@ scripts/qa/pjqa.py stop                             # always, at the end
 
 - Linux only. Offscreen by default; `start --xvfb` runs under a virtual X display instead. Never run on the
   user's display: keys go to the active window.
+- `start --display :N` runs on an X display you started (a private GPU display), `--display wayland` natively on
+  the session's compositor: windows appear there, so the user's own display only when they asked.
 - `--plugin-dir` names a folder of built plugins (CSV, MCAP, Parquet...); without it only built-in features load.
 - Arguments after `--` go to the app: `-d <file>` loads data, `-l <layout>` restores plots on it. A file given
   without `-d` opens its loader's dialog, as a user's double-click would.
