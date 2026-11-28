@@ -21,6 +21,7 @@
 
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene_common/saved_layer_header.h"
 using namespace Qt::StringLiterals;
 
@@ -29,11 +30,6 @@ namespace PJ {
 namespace {
 
 Q_LOGGING_CATEGORY(lcSceneDock, "pj.scene.dock")
-
-[[nodiscard]] QString objectTypeName(sdk::BuiltinObjectType object_type) {
-  const auto name = sdk::name(object_type);
-  return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
-}
 
 /// A runtime pending intent (advertised topic, no data yet), as opposed to a saved element.
 [[nodiscard]] bool isPendingIntent(const QDomElement& element) {
@@ -314,11 +310,14 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     return false;
   }
 
-  const std::optional<SavedLayerHeader> header =
-      parseSavedLayerHeader(layer_el, SavedTopicRef::kOptional, layerFactory());
-  if (!header.has_value() || !header->object_type.has_value()) {
-    markWorkspaceRestoreFailed();
-    return true;
+  std::optional<SavedLayerHeader> header;
+  {
+    PJ::XmlOptionsRecorder recorder;
+    header = parseSavedLayerHeader(layer_el, SavedTopicRef::kOptional, layerFactory());
+    if (!header.has_value() || !header->object_type.has_value()) {
+      skipRestoreElement(layer_el, recorder.firstRejection());
+      return true;
+    }
   }
   const sdk::BuiltinObjectType object_type = *header->object_type;
   const SavedElementDataset binding = header->qualified ? datasetForSavedElement(layer_el) : SavedElementDataset{};
@@ -334,14 +333,18 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   const ObjectTopicDescriptor& descriptor = session_->objectStore().descriptor(*topic_id_opt);
   const sdk::BuiltinObjectType live_type = objectTypeFromMetadata(descriptor.metadata_json);
   if (live_type != sdk::BuiltinObjectType::kNone && live_type != object_type) {
-    markWorkspaceRestoreFailed();
+    skipRestoreElement(layer_el, objectTypeMismatch(header->topic_name, object_type, live_type));
     return true;
   }
   if (refuseForeignTopic(*topic_id_opt)) {
     return true;
   }
+  if (layerFor(*topic_id_opt) != nullptr) {
+    skipRestoreElement(layer_el, duplicateTopicReason());
+    return true;
+  }
   if (addLayer(*topic_id_opt, object_type, header->display_name) != AddOutcome::kLayerAdded) {
-    markWorkspaceRestoreFailed();
+    skipRestoreElement(layer_el, tr("this view cannot show it"));
     return true;
   }
   if (header->order.has_value()) {
@@ -356,9 +359,10 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   }
   if (ISceneLayer* layer = layerFor(*topic_id_opt); layer != nullptr) {
     const QDomElement payload = layer_el.firstChildElement();
+    PJ::XmlOptionsRecorder recorder;
     if (!payload.isNull() && !layer->xmlLoadState(payload)) {
       removeTopic(*topic_id_opt);
-      markWorkspaceRestoreFailed();
+      skipRestoreElement(layer_el, recorder.firstRejection());
       return true;
     }
   }
@@ -706,13 +710,8 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
     if (!acceptsStateChildTag(child.tagName())) {
       return false;
     }
-    if (child.tagName() == "layer"_L1 &&
-        !parseSavedLayerHeader(child, SavedTopicRef::kOptional, layerFactory()).has_value()) {
-      return false;
-    }
   }
   auto restoring_guard = beginWorkspaceRestore();
-  resetWorkspaceRestoreStatus();
   clearPendingRestores();
   clearLayers();
   recordSavedDatasets(element);
@@ -740,7 +739,7 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   }
   syncViewLayers();
   refreshView();
-  return restore_failure_count_ == 0;
+  return true;
 }
 
 bool SceneDockWidget::acceptsStateChildTag(const QString& tag) const {
@@ -761,9 +760,9 @@ int SceneDockWidget::retryPendingRestores(const QSet<QString>& topic_names) {
       still_pending.push_back(std::move(pending));
       continue;
     }
-    const uint64_t failures_before = restore_failure_count_;
+    const uint64_t skipped_before = skipped_restores_;
     if (restoreOnePending(pending.document.documentElement())) {
-      if (restore_failure_count_ == failures_before) {
+      if (skipped_restores_ == skipped_before) {
         ++restored;
       }
     } else {
@@ -887,28 +886,21 @@ void SceneDockWidget::appendPendingRestoreElements(QDomDocument& doc, QDomElemen
   }
 }
 
-SceneDockWidget::PendingRestoreSnapshot SceneDockWidget::capturePendingRestoreState() const {
-  PendingRestoreSnapshot snapshot;
-  snapshot.elements = pending_restore_elements_;  // QDomDocument is implicitly shared: a cheap copy
-  snapshot.saved_datasets = saved_datasets_;
-  snapshot.restore_failure_count = restore_failure_count_;
-  snapshot.ever_had_content = ever_had_content_;
-  return snapshot;
+void SceneDockWidget::skipRestoreElement(const QDomElement& element, const QString& reason) {
+  QString name = element.attribute(u"topic_name"_s);
+  if (name.isEmpty()) {
+    name = element.attribute(u"display_name"_s);
+  }
+  const QString line = tr("<%1> \"%2\" was skipped: %3")
+                           .arg(element.tagName(), name, reason.isEmpty() ? tr("it could not be restored") : reason);
+  qCWarning(lcSceneDock).noquote() << line;
+  ++skipped_restores_;
+  last_refusal_reason_ = line;
+  emit restoreElementSkipped(line);
 }
 
-void SceneDockWidget::restorePendingRestoreState(const PendingRestoreSnapshot& snapshot) {
-  pending_restore_elements_ = snapshot.elements;
-  saved_datasets_ = snapshot.saved_datasets;
-  restore_failure_count_ = snapshot.restore_failure_count;
-  ever_had_content_ = snapshot.ever_had_content;
-}
-
-void SceneDockWidget::markWorkspaceRestoreFailed() {
-  ++restore_failure_count_;
-}
-
-void SceneDockWidget::resetWorkspaceRestoreStatus() {
-  restore_failure_count_ = 0;
+QString SceneDockWidget::duplicateTopicReason() {
+  return tr("the layout names this topic twice");
 }
 
 void SceneDockWidget::clearPendingRestores() {

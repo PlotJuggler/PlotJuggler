@@ -74,8 +74,7 @@ std::optional<SavedLayerHeader> parseSavedLayerHeader(
   if (XmlOptionsRecorder::active()) {
     XmlOption object_type{.attribute = u"object_type"_s, .type = u"enum"_s};
     for (const sdk::BuiltinObjectType type : factory.types()) {
-      const std::string_view name = sdk::name(type);
-      object_type.values.append(QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size())));
+      object_type.values.append(objectTypeName(type));
     }
     XmlOptionsRecorder::noteOption(element, std::move(object_type));
   }
@@ -91,6 +90,15 @@ std::optional<SavedLayerHeader> parseSavedLayerHeader(
     return std::nullopt;
   }
   return header;
+}
+
+QString objectTypeName(sdk::BuiltinObjectType object_type) {
+  const std::string_view name = sdk::name(object_type);
+  return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
+}
+
+QString objectTypeMismatch(const QString& topic_name, sdk::BuiltinObjectType saved, sdk::BuiltinObjectType live) {
+  return u"object_type=\"%1\", but topic %2 holds %3"_s.arg(objectTypeName(saved), topic_name, objectTypeName(live));
 }
 
 }  // namespace PJ

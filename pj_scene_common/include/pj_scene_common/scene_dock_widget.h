@@ -96,11 +96,6 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
       std::function<std::optional<DatasetId>(DatasetId, const QString&, const QString&, const QString&)>;
   void setObjectDatasetResolver(ObjectDatasetResolver resolver);
 
-  /// True when the current replay permanently rejected an element or payload.
-  [[nodiscard]] bool workspaceRestoreFailed() const noexcept {
-    return restore_failure_count_ != 0;
-  }
-
   /// Runs pruneEvictedObjects(), then keeps a dock that never held content (or has pending restores): only a dock
   /// whose content was all evicted resets. `final` so an override cannot drop that rule; customize
   /// pruneEvictedObjects().
@@ -169,6 +164,11 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// refusal except a plain "unsupported type" reports here, so the shell can surface it. Refusals within one
   /// event-loop turn emit once.
   void topicRefused(const QString& reason);
+  /// A restore dropped one saved element while the rest of the dock restored (a value a payload reader refuses, a
+  /// layer whose topic holds another object type); `line` names the element and why. The shell reports it as a
+  /// layout warning. A skip also sets takeRefusalReason(), so the MCP widget_state tool refuses a `set` that would
+  /// drop an element.
+  void restoreElementSkipped(const QString& line);
 
  protected:
   enum class DeferredElementKind { kRenderLayer, kConfigTopic };
@@ -355,15 +355,6 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
     [[nodiscard]] QString label() const;
   };
 
-  /// What a rollback hands back: the pending queue and the dataset choice still open (empty once settled).
-  /// Without the choice, reloading the previous state would arm a gate that no settle follows.
-  struct PendingRestoreSnapshot {
-    std::vector<PendingRestoreElement> elements;
-    std::vector<SavedDataset> saved_datasets;
-    uint64_t restore_failure_count = 0;
-    bool ever_had_content = false;
-  };
-
   /// Restores one deferred element for retryPendingRestores. The base restores a <layer>; a family overrides it for
   /// other kinds (3D's <config_topic>). False keeps the element pending.
   virtual bool restoreOnePending(const QDomElement& element);
@@ -371,11 +362,11 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Queues an element whose dataset or topic is not available yet for a later retryPendingRestores; a family
   /// defers its own elements into the same queue. Duplicates (same tag, topic and dataset identity) are ignored.
   void rememberPendingRestore(const QDomElement& element, QString topic_name = {});
-  [[nodiscard]] PendingRestoreSnapshot capturePendingRestoreState() const;
-  void restorePendingRestoreState(const PendingRestoreSnapshot& snapshot);
   void appendPendingRestoreElements(QDomDocument& doc, QDomElement& root) const;
-  void markWorkspaceRestoreFailed();
-  void resetWorkspaceRestoreStatus();
+  /// Drops a saved element that cannot be restored and emits restoreElementSkipped with `reason` (the first
+  /// rejection a reporting reader gave, when there is one); the dock's other elements still restore.
+  void skipRestoreElement(const QDomElement& element, const QString& reason);
+  [[nodiscard]] static QString duplicateTopicReason();
   void notifyWorkspaceChanged();
 
   [[nodiscard]] QScopedValueRollback<bool> beginWorkspaceRestore() {
@@ -466,7 +457,7 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   // Set by the first refusal of an event-loop turn, cleared by a zero-delay timer.
   bool refusal_reported_ = false;
   QString last_refusal_reason_;
-  uint64_t restore_failure_count_ = 0;
+  uint64_t skipped_restores_ = 0;  // only compared before/after one pending retry
 
   // Repaint gate: the key of the last painted tracker frame; have_render_key_ is false until the first paint and
   // after any layer-set change.

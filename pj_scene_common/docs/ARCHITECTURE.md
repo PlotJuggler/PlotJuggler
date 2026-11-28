@@ -110,9 +110,16 @@ as the factory's types but its rule is the family's. The payload child is checke
 `LayerFactory::validatePayload`; a type registered without a validator refuses every payload, and a layer whose
 payload carries no options registers `acceptPayloadWithoutOptions` instead.
 
-`xmlLoadState` parses each layer's header first, so a malformed state is rejected before anything is cleared. A layer whose dataset or topic is not loaded yet is kept as detached XML in the dock's pending queue and
-retried by `retryPendingRestores`. A permanently rejected element (bad object type, type mismatch, rejected payload)
-counts toward `workspaceRestoreFailed()`; a pending one does not. `workspaceChanged` reports committed persistent
+`xmlLoadState` rejects a state with an unknown child element before anything is cleared. A layer whose dataset or
+topic is not loaded yet is kept as detached XML in the dock's pending queue and retried by `retryPendingRestores`. A
+layer that can never restore (a malformed header, a type that does not match the live topic, a topic named twice, a
+payload its layer refuses) is skipped through `skipRestoreElement`: the rest of the dock restores, and the skip is
+reported as one line naming the element, the topic and the reason (the reporting reader's first rejection, so it
+names the attribute and the values it takes), emitted as `restoreElementSkipped` when it happens, a late retry or a
+paste included. The host reports each line as a "Layout" warning, which MCP `load_layout` returns; the last also
+becomes the refusal reason, so MCP `set_widget_state` reverts on it. A history replay (undo, redo) treats a skip as a
+failure in the host; a layout keeps the rest of the workspace, in the browser too, where it is applied exactly; otherwise only a state that is not this dock's (wrong tag, unknown child, a view state the
+family refuses) fails `xmlLoadState`. `workspaceChanged` reports committed persistent
 mutations and is suppressed while a restore replays (`beginWorkspaceRestore`). `unresolvedBlockingPendingRestores`
 separates saved state that blocks an exact restore from advertised-topic intents (`deferTopicIntent`, marked
 `pending_intent`), which are durable workspace state. The topic-demand binder may hold demand for pending entries

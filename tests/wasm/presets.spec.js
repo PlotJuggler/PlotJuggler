@@ -121,9 +121,10 @@ test('a preset that fails anywhere leaves the workspace as it was', async ({ pag
   const layout = await authorPresetLayout(page, screen, messages);
   const { sha256 } = await import('../../scripts/wasm_manifest.mjs');
   const otherSha = sha256(Buffer.from('other bytes'));
+  // A child the dock does not know fails its xmlLoadState; a bad <layer> would only be skipped.
   const brokenScene = layout.replace(
     /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/,
-    '$1<scene3d><layer object_type="not_a_type"/></scene3d>$2',
+    '$1<scene3d><not_a_layer/></scene3d>$2',
   );
   const missingPlugin = setElementAttributeAt(
     setElementAttributeAt(layout, 'plugin', 1, 'manifest_id', 'pj-missing-plugin'), 'plugin', 1, 'ID', 'Missing Plugin');
@@ -1187,7 +1188,7 @@ test('a sample that fails releases what it staged and leaves the open sample as 
       [recordingUrl, Buffer.from('not the recording'), 'fingerprint'],
       // Imported, then rolled back: the layout cannot apply.
       [samples.layoutUrl('builtin_filters'), filtersLayout.replace(
-        /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/, '$1<scene3d><layer object_type="not_a_type"/></scene3d>$2'),
+        /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/, '$1<scene3d><not_a_layer/></scene3d>$2'),
       'apply-after-source-load'],
     ]) {
       // Both files are on the mirror, cross-origin.

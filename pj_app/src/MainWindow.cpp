@@ -2011,6 +2011,9 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     auto* widget = new Scene3DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
     connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
+    connect(widget, &SceneDockWidget::restoreElementSkipped, this, [this, widget](const QString& line) {
+      reportSkippedSceneElement(widget, line);
+    });
     connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
@@ -2042,6 +2045,9 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     auto* widget = new Scene2DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
     connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
+    connect(widget, &SceneDockWidget::restoreElementSkipped, this, [this, widget](const QString& line) {
+      reportSkippedSceneElement(widget, line);
+    });
     connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     topic_demand_controller_->registerSceneDock(widget);
@@ -2100,6 +2106,7 @@ EmbeddedViewHost MainWindow::makeEmbeddedViewHost() {
     // reaches the plugin as scene_view_error instead of a toast.
     disconnect(view, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, nullptr);
     disconnect(view, &SceneDockWidget::topicRefused, this, nullptr);
+    disconnect(view, &SceneDockWidget::restoreElementSkipped, this, nullptr);
     embedded_scene_views_.append(view);
     frameDroppedScene3dContent(widget);
     return view;
@@ -7348,11 +7355,27 @@ MainWindow::SceneRestoreVerdict MainWindow::settleSceneRestores() {
   // folded here because a dock cannot see its siblings.
   forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->finishRestore(); });
   SceneRestoreVerdict verdict;
-  forEachSceneDock([&verdict](SceneDockWidget* scene_dock) {
-    verdict.failed = verdict.failed || scene_dock->workspaceRestoreFailed();
-  });
+  verdict.skipped = scene_restore_skips_ > 0;
   verdict.blocking_topics = unresolvedPendingSceneRestores();
   return verdict;
+}
+
+void MainWindow::reportSkippedSceneElement(const QWidget* scene_dock, const QString& line) {
+  ++scene_restore_skips_;
+  // The hosting dock's name is what the user sees (a layout restores it before the dock's content); the scene's own
+  // title is an automatic one.
+  QString title;
+  for (const QWidget* w = scene_dock; w != nullptr && title.isEmpty(); w = w->parentWidget()) {
+    if (const auto* dock = qobject_cast<const DockWidget*>(w); dock != nullptr && dock->name() != "..."_L1) {
+      title = dock->name();
+    }
+  }
+  if (title.isEmpty()) {
+    title = scene_dock->windowTitle();
+  }
+  emitDiagnostic(
+      DiagnosticLevel::kWarning, "Layout", "layout-scene-element-skipped",
+      tr("%1: %2").arg(title.isEmpty() ? tr("A 2D/3D view") : title, line));
 }
 
 int MainWindow::retryPendingSceneRestores(const std::vector<CatalogItem>& items) {
@@ -7485,17 +7508,8 @@ void MainWindow::onProgressiveLayoutDrained() {
     return;
   }
 
-  // A rejected element fails the transaction, not merely warns: otherwise the partial scene becomes the baseline.
-  if (settleSceneRestores().failed) {
-    const bool rolled_back = abortProgressiveRestore();
-    reportLayoutRestoreIssue(
-        policy, "scene-restore-failed",
-        rolled_back ? tr("A saved scene element was invalid; the previous workspace was restored.")
-                    : tr("A saved scene element was invalid, and the previous workspace could not be fully restored "
-                         "against the reloaded data. The partial layout was kept as the new undo baseline."));
-    emit layoutRestoreSettled(false, progressive_load_);
-    return;
-  }
+  // A skipped scene element is already reported; a layout load keeps the rest.
+  static_cast<void>(settleSceneRestores());
 
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
@@ -8689,7 +8703,9 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
         tr("%n layout curve(s) could not be bound: %1", nullptr, static_cast<int>(shown.size()))
             .arg(shown.join(u", "_s)));
   }
-  // kSilentDrop leaves unresolved curves for xmlLoadState to discard.
+  // kSilentDrop leaves unresolved curves for xmlLoadState to discard. The skips counted are this restore's: a
+  // processor restored above can resolve a pending element of a dock this load is about to replace.
+  scene_restore_skips_ = 0;
   if (!xmlLoadState(doc, intent)) {
     return RestoreResult::kFailed;
   }
@@ -8701,14 +8717,16 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
     return RestoreResult::kFailed;
   }
   rebuildPendingDisplayBindings(doc);
-  // No drain follows a blocking load or a history replay: a rejected scene element, or an unresolved blocking one
-  // in an exact snapshot, fails the transaction rather than committing a partial scene.
+  // No drain follows a blocking load or a history replay: an unresolved blocking scene element in an exact restore,
+  // or a skipped one in a history replay, fails the transaction rather than committing a partial scene. A layout
+  // (the browser applies one exactly) keeps its other elements: the skipped ones are already reported.
   const SceneRestoreVerdict scenes = settleSceneRestores();
-  if (scenes.failed || (policy == MissingCurvePolicy::kExact && !scenes.blocking_topics.isEmpty())) {
+  const bool exact = policy == MissingCurvePolicy::kExact;
+  if (exact && (!scenes.blocking_topics.isEmpty() || (scenes.skipped && intent == RestoreIntent::kHistory))) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "layout-scene-failed",
-        scenes.failed ? tr("A 2D/3D scene could not restore its layers (the element is named in the log).")
-                      : tr("Scene layers have no matching data: %1").arg(scenes.blocking_topics.join(u", "_s)));
+        scenes.skipped ? tr("A 2D/3D scene could not restore its layers (the element is named in the log).")
+                       : tr("Scene layers have no matching data: %1").arg(scenes.blocking_topics.join(u", "_s)));
     return RestoreResult::kFailed;
   }
   if (policy == MissingCurvePolicy::kPrompt && !scenes.blocking_topics.isEmpty()) {

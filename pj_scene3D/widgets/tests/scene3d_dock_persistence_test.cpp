@@ -49,6 +49,23 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
+// Records a dock's restoreElementSkipped lines from its construction on.
+class SkipLog {
+ public:
+  explicit SkipLog(PJ::SceneDockWidget& dock) {
+    QObject::connect(&dock, &PJ::SceneDockWidget::restoreElementSkipped, &context_, [this](const QString& line) {
+      lines_.push_back(line);
+    });
+  }
+  QStringList take() {
+    return std::exchange(lines_, {});
+  }
+
+ private:
+  QObject context_;
+  QStringList lines_;
+};
+
 // An engine dataset with the given source name (the re-resolution key) and a TF object topic with one owned payload,
 // so the descriptor is non-empty and entryCount() > 0.
 struct DatasetTopic {
@@ -399,7 +416,6 @@ TEST(Scene3DDockPersistence, GenericLayerStaysPendingWhileAmbiguous) {
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.xmlLoadState(state));
   dock.finishRestore();
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.layers().empty());
   EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/shared"_s});
   EXPECT_EQ(dock.boundDatasetIdForTest(), 0U);
@@ -444,7 +460,6 @@ TEST(Scene3DDockPersistence, GenericConfigStaysPendingWhileAmbiguous) {
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.xmlLoadState(state));
   dock.finishRestore();
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.layers().empty());
   EXPECT_FALSE(dock.hasTransformBufferForTest());
   EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/shared_tf"_s});
@@ -470,7 +485,6 @@ TEST(Scene3DDockPersistence, GenericConfigBindsTheDocksDatasetWhenAmbiguous) {
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.xmlLoadState(state));
   dock.finishRestore();
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_EQ(dock.layers().size(), 1U);
   EXPECT_TRUE(dock.hasTransformBufferForTest());
   EXPECT_EQ(dock.boundDatasetIdForTest(), left_tf.dataset_id);
@@ -639,7 +653,7 @@ TEST(Scene3DDockPersistence, RepeatedLoadRebindsTransformDatasetAndEmptyStateCle
   EXPECT_TRUE(target.currentFixedFrame().isEmpty()) << "empty XML must not retain the prior scene's fixed frame";
 }
 
-TEST(Scene3DDockPersistence, QualifiedConfigRejectsKnownLiveObjectTypeMismatch) {
+TEST(Scene3DDockPersistence, QualifiedConfigSkipsAKnownLiveObjectTypeMismatch) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
   const DatasetTopic image = registerDepthDataset(session, "cam.dat", "/same_name", /*push_sample=*/false);
@@ -655,13 +669,17 @@ TEST(Scene3DDockPersistence, QualifiedConfigRejectsKnownLiveObjectTypeMismatch) 
   doc.appendChild(state);
 
   PJ::Scene3DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
-  EXPECT_FALSE(dock.xmlLoadState(state));
+  EXPECT_TRUE(dock.xmlLoadState(state));
   EXPECT_FALSE(dock.hasTransformBufferForTest());
+  const QStringList skipped = dock_skips.take();
+  ASSERT_EQ(skipped.size(), 1);
+  EXPECT_TRUE(skipped.front().contains(u"object_type=\"kFrameTransforms\""_s)) << skipped.front().toStdString();
 }
 
-TEST(Scene3DDockPersistence, QualifiedLayerRejectsKnownLiveObjectTypeMismatch) {
+TEST(Scene3DDockPersistence, QualifiedLayerSkipsAKnownLiveObjectTypeMismatch) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
   const DatasetTopic tf = registerTfDataset(session, "drive.dat", "/same_name");
@@ -677,11 +695,17 @@ TEST(Scene3DDockPersistence, QualifiedLayerRejectsKnownLiveObjectTypeMismatch) {
   doc.appendChild(state);
 
   PJ::Scene3DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
-  EXPECT_FALSE(dock.xmlLoadState(state));
+  EXPECT_TRUE(dock.xmlLoadState(state));
   EXPECT_TRUE(dock.layers().empty());
   EXPECT_FALSE(dock.hasTransformBufferForTest());
+  const QStringList skipped = dock_skips.take();
+  ASSERT_EQ(skipped.size(), 1);
+  EXPECT_TRUE(skipped.front().contains(u"/same_name"_s)) << skipped.front().toStdString();
+  EXPECT_TRUE(skipped.front().contains(u"object_type=\"kImage\""_s)) << skipped.front().toStdString();
+  EXPECT_TRUE(skipped.front().contains(u"kFrameTransforms"_s)) << skipped.front().toStdString();
 }
 
 // A Scene3D dock owns one TF/time domain: accepting a topic from a second dataset would leave the first TF buffer
@@ -846,7 +870,6 @@ TEST(Scene3DDockPersistence, RestoreRefusesTheForeignDatasetLayerWithAVisibleRea
   ASSERT_TRUE(dock.xmlLoadState(state)) << "a mixed-dataset layout must still load";
   EXPECT_EQ(dock.layers().size(), 1U) << "only the first dataset's layer restores";
   EXPECT_EQ(dock.boundDatasetIdForTest(), a.dataset_id);
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   ASSERT_EQ(reasons.size(), 1) << "the dropped element is reported, never silently lost";
   EXPECT_TRUE(reasons.front().contains(u"a.dat"_s)) << reasons.front().toStdString();
   EXPECT_TRUE(reasons.front().contains(u"b.dat"_s)) << reasons.front().toStdString();
@@ -883,7 +906,6 @@ TEST(Scene3DDockPersistence, RestoreRefusesTheForeignDatasetConfigTopicWithAVisi
       &dock, &PJ::SceneDockWidget::topicRefused, [&reasons](const QString& reason) { reasons.push_back(reason); });
 
   ASSERT_TRUE(dock.xmlLoadState(state)) << "a mixed-dataset layout must still load";
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_EQ(dock.boundDatasetIdForTest(), a.dataset_id);
   EXPECT_TRUE(dock.hasTransformBufferForTest());
   ASSERT_EQ(reasons.size(), 1) << "the dropped config topic is reported, never silently lost";
@@ -999,7 +1021,6 @@ TEST(Scene3DDockPersistence, MixedLayoutKeepsTheFirstSavedDatasetWhenItIsATfConf
   EXPECT_TRUE(dock.layers().empty()) << "B is refused once A is the dock's dataset";
   EXPECT_EQ(dock.boundDatasetIdForTest(), layout.datasetA().dataset_id);
   EXPECT_TRUE(dock.hasTransformBufferForTest());
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
   ASSERT_EQ(layout.reasons().size(), 1) << "the dropped layer is reported, never silently lost";
   EXPECT_TRUE(layout.reasons().front().contains(u"a.dat"_s)) << layout.reasons().front().toStdString();
@@ -1021,14 +1042,13 @@ TEST(Scene3DDockPersistence, MixedLayoutFallsBackToTheNextLoadedSavedDatasetInA3
 
   EXPECT_EQ(dock.layers().size(), 1U);
   EXPECT_EQ(dock.boundDatasetIdForTest(), layout.datasetB().dataset_id);
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
   ASSERT_EQ(layout.reasons().size(), 1);
   EXPECT_TRUE(layout.reasons().front().contains(u"a.dat"_s)) << layout.reasons().front().toStdString();
   EXPECT_TRUE(layout.reasons().front().contains(u"b.dat"_s)) << layout.reasons().front().toStdString();
 }
 
-TEST(Scene3DDockPersistence, MalformedLayerPayloadFailsAndPreservesLiveScene) {
+TEST(Scene3DDockPersistence, MalformedLayerPayloadIsSkipped) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
   const DatasetTopic topic = registerDepthDataset(session, "cam.dat", "/depth", /*push_sample=*/true);
@@ -1046,21 +1066,22 @@ TEST(Scene3DDockPersistence, MalformedLayerPayloadFailsAndPreservesLiveScene) {
   doc.appendChild(state);
 
   PJ::Scene3DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.addTopic(topic.topic_id, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s));
-  EXPECT_FALSE(dock.xmlLoadState(state));
-  ASSERT_EQ(dock.layers().size(), 1u);
-  EXPECT_EQ(dock.layers().front().topic_id, topic.topic_id);
-  EXPECT_TRUE(dock.hasTransformBufferForTest());
+  EXPECT_TRUE(dock.xmlLoadState(state));
+  EXPECT_TRUE(dock.layers().empty());
+  EXPECT_EQ(dock_skips.take().size(), 1);
 }
 
-TEST(Scene3DDockPersistence, MalformedConfigPayloadFailsAndPreservesExistingBinding) {
+TEST(Scene3DDockPersistence, MalformedConfigPayloadIsSkipped) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
   const DatasetTopic topic = registerTfDataset(session, "drive.dat", "/tf");
 
   PJ::Scene3DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.addTopic(topic.topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
@@ -1077,10 +1098,10 @@ TEST(Scene3DDockPersistence, MalformedConfigPayloadFailsAndPreservesExistingBind
   state.appendChild(config);
   doc.appendChild(state);
 
-  EXPECT_FALSE(dock.xmlLoadState(state));
+  EXPECT_TRUE(dock.xmlLoadState(state));
   EXPECT_TRUE(dock.layers().empty());
-  EXPECT_TRUE(dock.hasTransformBufferForTest());
-  EXPECT_EQ(dock.boundDatasetIdForTest(), topic.dataset_id);
+  EXPECT_FALSE(dock.hasTransformBufferForTest());
+  EXPECT_EQ(dock_skips.take().size(), 1);
 }
 
 TEST(Scene3DDockPersistence, DeferredLayerReturnsToItsSavedDrawOrder) {
@@ -1160,6 +1181,7 @@ TEST(Scene3DDockPersistence, DeferredMalformedLayerIsRemovedAndConsumedWhenTopic
   doc.appendChild(state);
 
   PJ::Scene3DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.xmlLoadState(state));
@@ -1172,8 +1194,7 @@ TEST(Scene3DDockPersistence, DeferredMalformedLayerIsRemovedAndConsumedWhenTopic
   registerDepthTopic(session, dataset_id, "/late_bad", /*push_sample=*/false);
   EXPECT_EQ(dock.retryPendingRestores(QSet<QString>{u"/late_bad"_s}), 0)
       << "an invalid pending payload is consumed but is not reported as restored";
-  EXPECT_TRUE(dock.workspaceRestoreFailed())
-      << "the progressive-layout owner must be able to roll back a permanently rejected pending element";
+  EXPECT_EQ(dock_skips.take().size(), 1) << "the skip is reported once";
   EXPECT_TRUE(dock.unresolvedPendingRestores().isEmpty()) << "invalid XML must not retry forever";
   EXPECT_TRUE(dock.layers().empty()) << "the layer created before payload validation must be removed";
   EXPECT_FALSE(dock.hasTransformBufferForTest()) << "invalid pending restore must also release its dataset binding";
@@ -1243,21 +1264,6 @@ TEST(Scene3DDockPersistence, DeferredNestedRobotTopicMaterializesWithoutDuplicat
   ASSERT_TRUE(dock.xmlLoadState(state));
   EXPECT_TRUE(dock.layers().empty()) << "a layer with an unresolved nested source must not remain half-restored";
   EXPECT_EQ(dock.unresolvedPendingRestores(), QStringList{u"/late_robot"_s});
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
-
-  // A rejected same-widget paste performs an internal live-state rollback. The
-  // nested retry key is queue metadata (not an outer-layer XML attribute), so it
-  // must survive that rollback together with the pending document.
-  QDomDocument invalid_doc;
-  QDomElement invalid_state = invalid_doc.createElement(u"scene3d"_s);
-  QDomElement invalid_config = invalid_doc.createElement(u"config_topic"_s);
-  invalid_config.setAttribute(u"topic_name"_s, u"/bad"_s);
-  invalid_config.setAttribute(u"object_type"_s, u"kPointCloud"_s);
-  invalid_state.appendChild(invalid_config);
-  invalid_doc.appendChild(invalid_state);
-  EXPECT_FALSE(dock.xmlLoadState(invalid_state));
-  EXPECT_EQ(dock.unresolvedPendingRestores(), QStringList{u"/late_robot"_s});
-  EXPECT_FALSE(dock.workspaceRestoreFailed()) << "rollback restores the prior pending status epoch";
 
   int workspace_changes = 0;
   QObject::connect(
@@ -1266,7 +1272,6 @@ TEST(Scene3DDockPersistence, DeferredNestedRobotTopicMaterializesWithoutDuplicat
   ASSERT_NE(robot_topic.id, 0U);
   EXPECT_EQ(dock.retryPendingRestores(QSet<QString>{u"/late_robot"_s}), 1);
   EXPECT_TRUE(dock.unresolvedPendingRestores().isEmpty());
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_EQ(workspace_changes, 0) << "progressive materialization belongs to the original restore transaction";
 
   const auto layers = dock.layers();
@@ -1279,7 +1284,7 @@ TEST(Scene3DDockPersistence, DeferredNestedRobotTopicMaterializesWithoutDuplicat
   EXPECT_EQ(dock.layers().size(), 1U);
 }
 
-TEST(Scene3DDockPersistence, DeferredNestedRobotWrongTypeIsPermanentRestoreFailure) {
+TEST(Scene3DDockPersistence, DeferredNestedRobotWrongTypeIsSkipped) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
   const auto dataset_or =
@@ -1293,6 +1298,7 @@ TEST(Scene3DDockPersistence, DeferredNestedRobotWrongTypeIsPermanentRestoreFailu
   doc.appendChild(state);
 
   PJ::Scene3DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.xmlLoadState(state));
@@ -1306,53 +1312,9 @@ TEST(Scene3DDockPersistence, DeferredNestedRobotWrongTypeIsPermanentRestoreFailu
       });
   ASSERT_TRUE(wrong_topic.has_value()) << wrong_topic.error();
   EXPECT_EQ(dock.retryPendingRestores(QSet<QString>{u"/late_robot"_s}), 0);
-  EXPECT_TRUE(dock.workspaceRestoreFailed())
-      << "a live identity with the wrong type must make the progressive transaction roll back";
+  EXPECT_EQ(dock_skips.take().size(), 1) << "a live identity with the wrong type is reported as skipped";
   EXPECT_TRUE(dock.unresolvedPendingRestores().isEmpty()) << "permanent failures must be consumed exactly once";
   EXPECT_TRUE(dock.layers().empty());
-}
-
-TEST(Scene3DDockPersistence, RejectedClipboardReplayPreservesPriorPendingQueue) {
-  PJ::SessionManager session;
-  PJ::TransformService transform_service(session);
-  const auto dataset_or =
-      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "pending.dat", .time_domain_id = 0});
-  ASSERT_TRUE(dataset_or.has_value());
-  const PJ::DatasetId dataset_id = *dataset_or;
-
-  QDomDocument pending_doc;
-  QDomElement pending_state = pending_doc.createElement(u"scene3d"_s);
-  QDomElement pending_layer = pending_doc.createElement(u"layer"_s);
-  pending_layer.setAttribute(u"dataset_id"_s, QString::number(dataset_id));
-  pending_layer.setAttribute(u"dataset_source"_s, u"pending.dat"_s);
-  pending_layer.setAttribute(u"topic_name"_s, u"/late"_s);
-  pending_layer.setAttribute(u"object_type"_s, u"kImage"_s);
-  pending_state.appendChild(pending_layer);
-  pending_doc.appendChild(pending_state);
-
-  PJ::Scene3DDockWidget dock;
-  dock.setSessionManager(&session);
-  dock.setTransformService(&transform_service);
-  ASSERT_TRUE(dock.xmlLoadState(pending_state));
-  ASSERT_EQ(dock.unresolvedPendingRestores(), QStringList{u"/late"_s});
-
-  const PJ::ObjectTopicId ready = registerDepthTopic(session, dataset_id, "/ready", /*push_sample=*/false);
-  QDomDocument invalid_doc;
-  QDomElement invalid_state = invalid_doc.createElement(u"scene3d"_s);
-  QDomElement invalid_layer = invalid_doc.createElement(u"layer"_s);
-  invalid_layer.setAttribute(u"dataset_id"_s, QString::number(dataset_id));
-  invalid_layer.setAttribute(u"dataset_source"_s, u"pending.dat"_s);
-  invalid_layer.setAttribute(u"topic_name"_s, u"/ready"_s);
-  invalid_layer.setAttribute(u"object_type"_s, u"kImage"_s);
-  invalid_layer.appendChild(invalid_doc.createElement(u"not_a_depthcloud_payload"_s));
-  invalid_state.appendChild(invalid_layer);
-  invalid_doc.appendChild(invalid_state);
-
-  EXPECT_FALSE(dock.xmlLoadState(invalid_state));
-  EXPECT_TRUE(dock.layers().empty());
-  EXPECT_EQ(dock.unresolvedPendingRestores(), QStringList{u"/late"_s});
-  EXPECT_FALSE(dock.workspaceRestoreFailed()) << "rollback restores the prior transaction's status epoch";
-  EXPECT_NE(ready.id, 0U);
 }
 
 TEST(Scene3DDockPersistence, WorkspaceSignalTracksPresentationAndLayerConfigButNotXmlRestore) {
@@ -1600,7 +1562,6 @@ TEST(Scene3DDockPersistence, GenericPoseTrailStaysPendingWhileAmbiguous) {
 
   ASSERT_TRUE(dock.xmlLoadState(scene));
   dock.finishRestore();
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.layers().empty());
   EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/odom"_s});
 }
@@ -1628,7 +1589,6 @@ TEST(Scene3DDockPersistence, GenericPoseTrailBindsTheDocksDatasetWhenAmbiguous) 
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.xmlLoadState(scene));
   dock.finishRestore();
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
   ASSERT_EQ(dock.layers().size(), 1U);
   auto* trail = dynamic_cast<pj::scene3d::TrailLayer*>(dock.layerFor(dock.layers().front().topic_id));
@@ -1661,7 +1621,6 @@ TEST(Scene3DDockPersistence, GenericRobotPayloadBindsTheDocksDatasetWhenAmbiguou
   dock.setTransformService(&transform_service);
   ASSERT_TRUE(dock.xmlLoadState(state));
   dock.finishRestore();
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
   ASSERT_EQ(dock.layers().size(), 1U);
   auto* robot = dynamic_cast<pj::scene3d::RobotModelLayer*>(dock.layerFor(dock.layers().front().topic_id));
@@ -1794,7 +1753,7 @@ TEST(Scene3DDockPersistence, PoseLayerOwnsEmbeddedTrailInsteadOfAddingALayer) {
   EXPECT_TRUE(off_state.firstChildElement(u"trail"_s).isNull());
 }
 
-TEST(Scene3DDockPersistence, TrailRestoreRejectsMalformedElements) {
+TEST(Scene3DDockPersistence, TrailRestoreSkipsMalformedElements) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
 
@@ -1820,16 +1779,63 @@ TEST(Scene3DDockPersistence, TrailRestoreRejectsMalformedElements) {
     scene.appendChild(layer_el);
 
     PJ::Scene3DDockWidget dock;
+    SkipLog dock_skips(dock);
     dock.setSessionManager(&session);
     dock.setTransformService(&transform_service);
-    // kInvalid aborts the whole replay: xmlLoadState rejects BEFORE mutation.
-    const bool rejected = !dock.xmlLoadState(scene);
-    return rejected && dock.layers().empty();
+    const bool loaded = dock.xmlLoadState(scene);
+    return loaded && dock.layers().empty() && dock_skips.take().size() == 1;
   };
 
-  EXPECT_TRUE(try_restore(u"warp_drive"_s, u"base"_s, u"0"_s)) << "unknown source_kind must reject";
-  EXPECT_TRUE(try_restore(u"tf_frame"_s, QString(), u"0"_s)) << "tf trail without a frame must reject";
-  EXPECT_TRUE(try_restore(u"tf_frame"_s, u"base"_s, u"banana"_s)) << "malformed order must reject";
+  EXPECT_TRUE(try_restore(u"warp_drive"_s, u"base"_s, u"0"_s)) << "unknown source_kind must be skipped";
+  EXPECT_TRUE(try_restore(u"tf_frame"_s, QString(), u"0"_s)) << "tf trail without a frame must be skipped";
+  EXPECT_TRUE(try_restore(u"tf_frame"_s, u"base"_s, u"banana"_s)) << "malformed order must be skipped";
+}
+
+// One bad attribute in one layer drops that layer and names the attribute and its valid values; the dock's other
+// layers restore.
+TEST(Scene3DDockPersistence, PointCloudLayerWithAnUnknownShapeIsSkippedAndNamed) {
+  PJ::SessionManager session;
+  PJ::TransformService transform_service(session);
+  const DatasetTopic depth = registerDepthDataset(session, "drive.dat", "/depth", /*push_sample=*/true);
+  ASSERT_TRUE(session.objectStore()
+                  .registerTopic(
+                      PJ::ObjectTopicDescriptor{
+                          .dataset_id = depth.dataset_id,
+                          .topic_name = "/cloud",
+                          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+                      })
+                  .has_value());
+
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"scene3d"_s);
+  const auto append_layer = [&](const QString& topic, const QString& type) {
+    QDomElement layer = doc.createElement(u"layer"_s);
+    layer.setAttribute(u"dataset_id"_s, QString::number(depth.dataset_id));
+    layer.setAttribute(u"dataset_source"_s, u"drive.dat"_s);
+    layer.setAttribute(u"topic_name"_s, topic);
+    layer.setAttribute(u"object_type"_s, type);
+    state.appendChild(layer);
+    return layer;
+  };
+  QDomElement cloud = append_layer(u"/cloud"_s, u"kPointCloud"_s);
+  QDomElement settings = doc.createElement(u"pointcloud"_s);
+  settings.setAttribute(u"shape"_s, u"square"_s);
+  cloud.appendChild(settings);
+  append_layer(u"/depth"_s, u"kImage"_s);
+  doc.appendChild(state);
+
+  PJ::Scene3DDockWidget dock;
+  SkipLog dock_skips(dock);
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  EXPECT_TRUE(dock.xmlLoadState(state));
+  ASSERT_EQ(dock.layers().size(), 1U);
+  EXPECT_EQ(dock.layers().front().topic_id.id, depth.topic_id.id);
+  const QStringList skipped = dock_skips.take();
+  ASSERT_EQ(skipped.size(), 1);
+  EXPECT_TRUE(skipped.front().contains(u"/cloud"_s)) << skipped.front().toStdString();
+  EXPECT_TRUE(skipped.front().contains(u"shape=\"square\""_s)) << skipped.front().toStdString();
+  EXPECT_TRUE(skipped.front().contains(u"sphere, point, cube"_s)) << skipped.front().toStdString();
 }
 
 }  // namespace

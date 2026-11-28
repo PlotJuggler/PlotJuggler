@@ -15,7 +15,6 @@
 #include <QMenu>
 #include <QPoint>
 #include <QResizeEvent>
-#include <QScopedValueRollback>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -249,11 +248,6 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
   return state;
 }
 
-QString objectTypeToken(sdk::BuiltinObjectType object_type) {
-  const auto name = sdk::name(object_type);
-  return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
-}
-
 // The restore path a saved <layer> takes. role="trail" and local="true" select one; any other value means "not that
 // path", tolerated and noted.
 struct LayerPath {
@@ -308,7 +302,7 @@ bool validateLayerElement(const QDomElement& layer_el, const PJ::LayerFactory& f
 
 // The parse-only half of Scene3DDockWidget::restoreConfigTopicElement.
 bool validateConfigTopicElement(const QDomElement& config_el) {
-  const QString frame_transforms = objectTypeToken(sdk::BuiltinObjectType::kFrameTransforms);
+  const QString frame_transforms = PJ::objectTypeName(sdk::BuiltinObjectType::kFrameTransforms);
   QString object_type;
   const bool type_ok = PJ::readXmlEnum(config_el, u"object_type"_s, {frame_transforms}, {}, object_type);
   if (!PJ::parseSavedTopicHeader(config_el, PJ::SavedTopicRef::kRequired).has_value() || !type_ok) {
@@ -1671,20 +1665,25 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   if (deferred_topic_name != nullptr) {
     deferred_topic_name->clear();
   }
+  const auto skip = [this, &layer_el](const QString& reason = {}) {
+    skipRestoreElement(layer_el, reason);
+    return ElementRestoreResult::kConsumed;
+  };
   if (layer_el.isNull() || layer_el.tagName() != "layer"_L1) {
-    return ElementRestoreResult::kInvalid;
+    return skip();
   }
   if (sessionManager() == nullptr) {
     return ElementRestoreResult::kDeferred;
   }
   const LayerPath path = readLayerPath(layer_el);
-  const std::optional<SavedLayerHeader> header = parseSavedLayerHeader(layer_el, path.topicRef(), layerFactory());
-  // xmlLoadState fills an absent order before restoring, so only a hand-built element lacks one.
-  if (!header.has_value() || !header->order.has_value()) {
-    if (path.trail) {
-      qCWarning(lcScene3DDock) << "restoreTrailElement: malformed 'visible' or 'order' attribute";
+  std::optional<SavedLayerHeader> header;
+  {
+    PJ::XmlOptionsRecorder recorder;
+    header = parseSavedLayerHeader(layer_el, path.topicRef(), layerFactory());
+    // xmlLoadState fills an absent order before restoring, so only a hand-built element lacks one.
+    if (!header.has_value() || !header->order.has_value()) {
+      return skip(recorder.firstRejection());
     }
-    return ElementRestoreResult::kInvalid;
   }
   // Trails are not object-type layers (object_type is kNone): branch BEFORE the
   // acceptsObjectType gate, which would reject them.
@@ -1692,7 +1691,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
     return restoreTrailElement(layer_el, *header, deferred_topic_name);
   }
   if (!header->object_type.has_value() || !acceptsObjectType(*header->object_type)) {
-    return ElementRestoreResult::kInvalid;
+    return skip(tr("a 3D view does not show object_type=\"%1\"").arg(layer_el.attribute(u"object_type"_s)));
   }
   const sdk::BuiltinObjectType object_type = *header->object_type;
 
@@ -1700,11 +1699,11 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   const bool local_layer = path.local;
   if (local_layer) {
     if (object_type != sdk::BuiltinObjectType::kRobotDescription) {
-      return ElementRestoreResult::kInvalid;
+      return skip();
     }
     topic_id = allocateLocalLayerId();
     if (topic_id.id == 0) {
-      return ElementRestoreResult::kInvalid;
+      return skip();
     }
   } else {
     std::optional<ObjectTopicId> topic_id_opt;
@@ -1716,7 +1715,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
     topic_id = *topic_id_opt;
   }
   if (layerFor(topic_id) != nullptr) {
-    return ElementRestoreResult::kInvalid;
+    return skip(duplicateTopicReason());
   }
   // A layout that mixed datasets still loads: the first dataset wins, a foreign
   // element is dropped with a visible reason (not a failed restore).
@@ -1733,9 +1732,10 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
       return ElementRestoreResult::kDeferred;
     }
     if (!firstSampleIsDepthEncoded(*sessionManager(), topic_id)) {
-      emit topicRefused(
-          tr("Only depth-encoded images can be displayed in a 3D view. Use a 2D view for colour images."));
-      return ElementRestoreResult::kInvalid;
+      const QString reason =
+          tr("Only depth-encoded images can be displayed in a 3D view. Use a 2D view for colour images.");
+      emit topicRefused(reason);
+      return skip(reason);
     }
   }
   const QString previous_title = windowTitle();
@@ -1743,14 +1743,15 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
     if (local_layer) {
       local_layer_ids_.erase(topic_id.id);
     }
-    return ElementRestoreResult::kInvalid;
+    return skip();
   }
   ISceneLayer* layer = layerFor(topic_id);
   if (layer == nullptr) {
-    return ElementRestoreResult::kInvalid;
+    return skip();
   }
   const QDomElement payload = layer_el.firstChildElement();
   bool payload_invalid = !payload.isNull() && !payload.nextSiblingElement().isNull();
+  PJ::XmlOptionsRecorder recorder;
   if (!payload_invalid && !payload.isNull()) {
     if (auto* robot = dynamic_cast<RobotModelLayer*>(layer); robot != nullptr) {
       const RobotModelLayer::XmlLoadResult result = robot->xmlLoadStateResult(payload, representativeDatasetId());
@@ -1770,7 +1771,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   if (payload_invalid) {
     removeTopic(topic_id);
     setWindowTitle(previous_title);
-    return ElementRestoreResult::kInvalid;
+    return skip(recorder.firstRejection());
   }
   if (!header->visible) {
     setLayerVisible(topic_id, false);
@@ -1786,7 +1787,8 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
   out_topic.reset();
   const QString& topic_name = ref.topic_name;
   if (topic_name.isEmpty()) {
-    return ElementRestoreResult::kInvalid;
+    skipRestoreElement(el, {});
+    return ElementRestoreResult::kConsumed;
   }
   const SavedElementDataset binding = ref.qualified ? datasetForSavedElement(el) : SavedElementDataset{};
   if (binding.refused) {
@@ -1804,7 +1806,8 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
   const ObjectTopicDescriptor& descriptor = sessionManager()->objectStore().descriptor(*topic_id_opt);
   const sdk::BuiltinObjectType live_type = pj::scene3d::builtinObjectTypeFor(descriptor);
   if (live_type != sdk::BuiltinObjectType::kNone && live_type != expected_type) {
-    return ElementRestoreResult::kInvalid;
+    skipRestoreElement(el, PJ::objectTypeMismatch(topic_name, expected_type, live_type));
+    return ElementRestoreResult::kConsumed;
   }
   out_topic = topic_id_opt;
   return ElementRestoreResult::kRestored;
@@ -1812,11 +1815,9 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
 
 Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreTrailElement(
     const QDomElement& layer_el, const SavedLayerHeader& header, QString* deferred_topic_name) {
-  // A corrupted layout drops the element with a reason in the log — kInvalid
-  // itself only surfaces as the aggregate workspaceRestoreFailed() flag.
-  const auto invalid = [](const char* reason) {
-    qCWarning(lcScene3DDock) << "restoreTrailElement:" << reason;
-    return ElementRestoreResult::kInvalid;
+  const auto invalid = [this, &layer_el](const char* reason) {
+    skipRestoreElement(layer_el, QString::fromLatin1(reason));
+    return ElementRestoreResult::kConsumed;
   };
   const QDomElement payload = layer_el.firstChildElement();
   if (payload.isNull() || payload.tagName() != "trail"_L1 || !payload.nextSiblingElement().isNull()) {
@@ -1857,19 +1858,23 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreTrailElement(
 }
 
 Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreConfigTopicElement(const QDomElement& config_el) {
+  const auto skip = [this, &config_el]() {
+    skipRestoreElement(config_el, {});
+    return ElementRestoreResult::kConsumed;
+  };
   if (config_el.isNull() || config_el.tagName() != "config_topic"_L1 || !config_el.firstChildElement().isNull()) {
-    return ElementRestoreResult::kInvalid;
+    return skip();
   }
   if (sessionManager() == nullptr) {
     return ElementRestoreResult::kDeferred;
   }
   const auto object_type_opt = sdk::parseBuiltinObjectType(config_el.attribute(u"object_type"_s).toStdString());
   if (!object_type_opt.has_value() || *object_type_opt != sdk::BuiltinObjectType::kFrameTransforms) {
-    return ElementRestoreResult::kInvalid;
+    return skip();
   }
   const std::optional<SavedTopicHeader> ref = parseSavedTopicHeader(config_el, SavedTopicRef::kRequired);
   if (!ref.has_value()) {
-    return ElementRestoreResult::kInvalid;
+    return skip();
   }
   std::optional<ObjectTopicId> topic_id_opt;
   const ElementRestoreResult resolved = resolveSavedTopicRef(config_el, *ref, nullptr, *object_type_opt, topic_id_opt);
@@ -1880,7 +1885,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreConfigTopicEle
     return ElementRestoreResult::kConsumed;
   }
   if (!addTopic(*topic_id_opt, *object_type_opt, ref->topic_name) || !config_topics_.contains(topic_id_opt->id)) {
-    return ElementRestoreResult::kInvalid;
+    return skip();
   }
   return ElementRestoreResult::kRestored;
 }
@@ -1910,11 +1915,7 @@ bool Scene3DDockWidget::restoreOnePending(const QDomElement& element) {
   // retry/unresolved/clear bookkeeping. Dispatch on the tag.
   const ElementRestoreResult result =
       element.tagName() == "config_topic"_L1 ? restoreConfigTopicElement(element) : restoreLayerElement(element);
-  if (result == ElementRestoreResult::kInvalid) {
-    markWorkspaceRestoreFailed();
-    return true;
-  }
-  return result == ElementRestoreResult::kRestored || result == ElementRestoreResult::kConsumed;
+  return result != ElementRestoreResult::kDeferred;
 }
 
 QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
@@ -2060,7 +2061,6 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   }
   const std::optional<ValidatedSceneState> validated = validateSceneState(element);
   if (!validated.has_value()) {
-    markWorkspaceRestoreFailed();
     return false;
   }
   initial_content_framing_ = false;  // the saved fixed frame and camera win
@@ -2070,14 +2070,6 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   // deferred singleShot fires, and with view_ null the explicit fixed frame, mode and camera state below would be
   // dropped when no layer restores.
   ensureSceneViewCreated();
-  QDomDocument previous_doc;
-  QDomElement previous_state;
-  const PendingRestoreSnapshot previous_pending = capturePendingRestoreState();
-  if (!xml_rollback_in_progress_) {
-    previous_state = xmlSaveState(previous_doc);
-    previous_doc.appendChild(previous_state);
-  }
-  resetWorkspaceRestoreStatus();
   clearPendingRestores();
   const QString& saved_frame = validated->fixed_frame;
   clearLayers();
@@ -2086,7 +2078,6 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   resetDatasetBindingForRestore();
   recordSavedDatasets(element);
   int unresolved_topics = 0;
-  bool invalid_state = false;
   if (sessionManager() != nullptr) {
     int default_order = 0;
     for (QDomElement layer_el = element.firstChildElement(u"layer"_s); !layer_el.isNull();
@@ -2100,47 +2091,19 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
       if (result == ElementRestoreResult::kDeferred) {
         ++unresolved_topics;
         rememberPendingRestore(layer_el, std::move(deferred_topic));
-      } else if (result == ElementRestoreResult::kInvalid) {
-        invalid_state = true;
-        break;
       }
     }
 
     // Re-add persisted FrameTransforms config topics so handleSceneConfigTopic re-binds tf_buffer_/dataset_id_; a
     // TF-only dock has nothing in the layer loop above.
-    if (!invalid_state) {
-      for (QDomElement config_el = element.firstChildElement(u"config_topic"_s); !config_el.isNull();
-           config_el = config_el.nextSiblingElement(u"config_topic"_s)) {
-        const ElementRestoreResult result = restoreConfigTopicElement(config_el);
-        if (result == ElementRestoreResult::kDeferred) {
-          ++unresolved_topics;
-          rememberPendingRestore(config_el);
-        } else if (result == ElementRestoreResult::kInvalid) {
-          invalid_state = true;
-          break;
-        }
+    for (QDomElement config_el = element.firstChildElement(u"config_topic"_s); !config_el.isNull();
+         config_el = config_el.nextSiblingElement(u"config_topic"_s)) {
+      const ElementRestoreResult result = restoreConfigTopicElement(config_el);
+      if (result == ElementRestoreResult::kDeferred) {
+        ++unresolved_topics;
+        rememberPendingRestore(config_el);
       }
     }
-  }
-  if (invalid_state) {
-    markWorkspaceRestoreFailed();
-    clearPendingRestores();
-    clearLayers();
-    local_layer_ids_.clear();
-    restored_layer_orders_.clear();
-    resetDatasetBindingForRestore();
-    setWindowTitle(tr("3D View"));
-    if (!previous_state.isNull()) {
-      QScopedValueRollback rollback_guard(xml_rollback_in_progress_, true);
-      if (!xmlLoadState(previous_state)) {
-        qCCritical(lcScene3DDock) << "Failed to roll back rejected Scene3D XML state";
-      } else {
-        // The snapshot's status epoch returns with the pending state: after a successful rollback the dock is not in a
-        // failed-restore state; the false return tells the caller.
-        restorePendingRestoreState(previous_pending);
-      }
-    }
-    return false;
   }
   if (unresolved_topics > 0) {
     qCWarning(lcScene3DDock) << unresolved_topics << "saved layer(s) could not be restored (dataset not loaded)";

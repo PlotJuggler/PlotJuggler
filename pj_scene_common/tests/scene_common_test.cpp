@@ -41,6 +41,23 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
+// Records a dock's restoreElementSkipped lines from its construction on.
+class SkipLog {
+ public:
+  explicit SkipLog(PJ::SceneDockWidget& dock) {
+    QObject::connect(&dock, &PJ::SceneDockWidget::restoreElementSkipped, &context_, [this](const QString& line) {
+      lines_.push_back(line);
+    });
+  }
+  QStringList take() {
+    return std::exchange(lines_, {});
+  }
+
+ private:
+  QObject context_;
+  QStringList lines_;
+};
+
 struct FakeLayerConfig {
   std::pair<int64_t, int64_t> range{0, 0};
 };
@@ -214,18 +231,6 @@ class FakeSceneDock : public PJ::SceneDockWidget {
   [[nodiscard]] std::optional<PJ::DatasetId> resolveSavedDataset(
       PJ::DatasetId saved_id, const QString& saved_source, const QString& topic_name) const {
     return resolveObjectDataset(saved_id, saved_source, QString(), topic_name);
-  }
-
-  [[nodiscard]] bool everHadContentForTest() const {
-    return everHadContent();
-  }
-
-  [[nodiscard]] PendingRestoreSnapshot capturePendingForTest() const {
-    return capturePendingRestoreState();
-  }
-
-  void restorePendingForTest(const PendingRestoreSnapshot& snapshot) {
-    restorePendingRestoreState(snapshot);
   }
 
  protected:
@@ -815,7 +820,6 @@ TEST(SceneDockWidgetTest, RestoreDropsForeignDatasetLayerWithAVisibleReasonAndNo
       &dock, &PJ::SceneDockWidget::topicRefused, [&reasons](const QString& reason) { reasons.push_back(reason); });
 
   EXPECT_TRUE(dock.xmlLoadState(state)) << "a mixed-dataset layout must still load";
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_EQ(dock.layers().size(), 1U) << "only the first dataset's layer restores";
   ASSERT_EQ(reasons.size(), 1) << "the dropped element is reported, never silently lost";
   EXPECT_TRUE(reasons.front().contains(u"a.mcap"_s)) << reasons.front().toStdString();
@@ -982,7 +986,6 @@ TEST(SceneDockWidgetTest, MixedLayoutKeepsTheFirstSavedDatasetRegardlessOfLoadOr
     QCoreApplication::processEvents();
 
     EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicA()})) << "a_loads_first=" << a_loads_first;
-    EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
     EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
     EXPECT_EQ(fixture.reasons().size(), 1) << "the dropped element is reported once, never silently lost";
     if (!fixture.reasons().isEmpty()) {
@@ -1011,7 +1014,6 @@ TEST(SceneDockWidgetTest, MixedLayoutFallsBackToTheNextLoadedSavedDataset) {
   QCoreApplication::processEvents();
 
   EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}));
-  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
   EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
   ASSERT_EQ(fixture.reasons().size(), 1);
   EXPECT_TRUE(fixture.reasons().front().contains(u"a.mcap"_s)) << fixture.reasons().front().toStdString();
@@ -1034,7 +1036,6 @@ TEST(SceneDockWidgetTest, FinishRestoreSettlesAPastedMixedLayoutWhoseFirstDatase
   QCoreApplication::processEvents();
 
   EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}));
-  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
   EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
   ASSERT_EQ(fixture.reasons().size(), 1);
   EXPECT_TRUE(fixture.reasons().front().contains(u"a.mcap"_s)) << fixture.reasons().front().toStdString();
@@ -1057,7 +1058,6 @@ TEST(SceneDockWidgetTest, MixedLayoutDropsTheOtherSavedDatasetAtSettleWhenItNeve
   QCoreApplication::processEvents();
 
   EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
-  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
   ASSERT_EQ(fixture.reasons().size(), 1);
   EXPECT_TRUE(fixture.reasons().front().contains(u"a.mcap"_s)) << fixture.reasons().front().toStdString();
   EXPECT_TRUE(fixture.reasons().front().contains(u"b.mcap"_s)) << fixture.reasons().front().toStdString();
@@ -1082,7 +1082,6 @@ TEST(SceneDockWidgetTest, MixedLayoutWithNothingLoadedAtSettleLetsTheFirstResolv
   QCoreApplication::processEvents();
 
   EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}));
-  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
   EXPECT_EQ(fixture.reasons().size(), 1);
 }
 
@@ -1200,7 +1199,6 @@ TEST(SceneDockWidgetTest, SettleKeepsTheWinnersTopicThatArrivesAfterTheSettleUnd
   EXPECT_EQ(fixture.dock().unresolvedBlockingPendingRestores().join(u',').toStdString(), "/cloud_a2")
       << "the winner's late topic is not foreign";
   EXPECT_EQ(fixture.reasons().size(), 1) << "settle must not refuse an element of the dataset the dock shows";
-  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
 
   const PJ::ObjectTopicId late = fixture.registerLateTopicA2();
   EXPECT_EQ(fixture.dock().retryPendingRestores({u"/cloud_a2"_s}), 1);
@@ -1226,43 +1224,14 @@ TEST(SceneDockWidgetTest, SettleTakesTheDatasetTheDockAlreadyShows) {
 
   EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{static_cast<int64_t>(extra.id), fixture.topicB()}));
   EXPECT_TRUE(fixture.dock().unresolvedBlockingPendingRestores().isEmpty());
-  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
   ASSERT_EQ(fixture.reasons().size(), 1);
   EXPECT_EQ(
       fixture.reasons().front().toStdString(),
       "This view shows dataset b.mcap; a topic from dataset a.mcap cannot be added to it.");
 }
 
-// A rejected paste rolls a dock back through xmlLoadState(previous state), which records that state's datasets
-// again; a settled dock has no settle to follow, so the rollback hands back its empty dataset choice with its
-// pending queue.
-TEST(SceneDockWidgetTest, RolledBackLoadDoesNotRearmTheDatasetChoiceOfASettledDock) {
-  LateDatasetsFixture fixture;
-  const QDomElement state = fixture.mixedLayout();
-  ASSERT_TRUE(fixture.dock().xmlLoadState(state));
-  fixture.dock().finishRestore();  // nothing loaded: settled, both stay pending, no gate
-  QCoreApplication::processEvents();
-  ASSERT_EQ(fixture.dock().unresolvedBlockingPendingRestores().size(), 2);
-
-  const auto snapshot = fixture.dock().capturePendingForTest();
-  QDomDocument previous_doc;
-  const QDomElement previous = fixture.dock().xmlSaveState(previous_doc);
-  previous_doc.appendChild(previous);
-  QDomDocument rejected_doc;
-  const QDomElement rejected = rejected_doc.createElement(u"scene"_s);
-  rejected_doc.appendChild(rejected);
-  ASSERT_TRUE(fixture.dock().xmlLoadState(rejected));
-  ASSERT_TRUE(fixture.dock().xmlLoadState(previous));
-  fixture.dock().restorePendingForTest(snapshot);
-
-  fixture.load(fixture.datasetB());
-  fixture.dock().retryPendingRestores({});
-  EXPECT_EQ(fixture.layerIds(), (std::vector<int64_t>{fixture.topicB()}))
-      << "no settle follows the rollback, so the first dataset to resolve must win";
-  EXPECT_FALSE(fixture.dock().workspaceRestoreFailed());
-}
-
-TEST(SceneDockWidgetTest, QualifiedRestoreRejectsKnownLiveObjectTypeMismatch) {
+// A layout whose layer names the wrong object type loses that layer only, and says why.
+TEST(SceneDockWidgetTest, QualifiedRestoreSkipsAKnownLiveObjectTypeMismatch) {
   PJ::SessionManager session;
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
   ASSERT_TRUE(dataset.has_value());
@@ -1283,13 +1252,20 @@ TEST(SceneDockWidgetTest, QualifiedRestoreRejectsKnownLiveObjectTypeMismatch) {
   layer.setAttribute(u"object_type"_s, u"kPointCloud"_s);
   state.appendChild(layer);
   FakeSceneDock restored;
+  SkipLog restored_skips(restored);
   restored.setSessionManager(&session);
-  EXPECT_FALSE(restored.xmlLoadState(state));
-  EXPECT_TRUE(restored.workspaceRestoreFailed());
+  EXPECT_TRUE(restored.xmlLoadState(state));
   EXPECT_TRUE(restored.layers().empty());
+  const QStringList skipped = restored_skips.take();
+  ASSERT_EQ(skipped.size(), 1);
+  EXPECT_TRUE(skipped.front().contains(u"/same_name"_s)) << skipped.front().toStdString();
+  EXPECT_TRUE(skipped.front().contains(u"object_type=\"kPointCloud\""_s)) << skipped.front().toStdString();
+  EXPECT_TRUE(skipped.front().contains(u"kImage"_s)) << skipped.front().toStdString();
+  EXPECT_FALSE(restored.takeRefusalReason().isEmpty()) << "a widget_state set must hear of the skip";
 }
 
-TEST(SceneDockWidgetTest, MalformedLayerPayloadFailsWholeRestore) {
+// One layer's bad payload drops that layer; the dock's other layers restore.
+TEST(SceneDockWidgetTest, MalformedLayerPayloadSkipsOnlyThatLayer) {
   PJ::SessionManager session;
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
   ASSERT_TRUE(dataset.has_value());
@@ -1300,19 +1276,38 @@ TEST(SceneDockWidgetTest, MalformedLayerPayloadFailsWholeRestore) {
           .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
       });
   ASSERT_TRUE(cloud.has_value());
+  const auto other = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/other_cloud",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  ASSERT_TRUE(other.has_value());
   FakeSceneDock source;
   source.setSessionManager(&session);
   ASSERT_TRUE(source.addTopic(*cloud, PJ::sdk::BuiltinObjectType::kPointCloud, u"Cloud"_s));
+  ASSERT_TRUE(source.addTopic(*other, PJ::sdk::BuiltinObjectType::kPointCloud, u"Other"_s));
   QDomDocument document;
   QDomElement state = source.xmlSaveState(document);
-  state.firstChildElement(u"layer"_s).firstChildElement().setTagName(u"broken"_s);
+  QDomElement broken = state.firstChildElement(u"layer"_s);
+  while (!broken.isNull() && broken.attribute(u"topic_name"_s) != "/cloud"_L1) {
+    broken = broken.nextSiblingElement(u"layer"_s);
+  }
+  ASSERT_FALSE(broken.isNull());
+  broken.firstChildElement().setTagName(u"broken"_s);
   FakeSceneDock restored;
+  SkipLog restored_skips(restored);
   restored.setSessionManager(&session);
-  EXPECT_FALSE(restored.xmlLoadState(state));
-  EXPECT_TRUE(restored.layers().empty());
+  EXPECT_TRUE(restored.xmlLoadState(state));
+  ASSERT_EQ(restored.layers().size(), 1U);
+  EXPECT_EQ(restored.layers().front().topic_id.id, other->id);
+  const QStringList skipped = restored_skips.take();
+  ASSERT_EQ(skipped.size(), 1);
+  EXPECT_TRUE(skipped.front().contains(u"/cloud"_s)) << skipped.front().toStdString();
 }
 
-TEST(SceneDockWidgetTest, DeferredMalformedPayloadIsConsumedButExposesStickyFailure) {
+// A deferred element whose payload turns out bad once its topic arrives is consumed and reported as skipped.
+TEST(SceneDockWidgetTest, DeferredMalformedPayloadIsConsumedAndReportedAsSkipped) {
   PJ::SessionManager session;
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
   ASSERT_TRUE(dataset.has_value());
@@ -1326,6 +1321,7 @@ TEST(SceneDockWidgetTest, DeferredMalformedPayloadIsConsumedButExposesStickyFail
   layer.appendChild(document.createElement(u"broken"_s));
   state.appendChild(layer);
   FakeSceneDock restored;
+  SkipLog restored_skips(restored);
   restored.setSessionManager(&session);
   ASSERT_TRUE(restored.xmlLoadState(state));
   ASSERT_TRUE(session.objectStore()
@@ -1337,7 +1333,7 @@ TEST(SceneDockWidgetTest, DeferredMalformedPayloadIsConsumedButExposesStickyFail
                       })
                   .has_value());
   EXPECT_EQ(restored.retryPendingRestores(QSet<QString>{u"/late_cloud"_s}), 0);
-  EXPECT_TRUE(restored.workspaceRestoreFailed());
+  EXPECT_EQ(restored_skips.take().size(), 1);
   EXPECT_TRUE(restored.unresolvedPendingRestores().isEmpty());
 }
 
@@ -1412,15 +1408,6 @@ TEST(SceneDockWidgetTest, PendingIntentKeepsDockAliveAfterLastLiveLayerIsEvicted
   EXPECT_TRUE(dock.revalidateObjects());
   EXPECT_TRUE(dock.layers().empty());
   EXPECT_EQ(dock.unresolvedPendingRestores(), QStringList{u"/late"_s});
-}
-
-TEST(SceneDockWidgetTest, PendingSnapshotRestoresEverHadContentLatch) {
-  FakeSceneDock dock;
-  const auto empty_snapshot = dock.capturePendingForTest();
-  ASSERT_TRUE(dock.addTopic(topic(77), PJ::sdk::BuiltinObjectType::kPointCloud, u"temporary"_s));
-  EXPECT_TRUE(dock.everHadContentForTest());
-  dock.restorePendingForTest(empty_snapshot);
-  EXPECT_FALSE(dock.everHadContentForTest());
 }
 
 TEST(SceneDockWidgetTest, UnknownRootChildIsRejectedBeforeDestructiveClear) {

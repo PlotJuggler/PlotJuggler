@@ -46,6 +46,23 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
+// Records a dock's restoreElementSkipped lines from its construction on.
+class SkipLog {
+ public:
+  explicit SkipLog(PJ::SceneDockWidget& dock) {
+    QObject::connect(&dock, &PJ::SceneDockWidget::restoreElementSkipped, &context_, [this](const QString& line) {
+      lines_.push_back(line);
+    });
+  }
+  QStringList take() {
+    return std::exchange(lines_, {});
+  }
+
+ private:
+  QObject context_;
+  QStringList lines_;
+};
+
 PJ::ObjectTopicId registerTopic(
     PJ::SessionManager& session, uint32_t dataset_id, const std::string& topic_name,
     const std::string& metadata_json = {}) {
@@ -285,11 +302,15 @@ TEST(Scene2DDockWidget, ViewRotationNotifiesOncePersistsAndRejectsUnknownAngles)
   EXPECT_EQ(restored.viewRotation(), -90);
 }
 
-TEST(Scene2DDockWidget, RejectsInvalidLayerPayloadBeforeReplacingCurrentState) {
+// One layer whose payload does not load is skipped and named; the rest of the state, the view included, restores.
+TEST(Scene2DDockWidget, InvalidLayerPayloadIsSkippedAndTheRestRestores) {
+  PJ::SessionManager session;
+  static_cast<void>(registerTopic(session, 1, "/camera/image"));
   QDomDocument doc;
   QDomElement root = doc.createElement(u"scene2d"_s);
   QDomElement layer = doc.createElement(u"layer"_s);
   layer.setAttribute(u"dataset_id"_s, u"1"_s);
+  layer.setAttribute(u"dataset_source"_s, u"dataset_1"_s);
   layer.setAttribute(u"topic_name"_s, u"/camera/image"_s);
   layer.setAttribute(u"object_type"_s, u"kImage"_s);
   layer.setAttribute(u"layer_kind"_s, u"image"_s);
@@ -297,22 +318,23 @@ TEST(Scene2DDockWidget, RejectsInvalidLayerPayloadBeforeReplacingCurrentState) {
   payload.setAttribute(u"rectify_enabled"_s, u"not-a-bool"_s);
   layer.appendChild(payload);
   root.appendChild(layer);
+  QDomElement view = doc.createElement(u"view"_s);
+  view.setAttribute(u"zoom"_s, u"4"_s);
+  root.appendChild(view);
 
   PJ::Scene2DDockWidget dock;
-  QDomDocument valid_doc;
-  QDomElement valid_root = valid_doc.createElement(u"scene2d"_s);
-  QDomElement valid_view = valid_doc.createElement(u"view"_s);
-  valid_view.setAttribute(u"zoom"_s, u"2"_s);
-  valid_view.setAttribute(u"pan_x"_s, u"0.25"_s);
-  valid_view.setAttribute(u"pan_y"_s, u"-0.25"_s);
-  valid_root.appendChild(valid_view);
-  ASSERT_TRUE(dock.xmlLoadState(valid_root));
-
-  EXPECT_FALSE(dock.xmlLoadState(root));
-  const QDomElement preserved = dock.xmlSaveState(valid_doc).firstChildElement(u"view"_s);
-  EXPECT_FLOAT_EQ(preserved.attribute(u"zoom"_s).toFloat(), 2.0f);
-  EXPECT_FLOAT_EQ(preserved.attribute(u"pan_x"_s).toFloat(), 0.25f);
-  EXPECT_FLOAT_EQ(preserved.attribute(u"pan_y"_s).toFloat(), -0.25f);
+  SkipLog dock_skips(dock);
+  dock.setSessionManager(&session);
+  EXPECT_FALSE(dock.xmlValidateState(root)) << "set_widget_state still refuses it";
+  ASSERT_TRUE(dock.xmlLoadState(root));
+  EXPECT_TRUE(dock.layers().empty());
+  const QStringList skipped = dock_skips.take();
+  ASSERT_EQ(skipped.size(), 1);
+  EXPECT_TRUE(skipped.front().contains(u"/camera/image"_s)) << skipped.front().toStdString();
+  EXPECT_TRUE(skipped.front().contains(u"rectify_enabled"_s)) << skipped.front().toStdString();
+  QDomDocument after_doc;
+  const QDomElement after_view = dock.xmlSaveState(after_doc).firstChildElement(u"view"_s);
+  EXPECT_FLOAT_EQ(after_view.attribute(u"zoom"_s).toFloat(), 4.0f);
 }
 
 TEST(Scene2DDockWidget, RejectsUnknownChildBeforeReplacingCurrentState) {
@@ -337,7 +359,7 @@ TEST(Scene2DDockWidget, RejectsUnknownChildBeforeReplacingCurrentState) {
   EXPECT_FLOAT_EQ(after_view.attribute(u"zoom"_s).toFloat(), 3.0f);
 }
 
-TEST(Scene2DDockWidget, PropagatesBaseFailureInsteadOfAcceptingPartialScene) {
+TEST(Scene2DDockWidget, DuplicateLayerIsSkippedAndTheFirstKept) {
   PJ::SessionManager session;
   const auto topic = registerTopic(session, 1, "/camera/image");
 
@@ -353,13 +375,16 @@ TEST(Scene2DDockWidget, PropagatesBaseFailureInsteadOfAcceptingPartialScene) {
     root.appendChild(layer);
   };
   append_layer();
-  append_layer();  // the duplicate is permanently rejected after the first succeeds
+  append_layer();
 
   PJ::Scene2DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
-  EXPECT_FALSE(dock.xmlLoadState(root));
-  EXPECT_EQ(dock.layerFor(topic), nullptr)
-      << "a rejected direct paste/load must roll back the partially installed first layer";
+  ASSERT_TRUE(dock.xmlLoadState(root));
+  EXPECT_NE(dock.layerFor(topic), nullptr);
+  const QStringList skipped = dock_skips.take();
+  ASSERT_EQ(skipped.size(), 1);
+  EXPECT_TRUE(skipped.front().contains(u"twice"_s)) << skipped.front().toStdString();
 }
 
 TEST(Scene2DDockWidget, GenericLayoutBindsMissingAndZeroQualifiersByUniqueCompatibleTopic) {
@@ -462,7 +487,6 @@ TEST(Scene2DDockWidget, GenericLayoutKeepsAmbiguousTopicPendingUntilTheDockShows
   dock.setSessionManager(&session);
   ASSERT_TRUE(dock.xmlLoadState(generic));
   dock.finishRestore();
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_EQ(dock.layerFor(first_match), nullptr);
   EXPECT_EQ(dock.layerFor(second_match), nullptr);
   EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/camera/image"_s});
@@ -472,7 +496,6 @@ TEST(Scene2DDockWidget, GenericLayoutKeepsAmbiguousTopicPendingUntilTheDockShows
   gated.setSessionManager(&session);
   ASSERT_TRUE(gated.xmlLoadState(generic));
   gated.finishRestore();
-  EXPECT_FALSE(gated.workspaceRestoreFailed());
   EXPECT_NE(gated.layerFor(kept), nullptr);
   EXPECT_NE(gated.layerFor(first_match), nullptr);
   EXPECT_EQ(gated.layerFor(second_match), nullptr);
@@ -511,7 +534,6 @@ TEST(Scene2DDockWidget, GenericLayersAreNotHeldBehindAnUnresolvedQualifiedDatase
   EXPECT_NE(dock.layerFor(unqualified), nullptr);
   EXPECT_NE(dock.layerFor(zero_id), nullptr);
   EXPECT_EQ(dock.unresolvedBlockingPendingRestores().join(u',').toStdString(), "/camera/ghost");
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
 }
 
 TEST(Scene2DDockWidget, CommittedViewerInteractionNotifiesWorkspaceExactlyOnce) {
@@ -956,50 +978,6 @@ TEST(Scene2DDockWidget, GenericXmlPersistsDepthConcreteKindWhenImageTopicHasNoSa
   EXPECT_EQ(familyFor(restored.layers(), target_topic), u"Depth"_s);
 }
 
-TEST(Scene2DDockWidget, RejectedClipboardReplayPreservesPriorPendingQueue) {
-  PJ::SessionManager session;
-  constexpr uint32_t kDataset = 24;
-  ASSERT_TRUE(session.dataEngine()
-                  .createDataset(PJ::DatasetDescriptor{.source_name = "dataset_24", .time_domain_id = 0}, kDataset)
-                  .has_value());
-
-  QDomDocument pending_doc;
-  QDomElement pending_state = pending_doc.createElement(u"scene2d"_s);
-  QDomElement pending_layer = pending_doc.createElement(u"layer"_s);
-  pending_layer.setAttribute(u"dataset_id"_s, QString::number(kDataset));
-  pending_layer.setAttribute(u"dataset_source"_s, u"dataset_24"_s);
-  pending_layer.setAttribute(u"topic_name"_s, u"/late"_s);
-  pending_layer.setAttribute(u"object_type"_s, u"kImage"_s);
-  pending_layer.setAttribute(u"layer_kind"_s, u"image"_s);
-  pending_state.appendChild(pending_layer);
-  pending_doc.appendChild(pending_state);
-
-  PJ::Scene2DDockWidget dock;
-  dock.setSessionManager(&session);
-  ASSERT_TRUE(dock.xmlLoadState(pending_state));
-  ASSERT_EQ(dock.unresolvedPendingRestores(), QStringList{u"/late"_s});
-
-  const PJ::ObjectTopicId duplicate_topic = registerTopic(session, kDataset, "/duplicate");
-  QDomDocument duplicate_doc;
-  QDomElement duplicate_state = duplicate_doc.createElement(u"scene2d"_s);
-  for (int i = 0; i < 2; ++i) {
-    QDomElement layer = duplicate_doc.createElement(u"layer"_s);
-    layer.setAttribute(u"dataset_id"_s, QString::number(kDataset));
-    layer.setAttribute(u"dataset_source"_s, u"dataset_24"_s);
-    layer.setAttribute(u"topic_name"_s, u"/duplicate"_s);
-    layer.setAttribute(u"object_type"_s, u"kImage"_s);
-    layer.setAttribute(u"layer_kind"_s, u"image"_s);
-    duplicate_state.appendChild(layer);
-  }
-  duplicate_doc.appendChild(duplicate_state);
-
-  EXPECT_FALSE(dock.xmlLoadState(duplicate_state));
-  EXPECT_TRUE(dock.layers().empty());
-  EXPECT_EQ(dock.unresolvedPendingRestores(), QStringList{u"/late"_s});
-  EXPECT_FALSE(dock.workspaceRestoreFailed());
-  EXPECT_NE(duplicate_topic.id, 0U);
-}
-
 TEST(Scene2DDockWidget, EmptyPlaceholderActiveUntilFirstVisibleLayer) {
   PJ::SessionManager session;
   const auto image = registerTopic(session, 5, "/camera/image");
@@ -1264,6 +1242,7 @@ TEST(Scene2DDockWidget, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
   session.setDatasetSourcePath(1, u"/data/camera.mcap"_s);
 
   PJ::Scene2DDockWidget dock;
+  SkipLog dock_skips(dock);
   dock.setSessionManager(&session);
   ASSERT_TRUE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, u"color"_s));
   ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s));
@@ -1274,14 +1253,17 @@ TEST(Scene2DDockWidget, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
   const QDomElement saved = dock.xmlSaveState(doc);
   saved.firstChildElement(u"layer"_s).setAttribute(u"pending_intent"_s, u"true"_s);
   // object_type pairs with layer_kind, so a token substituted alone is refused by design.
-  EXPECT_EQ(
-      PJ::xmlSelfDescriptionProblems(
-          [&](const QDomElement& e) { return dock.xmlValidateState(e); }, saved,
-          {.skip_tokens = {u"layer.object_type"_s},
-           .check_bad_values = true,
-           .tolerates_bad = {u"layer.pending_intent"_s, u"scene2d_layer.colormap"_s},
-           .load = [&](const QDomElement& e) { return dock.xmlLoadState(e); }}),
-      QStringList());
+  const QStringList problems = PJ::xmlSelfDescriptionProblems(
+      [&](const QDomElement& e) { return dock.xmlValidateState(e); }, saved,
+      {.skip_tokens = {u"layer.object_type"_s},
+       .check_bad_values = true,
+       .tolerates_bad = {u"layer.pending_intent"_s, u"scene2d_layer.colormap"_s},
+       // A layer that does not restore is skipped, not refused: a skip counts as the load's refusal.
+       .load = [&](const QDomElement& e) {
+         const bool loaded = dock.xmlLoadState(e);
+         return loaded && dock_skips.take().isEmpty();
+       }});
+  EXPECT_TRUE(problems.isEmpty()) << problems.join(u'\n').toStdString();
 
   PJ::XmlOptionsRecorder recorder;
   EXPECT_FALSE(dock.xmlValidateState(doc.createElement(u"scene3d"_s)));

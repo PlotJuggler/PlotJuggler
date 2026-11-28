@@ -54,8 +54,9 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
 **Persistence.** The dock saves `<scene3d version="1">`: fixed frame and mode, `follow_frame` (empty = off), the
 camera model as a stable string id plus `CameraState` JSON, `<scene_controls>` (grid, gizmo, TF lines, mesh and
 collision visibility and opacity; ranges in `scene_state_xml.h`, shared by desktop and browser), and every layer's
-own payload. Restore validates every control and camera field before mutating and rolls the whole dock back if a
-layer payload or topic resolution fails. A restored follow target absent from the tree stays inert until it
+own payload. Restore validates every control and camera field before mutating; a layer or config topic that cannot
+restore (bad header, type mismatch, refused payload) is skipped and named, as in `pj_scene_common` "Persistence and
+deferred restore", and the rest of the dock restores. A restored follow target absent from the tree stays inert until it
 appears. While following, the dock also saves `follow_offset`, the focal minus the followed origin at the cursor:
 `CameraState`'s focal is a fixed-frame point, right only at the cursor it was saved at, so the restore anchors the
 camera at that offset from the followed frame at the first follow seed (`SceneViewWidget::setFollowAnchor`). A

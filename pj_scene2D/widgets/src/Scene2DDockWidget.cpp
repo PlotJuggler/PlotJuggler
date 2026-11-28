@@ -377,10 +377,11 @@ QDomElement Scene2DDockWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool Scene2DDockWidget::xmlValidateState(const QDomElement& element) const {
-  return validatedViewState(element).has_value();
+  return validatedViewState(element, /*check_layers=*/true).has_value();
 }
 
-std::optional<MediaViewState> Scene2DDockWidget::validatedViewState(const QDomElement& element) const {
+std::optional<MediaViewState> Scene2DDockWidget::validatedViewState(
+    const QDomElement& element, bool check_layers) const {
   if (element.isNull() || element.tagName() != xmlTag()) {
     XmlOptionsRecorder::noteRejection(element, {}, u"expected a <"_s + xmlTag() + u"> element"_s);
     return std::nullopt;
@@ -395,7 +396,7 @@ std::optional<MediaViewState> Scene2DDockWidget::validatedViewState(const QDomEl
     } else if (child.tagName() == QString::fromLatin1(kViewTag) && ++view_elements > 1) {
       XmlOptionsRecorder::noteRejection(child, {}, u"expected at most one <view>"_s);
       valid = false;
-    } else if (child.tagName() == u"layer"_s) {
+    } else if (check_layers && child.tagName() == u"layer"_s) {
       valid = validateLayer(child, layerFactory()) && valid;
     }
   }
@@ -405,9 +406,11 @@ std::optional<MediaViewState> Scene2DDockWidget::validatedViewState(const QDomEl
 }
 
 bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
-  const std::optional<MediaViewState> view_state = validatedViewState(element);
+  // A layer that does not restore is skipped and named (restoreElementSkipped); only the view and the element
+  // structure refuse the whole state, before the base replaces the layer stack.
+  const std::optional<MediaViewState> view_state = validatedViewState(element, /*check_layers=*/false);
   if (!view_state.has_value()) {
-    return false;  // reject before the base destructively replaces the layer stack
+    return false;
   }
 
   // The generic-identity normalization and the base's order-attribute fill rewrite the XML: work on a clone, not the
@@ -415,47 +418,24 @@ bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
   QDomDocument restore_doc;
   QDomElement restore_element = restore_doc.importNode(element, /*deep=*/true).toElement();
   restore_doc.appendChild(restore_element);
-  dropEmptyDatasetQualifiers(restore_element);
-
-  // The base restore clears the layer stack before replay: this snapshot puts the widget back on a late failure.
-  // A clipboard paste has no MainWindow-level transaction around it.
-  QDomDocument previous_doc;
-  QDomElement previous_element = xmlSaveState(previous_doc);
-  previous_doc.appendChild(previous_element);
-  const PendingRestoreSnapshot previous_pending = capturePendingRestoreState();
-  const auto rollback = [this, &previous_element, &previous_pending]() {
-    primeRestoreLayerKinds(previous_element);
-    const bool layers_restored = SceneDockWidget::xmlLoadState(previous_element);
-    restore_image_layer_kinds_.clear();
-    const auto previous_view = parseViewState(previous_element);
-    ensureSceneViewCreated();
-    const bool restored =
-        layers_restored && previous_view.has_value() && viewer_ != nullptr && viewer_->setViewState(*previous_view);
-    if (restored) {
-      restorePendingRestoreState(previous_pending);
+  // A layer xmlValidateState refuses is skipped, named by its first rejection; the rest of the state restores.
+  for (QDomElement layer = restore_element.firstChildElement(u"layer"_s); !layer.isNull();) {
+    const QDomElement next = layer.nextSiblingElement(u"layer"_s);
+    XmlOptionsRecorder recorder;
+    if (!validateLayer(layer, layerFactory())) {
+      skipRestoreElement(layer, recorder.firstRejection());
+      restore_element.removeChild(layer);
     }
-    return restored;
-  };
+    layer = next;
+  }
+  dropEmptyDatasetQualifiers(restore_element);
 
   auto restore_guard = beginWorkspaceRestore();
   primeRestoreLayerKinds(restore_element);
   const bool loaded = SceneDockWidget::xmlLoadState(restore_element);
   restore_image_layer_kinds_.clear();
-  if (!loaded) {
-    if (!rollback()) {
-      qWarning("Scene2DDockWidget: failed to roll back rejected XML state");
-    }
-    return false;
-  }
-
   ensureSceneViewCreated();
-  if (viewer_ == nullptr || !viewer_->setViewState(*view_state)) {
-    if (!rollback()) {
-      qWarning("Scene2DDockWidget: failed to roll back rejected view state");
-    }
-    return false;
-  }
-  return true;
+  return loaded && viewer_ != nullptr && viewer_->setViewState(*view_state);
 }
 
 void Scene2DDockWidget::setSessionManager(SessionManager* session) {

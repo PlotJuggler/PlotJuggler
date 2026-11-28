@@ -987,12 +987,14 @@ class MainWindow : public QMainWindow {
   /// Coalesces plot-owned intent changes into one binder rebuild on the event loop.
   void schedulePendingDisplayBindingRebuild();
   /// Settles every scene dock after a restore: dataset choice, a last pending retry, then the verdict
-  /// (permanent failure, unresolved blocking topics).
+  /// (unresolved blocking topics, skipped elements).
   struct SceneRestoreVerdict {
-    bool failed = false;
     QStringList blocking_topics;
+    bool skipped = false;  ///< a dock dropped an element since applyWorkspace began, already reported
   };
   [[nodiscard]] SceneRestoreVerdict settleSceneRestores();
+  /// A scene dock's restoreElementSkipped: a "Layout" warning naming the dock, counted for settleSceneRestores.
+  void reportSkippedSceneElement(const QWidget* scene_dock, const QString& line);
 
   int retryPendingSceneRestores(const std::vector<CatalogItem>& items);
   [[nodiscard]] QStringList unresolvedPendingSceneRestores();
@@ -1590,6 +1592,8 @@ class MainWindow : public QMainWindow {
   // Trailing edge for scene docks' workspaceChanged: scrubbers emit per drag tick, and each undo push serializes
   // the whole workspace.
   QTimer scene_undo_debounce_;
+  // Scene elements skipped since applyWorkspace began; an exact restore fails on any.
+  int scene_restore_skips_ = 0;
   // Trailing edge, from the event loop, for a plugin's change to a history-owned derived node: one undo step per
   // burst, so an Apply that creates several nodes is undone at once.
   QTimer plugin_history_step_;
