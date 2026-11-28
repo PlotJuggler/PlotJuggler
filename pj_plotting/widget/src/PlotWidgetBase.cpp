@@ -617,6 +617,7 @@ void PlotWidgetBase::applyTimeAxisFormat() {
   // re-divides the ticks.
   engine->setAttribute(QwtScaleEngine::Floating, true);
   plot_->setAxisScaleEngine(QwtPlot::xBottom, engine);
+  timeAxisFormatChanged();
   replot();
 }
 

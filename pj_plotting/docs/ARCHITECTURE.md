@@ -109,7 +109,8 @@ history out of date. `onChangeCurveColor` likewise marks the trackers stale and 
 (the editor's picker) emits the undo step.
 
 - **Trackers re-sample only when `trackers_stale_` is set** (curve-list and axis changes, a visibility or colour change,
-  a layout restore), at the next replot (`beforeCanvasReplot`), not at once: a curve just added has no window yet and
+  a layout restore, an X-axis label format change: the date-time toggle can keep the tick division, so
+  `scaleDivChanged` alone misses it), at the next replot (`beforeCanvasReplot`), not at once: a curve just added has no window yet and
   sampling it would copy its whole series. A path that changes what a tracker reads (a curve's visibility or pen) must
   set the flag before it replots.
 - **XY markers ride the same pass.** An XY plot has no tracker line: each curve's dot (`CurveInfo::marker`) is placed on

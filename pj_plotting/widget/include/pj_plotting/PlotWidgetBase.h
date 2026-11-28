@@ -177,6 +177,9 @@ class PlotWidgetBase : public QWidget {
   // Runs inside every replot, after the curves hold the window of the new axis scales and before the canvas paints:
   // the place to re-sample overlays that read the curves.
   virtual void beforeCanvasReplot() {}
+  // The X axis's label format changed (the date-time toggle, XY mode), just before the replot that shows it. The tick
+  // division may be unchanged, so scaleDivChanged does not announce it.
+  virtual void timeAxisFormatChanged() {}
   class QwtPlotPimpl;
 
   void setStyle(QwtPlotCurve* curve, CurveStyle style);
