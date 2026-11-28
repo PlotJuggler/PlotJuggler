@@ -1124,6 +1124,13 @@ if(PJ_BUILD_TESTS)
     endif()
 endif()
 
+# `-geometry` is Qt's X11 spelling: off xcb (Wayland, Windows, macOS, offscreen) the app must still accept it.
+if(PJ_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME AppAcceptsGeometryOffXcb COMMAND $<TARGET_FILE:pj_app> -geometry 640x480+0+0 --version)
+    set_tests_properties(AppAcceptsGeometryOffXcb PROPERTIES TIMEOUT 60
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/geometry_test_home")
+endif()
+
 # An agent's view end to end: the built app's --mcp-bridge over stdio in front of an offscreen
 # `plotjuggler4 --mcp`, under a private HOME (XDG paths isolate settings and discovery, hence Linux).
 if(PJ_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")

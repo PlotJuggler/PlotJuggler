@@ -312,6 +312,13 @@ int main(int argc, char* argv[]) {
     }
   }
 #endif
+  // Qt 6.12 consumes `-geometry` only on xcb; elsewhere QCommandLineParser would refuse it as eight short options.
+  // `-qwindowgeometry` is its portable spelling.
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "-geometry") == 0) {
+      argv[i] = const_cast<char*>("-qwindowgeometry");
+    }
+  }
 
   // Before QApplication, so no widget reads the platform's native style (Breeze, Adwaita), which overrides QSS on
   // QMenu and other popups.

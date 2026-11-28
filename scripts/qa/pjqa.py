@@ -17,7 +17,7 @@ The app runs from this checkout's run.sh with --mcp-ui-tools, offscreen (or unde
 private HOME, so it never touches the user's settings, windows or running instances. Linux only.
 --display puts its windows on that display instead: an X display `:N` (a private GPU display, say), or
 `wayland` for the session's own compositor; a user's own display only when they asked. `-geometry`
-among the app arguments is a Qt option of X11 only.
+among the app arguments works on every platform; a Wayland compositor places the window itself.
 
 --browser serves a packaged WebAssembly build (scripts/package_wasm.mjs output) and runs a stand-in for
 the agent relay (docs/MCP_SERVER.md, "Browser relay"); `call` and `run` then reach the page that opens the
@@ -512,7 +512,7 @@ def main():
         type=display_value,
         metavar=":N|wayland",
         help="run on this X display, or natively on the session's Wayland compositor; windows appear there "
-        "(a user's own display only when they asked). -geometry is an X11-only Qt option",
+        "(a user's own display only when they asked)",
     )
     p.add_argument("--plugin-dir", help="a folder of built plugins (data loaders, parsers)")
     p.add_argument("--browser", metavar="DEPLOY_DIR", help="serve this packaged browser build instead")
