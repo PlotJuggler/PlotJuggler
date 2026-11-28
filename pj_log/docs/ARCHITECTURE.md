@@ -35,8 +35,15 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
 - **`LogView`** is the list, the toolbar (level toggles, filters, Topics menu, future-rows choice) and the detail pane
   with Copy. The Source and Category columns and their filter fields show while a row in the store fills them
   (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. It is runtime-agnostic: the host hands it a `LogRowSource` per topic (`setTopicRows`, `updateTopicRows`) or
-  `LogEntry` rows, sets the tracker and the `TimeLabelFormat`, and answers `seekRequested`. It keeps the selection across every data call that leaves the selected row in the
-  store.
+  `LogEntry` rows, sets the tracker and the `TimeLabelFormat`, and answers `seekRequested`. It keeps the entry the
+  user selected (its `RowKey`: time, topic, rank among the topic's rows of that time, so a re-index finds it) and
+  selects it whenever it is shown; while it is not (filtered out, hidden after the tracker, absent while a reload
+  refills its topic) nothing is selected. Qt moves the selection to a neighbour when the selected row is removed, so
+  every model change runs under `adjusting_` and is followed by `showChosen`. The selected row is read from the
+  selection model, never from `currentIndex()`: a mouse drag selects a row before it makes it current. While paused,
+  a list that shows the tracker's row keeps it in view however many rows land before it (a reload refills over
+  several updates), and a topic indexed anew (`setTopicRows`: a merge, a reload, a display-offset change) rebuilds the
+  rows under the viewport, so the list finds the tracker again, as on its first rows.
 - **`LogDockWidget`** is the panel the dock system hosts (`IDataWidget`, kind and XML tag `log`).
 
 ## Data flow

@@ -351,6 +351,119 @@ TEST_F(LogViewTest, AppendsAndReloadsKeepTheSelection) {
   EXPECT_EQ(message(6), "/rosout #5");
 }
 
+// The entry the user picked stays theirs: a seek back that hides it selects nothing in its place, and the seek forward
+// that shows it again selects it again.
+TEST_F(LogViewTest, ASelectionHiddenByASeekBackComesBackWithIt) {
+  fill(0, "/rosout", 20);
+  track(10.0);
+  list()->setCurrentIndex(model()->index(5, 0));
+  ASSERT_TRUE(detail().contains("/rosout #5"));
+
+  track(2.0);  // later rows hidden: /rosout #5 with them
+  EXPECT_FALSE(list()->selectionModel()->hasSelection());
+  EXPECT_EQ(detail(), QString());
+
+  track(10.0);
+  EXPECT_EQ(list()->currentIndex().row(), 5);
+  EXPECT_TRUE(list()->selectionModel()->isRowSelected(5, QModelIndex()));
+  EXPECT_TRUE(detail().contains("/rosout #5"));
+}
+
+// A file reload refills the topic in place: the host shows it empty, then indexes the rows again. The picked entry is
+// selected again and the list shows the tracker's row, not the top.
+TEST_F(LogViewTest, ARefillKeepsTheSelectionAndTheTrackerInView) {
+  fill(0, "/rosout", 200);
+  track(150.0);
+  list()->setCurrentIndex(model()->index(145, 0));
+  ASSERT_TRUE(rowVisible(150));
+
+  view_.setTopicRows(0, std::make_shared<PJ::VectorLogRowSource>());
+  QApplication::processEvents();
+  ASSERT_EQ(model()->rowCount(), 0);
+  auto refilled = std::make_shared<PJ::VectorLogRowSource>();
+  refilled->merge(numbered("/rosout", 200));
+  view_.updateTopicRows(0, refilled);
+  QApplication::processEvents();
+
+  EXPECT_EQ(list()->currentIndex().row(), 145);
+  EXPECT_TRUE(detail().contains("/rosout #145"));
+  EXPECT_TRUE(rowVisible(150)) << "the tracker's row";
+}
+
+// A topic indexed anew (a merge folds another log into it) rebuilds the rows under the viewport: the list finds the
+// tracker again instead of keeping a scroll offset that now points at other rows.
+TEST_F(LogViewTest, ATopicIndexedAnewKeepsTheTrackerInView) {
+  fill(0, "/rosout", 200);
+  track(150.0);
+  ASSERT_TRUE(rowVisible(150));
+
+  auto merged = std::make_shared<PJ::VectorLogRowSource>();
+  std::vector<LogEntry> entries;
+  for (int i = 0; i < 200; ++i) {
+    entries.push_back(entry(i, "/rosout #" + std::to_string(i)));
+    entries.push_back(entry(i + 0.5, "/other #" + std::to_string(i)));
+  }
+  merged->merge(std::move(entries));
+  view_.setTopicRows(0, merged);
+  QApplication::processEvents();
+
+  ASSERT_EQ(model()->rowCount(), 301);  // later rows hidden: up to "/rosout #150"
+  EXPECT_TRUE(rowVisible(300)) << "the tracker's row";
+}
+
+// A reload refills its topic over several updates: the list stays on the tracker through all of them.
+TEST_F(LogViewTest, AProgressiveRefillEndsOnTheTracker) {
+  fill(0, "/rosout", 200);
+  track(150.0);
+  list()->setCurrentIndex(model()->index(145, 0));
+  view_.setTopicRows(0, std::make_shared<PJ::VectorLogRowSource>());
+  QApplication::processEvents();
+
+  const std::vector<LogEntry> all = numbered("/rosout", 200);
+  auto refilled = std::make_shared<PJ::VectorLogRowSource>();
+  refilled->merge(std::vector<LogEntry>(all.begin(), all.begin() + 40));
+  view_.updateTopicRows(0, refilled);
+  QApplication::processEvents();
+  refilled->merge(std::vector<LogEntry>(all.begin() + 40, all.end()));
+  view_.updateTopicRows(0, refilled);
+  QApplication::processEvents();
+
+  EXPECT_TRUE(rowVisible(150)) << "the tracker's row";
+  EXPECT_EQ(list()->currentIndex().row(), 145);
+}
+
+// Rows landing before the tracker's row (another topic refilled) push it down: the list keeps it in view.
+TEST_F(LogViewTest, RowsLandingBeforeTheTrackerKeepItInView) {
+  fill(0, "/rosout", 200);
+  fill(1, "/other", 200);
+  track(150.0);
+  view_.setTopicRows(0, std::make_shared<PJ::VectorLogRowSource>());
+  QApplication::processEvents();
+  ASSERT_TRUE(rowVisible(model()->rowCount() - 1));
+
+  auto refilled = std::make_shared<PJ::VectorLogRowSource>();
+  refilled->merge(numbered("/rosout", 200));
+  view_.updateTopicRows(0, refilled);
+  QApplication::processEvents();
+
+  EXPECT_TRUE(rowVisible(model()->rowCount() - 1)) << "the tracker's row";
+}
+
+// A drag across rows selects the row it ends on before Qt makes it current: that row is the user's choice too.
+TEST_F(LogViewTest, ADraggedSelectionStaysThroughATrackerMove) {
+  fill(0, "/rosout", 20);
+  track(19.0);
+  const auto center = [this](int row) { return list()->visualRect(model()->index(row, 0)).center(); };
+  QTest::mousePress(list()->viewport(), Qt::LeftButton, {}, center(3));
+  QTest::mouseMove(list()->viewport(), center(5));
+  QTest::mouseRelease(list()->viewport(), Qt::LeftButton, {}, center(5));
+  ASSERT_TRUE(list()->selectionModel()->isRowSelected(5, QModelIndex()));
+
+  track(18.0);
+  EXPECT_TRUE(list()->selectionModel()->isRowSelected(5, QModelIndex()));
+  EXPECT_TRUE(detail().contains("/rosout #5"));
+}
+
 TEST_F(LogViewTest, CategoryColumnAndFilterAppearWithTheFirstCategory) {
   auto* field = view_.findChild<PJ::Search*>("categoryEdit");
   ASSERT_NE(field, nullptr);

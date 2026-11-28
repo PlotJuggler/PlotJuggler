@@ -11,6 +11,7 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStyle>
@@ -30,7 +31,6 @@
 namespace PJ {
 
 using log_view::LogRow;
-using log_view::LogStore;
 using log_view::LogTableModel;
 using log_view::StoreChange;
 
@@ -132,6 +132,7 @@ LogView::LogView(QWidget* parent)
   // The detail shows the current row when it is selected: follow both, since Qt moves the current row
   // before it selects it on a click, and a keyboard move can change one without the other.
   connect(ui_->logView->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &LogView::updateDetail);
+  connect(ui_->logView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &LogView::onSelectionChanged);
   connect(ui_->logView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &LogView::updateDetail);
   connect(model_, &QAbstractItemModel::modelReset, this, &LogView::updateDetail);
   connect(model_, &LogTableModel::filterApplied, this, &LogView::onFilterApplied);
@@ -166,8 +167,7 @@ std::array<QToolButton*, log_view::kToggleLevelCount> LogView::levelToggles() co
 
 void LogView::changeStore(const std::function<StoreChange()>& mutate) {
   const std::optional<size_t> selected = selectedStoreRow();
-  const auto key = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
-  followChange(mutate(), selected, key);
+  followChange(mutate(), selected);
 }
 
 void LogView::appendEntries(uint32_t topic, std::vector<LogEntry> entries) {
@@ -187,12 +187,15 @@ void LogView::appendEntries(uint32_t topic, std::vector<LogEntry> entries) {
 void LogView::replaceEntries(uint32_t topic, std::vector<LogEntry> entries) {
   auto source = std::make_shared<VectorLogRowSource>();
   source->merge(std::move(entries));
-  entry_sources_[topic] = source;
-  changeStore([&] { return store_.replaceWire(topic, source); });  // RowKey re-finds the selection
+  setTopicRows(topic, source);
+  entry_sources_[topic] = std::move(source);
 }
 
 void LogView::setTopicRows(uint32_t topic, std::shared_ptr<const LogRowSource> source) {
   entry_sources_.erase(topic);
+  // The rows under the viewport are rebuilt (a merge, a reload, a display-offset change): the scroll offset would point
+  // at other rows, so the list finds the tracker again.
+  shown_rows_ = false;
   changeStore([&] { return store_.replaceWire(topic, std::move(source)); });
 }
 
@@ -208,29 +211,28 @@ void LogView::removeTopic(uint32_t topic) {
   changeStore([&] { return store_.removeWire(topic); });
 }
 
-void LogView::followChange(
-    const StoreChange& change, std::optional<size_t> selected, std::optional<LogStore::RowKey> selected_key) {
+void LogView::followChange(const StoreChange& change, std::optional<size_t> selected) {
+  // Taken in the model's old rows: a list on the tracker stays on it however many rows land before it.
+  const bool on_tracker = trackerRowInView();
   // The detail pane's row is stale from old_tail on, and an eviction shifts every index. Checked before the model
   // follows the store: its signals may refresh the pane, in new coordinates.
   if (detail_row_ && (change.reset || change.dropped_front > 0 || *detail_row_ >= change.old_tail)) {
     detail_valid_ = false;
   }
-  model_->applyStoreChange(change);
-  refreshOptionalColumns();
-  model_->setTracker(tracker_);
-  if (selected) {
+  {
+    const QScopedValueRollback adjusting(adjusting_, true);
+    model_->applyStoreChange(change);
+    refreshOptionalColumns();
+    model_->setTracker(tracker_);
     // A row the change left in place moves by the eviction alone; its rank among equal times may not hold.
-    std::optional<size_t> now = change.kept(*selected);
-    if (!now && (change.reset || *selected >= change.old_tail)) {
-      now = store_.indexOf(*selected_key);
+    if (const std::optional<size_t> kept = selected ? change.kept(*selected) : std::nullopt) {
+      chosen_ = store_.keyOf(*kept);
     }
-    if (now && now != selectedStoreRow()) {
-      selectStoreRow(now);
-    }
+    showChosen();
   }
   if (playing_) {
     scrollToTracker(true);
-  } else if (!shown_rows_ && model_->rowCount() > 0) {
+  } else if ((!shown_rows_ || on_tracker) && model_->rowCount() > 0) {
     scrollToTracker(false);
   }
   if (model_->rowCount() > 0) {
@@ -243,7 +245,11 @@ void LogView::followChange(
 void LogView::setTrackerTime(double time) {
   const bool moved = std::isnan(tracker_) != std::isnan(time) || (!std::isnan(time) && !sameTime(time, tracker_));
   tracker_ = time;
-  model_->setTracker(time);
+  {
+    const QScopedValueRollback adjusting(adjusting_, true);
+    model_->setTracker(time);
+    showChosen();
+  }
   if (playing_) {
     pending_seek_.reset();
     scrollToTracker(true);
@@ -285,9 +291,9 @@ void LogView::setShowFuture(bool show) {
   ui_->futureButton->setIconPath(QString::fromLatin1(show ? kFutureShownIcon : kFutureHiddenIcon));
   ui_->futureButton->setToolTip(
       show ? tr("Show the entries after the playhead, greyed") : tr("Hide the entries after the playhead"));
-  const std::optional<size_t> selected = selectedStoreRow();
+  const QScopedValueRollback adjusting(adjusting_, true);
   model_->setFutureRows(show ? log_view::FutureRows::kGrey : log_view::FutureRows::kHide);
-  selectStoreRow(selected);
+  showChosen();
 }
 
 log_view::LogFilter LogView::currentFilter() const {
@@ -309,14 +315,14 @@ log_view::LogFilter LogView::currentFilter() const {
 
 void LogView::applyFilters() {
   text_timer_.stop();
-  const std::optional<size_t> selected = selectedStoreRow();
-  filter_selection_ = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
+  const QScopedValueRollback adjusting(adjusting_, true);
   model_->setFilter(currentFilter());
 }
 
 void LogView::onFilterApplied() {
-  if (const auto key = std::exchange(filter_selection_, std::nullopt)) {
-    selectStoreRow(store_.indexOf(*key));
+  {
+    const QScopedValueRollback adjusting(adjusting_, true);
+    showChosen();
   }
   if (playing_) {
     scrollToTracker(true);
@@ -325,15 +331,47 @@ void LogView::onFilterApplied() {
   } else {
     scrollToTracker(false);
   }
+  shown_rows_ = shown_rows_ || model_->rowCount() > 0;
   updateDetail();
 }
 
 std::optional<size_t> LogView::selectedStoreRow() const {
-  const QModelIndex current = ui_->logView->currentIndex();
-  if (!current.isValid() || !ui_->logView->selectionModel()->isRowSelected(current.row(), QModelIndex())) {
+  // The selection, not currentIndex(): a mouse drag selects a row before it makes it current.
+  const QModelIndexList rows = ui_->logView->selectionModel()->selectedRows();
+  if (rows.isEmpty()) {
     return std::nullopt;
   }
-  return model_->storeIndex(current.row());
+  return model_->storeIndex(rows.front().row());
+}
+
+bool LogView::trackerRowInView() const {
+  const QTreeView* view = ui_->logView;
+  const int tracker_row = model_->revealedRows() - 1;
+  const QModelIndex top = view->indexAt(QPoint(1, 0));
+  if (tracker_row < 0 || !top.isValid()) {
+    return false;
+  }
+  const QModelIndex bottom = view->indexAt(QPoint(1, view->viewport()->height() - 1));
+  return top.row() <= tracker_row && (!bottom.isValid() || tracker_row <= bottom.row());
+}
+
+void LogView::onSelectionChanged() {
+  if (adjusting_) {
+    return;
+  }
+  const std::optional<size_t> selected = selectedStoreRow();
+  chosen_ = selected ? std::optional(store_.keyOf(*selected)) : std::nullopt;
+}
+
+void LogView::showChosen() {
+  const std::optional<size_t> index = chosen_ ? store_.indexOf(*chosen_) : std::nullopt;
+  if (index && model_->rowOf(*index) >= 0) {
+    if (selectedStoreRow() != index) {
+      selectStoreRow(index);
+    }
+  } else if (chosen_ || ui_->logView->selectionModel()->hasSelection()) {
+    ui_->logView->selectionModel()->clear();  // no neighbour in its place
+  }
 }
 
 void LogView::selectStoreRow(std::optional<size_t> store_index) {
