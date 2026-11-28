@@ -269,7 +269,8 @@ TEST(CurveListPanelTest, HoverTooltipReportsTypeAndCounts) {
   EXPECT_TRUE(dataset_tip.contains(u"<span style=\"font-weight:600\">Topics:</span> 2"_s)) << dataset_tip.toStdString();
 }
 
-// A plugin-supplied description shows on the field row and on its topic's row, HTML-escaped with line breaks kept.
+// A plugin-supplied description and unit show on the field row and on its topic's row, HTML-escaped with line breaks
+// kept; a long description is cut.
 TEST(CurveListPanelTest, HoverTooltipShowsTheMetadataDescription) {
   AppSession app_session;
   const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
@@ -286,7 +287,9 @@ TEST(CurveListPanelTest, HoverTooltipShowsTheMetadataDescription) {
   writer.set(*topic, 1, 2.0);
   ASSERT_TRUE(writer.finishRow(*topic).has_value());
   EXPECT_FALSE(app_session.sessionManager().commitChunks(writer.flushAll()).empty());
-  ASSERT_TRUE(engine.setFieldMetadata(*topic, *ax, R"({"description":"<b>x</b> & more\nsecond line"})"));
+  ASSERT_TRUE(
+      engine.setFieldMetadata(*topic, *ax, R"({"description":"<b>x</b> & more\nsecond line","unit":"m/s<sup>2"})"));
+  ASSERT_TRUE(engine.setFieldMetadata(*topic, *ay, R"({"description":")" + std::string(600, 'y') + R"("})"));
   ASSERT_TRUE(engine.setTopicMetadata(*topic, R"({"description":"Inertial unit"})"));
   auto& catalog = app_session.catalogModel();
   catalog.rebuildFromDatastore();
@@ -325,8 +328,12 @@ TEST(CurveListPanelTest, HoverTooltipShowsTheMetadataDescription) {
       u"<span style=\"font-weight:600\">Description:</span> &lt;b&gt;x&lt;/b&gt; &amp; more<br>second line"_s))
       << ax_tip.toStdString();
   EXPECT_FALSE(ax_tip.contains(u"<b>x</b>"_s)) << ax_tip.toStdString();
+  EXPECT_TRUE(ax_tip.contains(u"<span style=\"font-weight:600\">Unit:</span> m/s&lt;sup&gt;2"_s))
+      << ax_tip.toStdString();
   const QString ay_tip = hover(ay_row);
-  EXPECT_FALSE(ay_tip.contains(u"Description:"_s)) << ay_tip.toStdString();
+  EXPECT_TRUE(ay_tip.contains(QString(500, u'y') + u'…')) << ay_tip.toStdString();
+  EXPECT_FALSE(ay_tip.contains(QString(501, u'y'))) << ay_tip.toStdString();
+  EXPECT_FALSE(ay_tip.contains(u"Unit:"_s)) << ay_tip.toStdString();
   const QString topic_tip = hover(topic_row);
   EXPECT_TRUE(topic_tip.contains(u"<span style=\"font-weight:600\">Description:</span> Inertial unit"_s))
       << topic_tip.toStdString();

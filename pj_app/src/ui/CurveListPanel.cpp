@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QIcon>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLineF>
@@ -36,6 +37,7 @@
 #include <optional>
 
 #include "TopicDemandController.h"
+#include "pj_base/sdk/metadata_document.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/TopicDemandTracker.h"
@@ -438,6 +440,22 @@ QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tr
   }
   // Rich text: semi-bold labels, names HTML-escaped (a topic can contain '<').
   QStringList lines;
+  // A plugin's metadata document: untrusted text, escaped, line breaks kept; a long description is cut, since the
+  // tooltip is a hint and the store keeps the whole text.
+  const auto describe_metadata = [&](const QJsonObject& metadata) {
+    constexpr qsizetype kMaxDescriptionChars = 500;
+    QString description = metadata.value(QLatin1StringView(sdk::kDescriptionMetadataKey)).toString();
+    if (description.size() > kMaxDescriptionChars) {
+      description = description.first(kMaxDescriptionChars) + u'…';
+    }
+    if (!description.isEmpty()) {
+      lines << tr("<span style=\"font-weight:600\">Description:</span> %1")
+                   .arg(description.toHtmlEscaped().replace(u'\n', u"<br>"_s));
+    }
+    if (const QString unit = metadata.value(QLatin1StringView(sdk::kUnitMetadataKey)).toString(); !unit.isEmpty()) {
+      lines << tr("<span style=\"font-weight:600\">Unit:</span> %1").arg(unit.toHtmlEscaped());
+    }
+  };
   const auto describe_topic = [&](const CatalogItem& item) {
     if (isAdvertisedTopic(item)) {
       lines << tr("Not subscribed. Drop it into a view to start streaming.");
@@ -452,12 +470,7 @@ QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tr
       lines << tr("<span style=\"font-weight:600\">Type:</span> %1").arg(stats->schema_name.toHtmlEscaped());
     }
     lines << tr("<span style=\"font-weight:600\">Messages:</span> %1").arg(formatCount(*stats));
-    // Plugin-supplied text, untrusted: escaped, with line breaks kept. "description" is the canonical metadata key.
-    if (const QString description = catalog_->topicMetadata(item.key).value(u"description"_s).toString();
-        !description.isEmpty()) {
-      lines << tr("<span style=\"font-weight:600\">Description:</span> %1")
-                   .arg(description.toHtmlEscaped().replace(u'\n', u"<br>"_s));
-    }
+    describe_metadata(catalog_->topicMetadata(item.key));
   };
 
   if (!catalog_key.isEmpty()) {
@@ -476,12 +489,7 @@ QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tr
         lines << tr("<span style=\"font-weight:600\">Type:</span> %1").arg(type_name);
       }
       lines << tr("<span style=\"font-weight:600\">Samples:</span> %1").arg(formatCount(*stats));
-      // Plugin-supplied text, untrusted: escaped, with line breaks kept. "description" is the canonical metadata key.
-      if (const QString description = catalog_->fieldMetadata(item->key).value(u"description"_s).toString();
-          !description.isEmpty()) {
-        lines << tr("<span style=\"font-weight:600\">Description:</span> %1")
-                     .arg(description.toHtmlEscaped().replace(u'\n', u"<br>"_s));
-      }
+      describe_metadata(catalog_->fieldMetadata(item->key));
     } else {
       describe_topic(*item);
     }
