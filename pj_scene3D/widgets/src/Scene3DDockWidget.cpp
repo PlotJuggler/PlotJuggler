@@ -27,6 +27,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <glm/glm.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <numbers>
@@ -153,10 +154,26 @@ struct ValidatedSceneState {
   bool explicit_fixed_frame = false;
   QString fixed_frame;
   QString follow_frame;
+  std::optional<glm::dvec3> follow_offset;
   int camera_model_index = -1;
   std::optional<ValidatedCameraState> camera_state;
   std::optional<ValidatedSceneControls> controls;
 };
+
+std::optional<glm::dvec3> parseFollowOffset(const QString& text) {
+  const nlohmann::json parsed = nlohmann::json::parse(text.toStdString(), nullptr, /*allow_exceptions=*/false);
+  if (!parsed.is_array() || parsed.size() != 3) {
+    return std::nullopt;
+  }
+  glm::dvec3 offset{0.0};
+  for (int i = 0; i < 3; ++i) {
+    if (!parsed[i].is_number() || !std::isfinite(parsed[i].get<double>())) {
+      return std::nullopt;
+    }
+    offset[i] = parsed[i].get<double>();
+  }
+  return offset;
+}
 
 std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element) {
   ValidatedSceneState state;
@@ -170,6 +187,14 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
   state.explicit_fixed_frame = mode == "explicit"_L1;
   state.fixed_frame = PJ::readXmlText(element, u"fixed_frame"_s);
   state.follow_frame = PJ::readXmlText(element, u"follow_frame"_s);
+  // Tolerated: without a usable offset the camera snaps onto the followed frame.
+  PJ::XmlOptionsRecorder::noteOption(element, {.attribute = u"follow_offset"_s, .type = u"json"_s});
+  if (element.hasAttribute(u"follow_offset"_s)) {
+    state.follow_offset = parseFollowOffset(element.attribute(u"follow_offset"_s));
+    if (!state.follow_offset.has_value()) {
+      PJ::XmlOptionsRecorder::noteRejection(element, u"follow_offset"_s, u"expected [x, y, z], three finite numbers"_s);
+    }
+  }
   QString camera_model;
   if (!PJ::readXmlEnum(element, u"camera_model"_s, cameraModelTokens(), {}, camera_model)) {
     return std::nullopt;
@@ -1972,6 +1997,14 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
       u"fixed_frame_mode"_s, fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? u"auto_root"_s : u"explicit"_s);
   root.setAttribute(u"fixed_frame"_s, currentFixedFrame());
   root.setAttribute(u"follow_frame"_s, currentFollowFrame());
+  // camera_state's focal is a fixed-frame point, right only at the cursor it was saved at; the offset from the followed
+  // frame places the camera at any cursor.
+  if (view_ != nullptr) {
+    if (const auto offset = view_->followOffset()) {
+      root.setAttribute(
+          u"follow_offset"_s, QString::fromStdString(nlohmann::json{offset->x, offset->y, offset->z}.dump()));
+    }
+  }
   if (view_ != nullptr && camera_model_combo_ != nullptr) {
     root.setAttribute(u"camera_model"_s, cameraModelToString(static_cast<int>(view_->cameraModel())));
     root.setAttribute(
@@ -2151,6 +2184,12 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     // Camera follow target (empty = off; older layouts lack the attribute). A target absent from the TF tree stays
     // inert until it appears (applyFollow holds on lookup failure).
     setFollowFrame(validated->follow_frame);
+    // A saved camera without follow_offset (an older layout) snaps onto the frame; a state naming no camera (a
+    // partial set_widget_state) keeps the camera where it is.
+    if (view_ != nullptr && !validated->follow_frame.isEmpty() &&
+        (validated->follow_offset.has_value() || validated->camera_state.has_value())) {
+      view_->setFollowAnchor(validated->follow_offset.value_or(glm::dvec3(0.0)));
+    }
     // Per-dock scene controls override the global seed applied at view creation (sceneViewReady ->
     // applySceneControlsTo); older layouts have no <scene_controls> and keep the seed, and a missing attribute keeps
     // the current value, so a partial element never zeroes a control. Field set mirrors

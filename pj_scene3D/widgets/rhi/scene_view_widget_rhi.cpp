@@ -411,8 +411,32 @@ void SceneViewWidget::setFollowFrame(const std::string& frame) {
     return;
   }
   follow_frame_ = frame;
+  follow_anchor_.reset();
   reseedFollow();
   invalidateContent();
+}
+
+void SceneViewWidget::setFollowAnchor(const glm::dvec3& offset) {
+  follow_anchor_ = offset;
+  reseedFollow();
+  invalidateContent();
+}
+
+std::optional<glm::dvec3> SceneViewWidget::followOffset() const {
+  if (follow_frame_.empty()) {
+    return std::nullopt;
+  }
+  if (follow_anchor_.has_value()) {  // consumed by the seed, so still pending
+    return follow_anchor_;
+  }
+  if (!has_tracker_time_) {
+    return std::nullopt;
+  }
+  const auto transform = followTransform(render_time_);
+  if (!transform) {
+    return std::nullopt;
+  }
+  return glm::dvec3(camera_->state().focal) - transform->t;
 }
 
 std::optional<Transform> SceneViewWidget::followTransform(PJ::Timepoint time) const {
@@ -437,6 +461,10 @@ void SceneViewWidget::applyFollow() {
   if (!follow_seeded_) {
     follow_previous_origin_ = transform->t;
     follow_seeded_ = true;
+    if (follow_anchor_.has_value()) {
+      camera_->followShift(glm::vec3(transform->t + *follow_anchor_) - camera_->state().focal);
+      follow_anchor_.reset();
+    }
     return;
   }
   const glm::dvec3 delta = transform->t - follow_previous_origin_;
@@ -462,6 +490,7 @@ void SceneViewWidget::recenterOnFollowFrame() {
   camera_->followShift(glm::vec3(transform->t) - before.focal);
   follow_previous_origin_ = transform->t;
   follow_seeded_ = true;
+  follow_anchor_.reset();  // the recenter is the new placement; a seed no longer comes to consume it
   invalidateContent();
   emitPresentationIfChanged(before);
 }

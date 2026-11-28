@@ -105,6 +105,12 @@ class SceneViewWidget : public QRhiWidget {
   }
   [[nodiscard]] uint64_t followRenderKey(PJ::Timepoint time) const;
   void recenterOnFollowFrame();
+  // The next follow seed puts the focal at `offset` (fixed-frame axes) from the followed frame's origin, instead of
+  // leaving it where it is. A changed follow frame drops it.
+  void setFollowAnchor(const glm::dvec3& offset);
+  // The focal's offset from the followed frame at the cursor (a pending anchor before the first seed); nullopt when
+  // nothing is followed or the frame does not resolve.
+  [[nodiscard]] std::optional<glm::dvec3> followOffset() const;
 
   [[nodiscard]] ICamera& camera() {
     return *camera_;
@@ -437,6 +443,7 @@ class SceneViewWidget : public QRhiWidget {
   std::string follow_frame_;
   glm::dvec3 follow_previous_origin_{0.0};
   bool follow_seeded_ = false;
+  std::optional<glm::dvec3> follow_anchor_;
 
   std::unique_ptr<ICamera> camera_{std::make_unique<OrbitCamera>()};
   CameraModel camera_model_ = CameraModel::kOrbit;

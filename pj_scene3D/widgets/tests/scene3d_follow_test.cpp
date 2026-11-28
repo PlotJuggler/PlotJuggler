@@ -304,4 +304,176 @@ TEST(Scene3DFollow, DockFollowFrameRoundTripsThroughLayout) {
   EXPECT_EQ(load_dock.currentFollowFrame(), u"base_link"_s) << "the follow target must restore from the layout";
 }
 
+// A layout restored with the cursor elsewhere than where it was saved: the saved focal is a fixed-frame point that is
+// right only at the save time, so the restore anchors the camera at its offset from the followed frame instead.
+TEST(Scene3DFollow, AnchorPlacesTheCameraRelativeToTheFollowedFrame) {
+  using namespace std::chrono_literals;
+  const int64_t later = std::chrono::nanoseconds(30s).count();
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "world", "robot", 0, {0.8, 2.4, 0.0});
+  setEdge(*buf, "world", "robot", later, {30.0, 0.0, 0.0});
+
+  SceneViewWidget view;
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("world");
+  view.setFollowFrame("robot");
+  pj::scene3d::CameraState restored = view.camera().state();
+  restored.focal = {0.8f, 2.4f, 0.4f};  // where the robot was when the layout was saved
+  view.camera().adoptState(restored);
+  view.setFollowAnchor({0.0, 0.0, 0.4});
+
+  view.setTrackerTime(at(later));
+
+  const glm::vec3 focal = view.camera().state().focal;
+  EXPECT_NEAR(focal.x, 30.0f, 1e-4f) << "the camera must land on the followed frame at the cursor";
+  EXPECT_NEAR(focal.y, 0.0f, 1e-4f);
+  EXPECT_NEAR(focal.z, 0.4f, 1e-4f);
+  ASSERT_TRUE(view.followOffset().has_value());
+  EXPECT_NEAR(view.followOffset()->z, 0.4, 1e-4);
+
+  setEdge(*buf, "world", "robot", later + 100, {31.0, 0.0, 0.0});
+  view.setTrackerTime(at(later + 100));
+  EXPECT_NEAR(view.camera().state().focal.x, 31.0f, 1e-4f) << "following continues after the anchored seed";
+}
+
+// The anchor waits for a frame that does not resolve yet (a layout restored before its data loads).
+TEST(Scene3DFollow, AnchorWaitsForTheFollowedFrame) {
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "world", "robot", 100, {5.0, 0.0, 0.0});
+
+  SceneViewWidget view;
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("world");
+  view.setFollowFrame("robot");
+  view.setFollowAnchor({1.0, 0.0, 0.0});
+  view.setTrackerTime(at(50));  // before the robot's first sample
+  ASSERT_TRUE(view.followOffset().has_value()) << "a pending anchor is still the offset a save writes";
+  EXPECT_NEAR(view.followOffset()->x, 1.0, 1e-9);
+
+  view.setTrackerTime(at(100));
+  EXPECT_NEAR(view.camera().state().focal.x, 6.0f, 1e-4f);
+}
+
+// A recenter replaces a pending anchor: the camera sits on the frame, and that is the offset a save writes.
+TEST(Scene3DFollow, RecenterDropsAPendingAnchor) {
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "world", "robot", 0, {5.0, 0.0, 0.0});
+
+  SceneViewWidget view;
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("world");
+  view.setFollowFrame("robot");
+  view.setFollowAnchor({1.0, 0.0, 0.0});
+  view.recenterOnFollowFrame();  // before any tracker time: the anchor is still pending
+  view.setTrackerTime(at(10));
+
+  EXPECT_NEAR(view.camera().state().focal.x, 5.0f, 1e-4f);
+  ASSERT_TRUE(view.followOffset().has_value());
+  EXPECT_NEAR(view.followOffset()->x, 0.0, 1e-4);
+}
+
+// Saved with the cursor at one time, restored with it at another: the camera keeps its place relative to the
+// followed frame, not its fixed-frame position.
+TEST(Scene3DFollow, DockRestoreAtAnotherCursorKeepsTheFollowedFrameInView) {
+  using namespace std::chrono_literals;
+  const int64_t later = std::chrono::nanoseconds(30s).count();
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "odom", "base", 0, {0.8, 2.4, 0.0});
+  setEdge(*buf, "odom", "base", later, {30.0, 0.0, 0.0});
+
+  PJ::SessionManager save_session;
+  PJ::TransformService save_tf(save_session);
+  PJ::Scene3DDockWidget save_dock;
+  save_dock.setSessionManager(&save_session);
+  save_dock.setTransformService(&save_tf);
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return save_dock.sceneView() != nullptr; }));
+  SceneViewWidget& save_view = *save_dock.sceneView();
+  save_view.setTransformBuffer(buf);
+  save_dock.setFixedFrame(u"odom"_s);
+  save_dock.setFollowFrame(u"base"_s);
+  save_view.setTrackerTime(at(0));
+  pj::scene3d::CameraState saved_camera = save_view.camera().state();
+  saved_camera.focal = {0.8f, 2.4f, 0.4f};
+  save_view.camera().adoptState(saved_camera);
+
+  QDomDocument doc;
+  const QDomElement state = save_dock.xmlSaveState(doc);
+  ASSERT_TRUE(state.hasAttribute(u"follow_offset"_s));
+
+  PJ::SessionManager load_session;
+  PJ::TransformService load_tf(load_session);
+  PJ::Scene3DDockWidget load_dock;
+  load_dock.setSessionManager(&load_session);
+  load_dock.setTransformService(&load_tf);
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return load_dock.sceneView() != nullptr; }));
+  SceneViewWidget& load_view = *load_dock.sceneView();
+  load_view.setTrackerTime(at(later));  // the cursor is at 30 s when the layout is applied
+  ASSERT_TRUE(load_dock.xmlLoadState(state));
+  load_view.setTransformBuffer(buf);  // the dataset's TF arrives
+  load_view.setFixedFrame("odom");
+
+  const glm::vec3 focal = load_view.camera().state().focal;
+  EXPECT_NEAR(focal.x, 30.0f, 1e-3f)
+      << "the restored camera must sit on base at the cursor, not where base was at save";
+  EXPECT_NEAR(focal.y, 0.0f, 1e-3f);
+  EXPECT_NEAR(focal.z, 0.4f, 1e-3f);
+}
+
+// A layout written before follow_offset existed snaps the camera onto the followed frame.
+TEST(Scene3DFollow, DockRestoreWithoutOffsetSnapsOntoTheFollowedFrame) {
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "odom", "base", 100, {30.0, 0.0, 0.0});
+
+  PJ::SessionManager session;
+  PJ::TransformService tf(session);
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&tf);
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return dock.sceneView() != nullptr; }));
+  SceneViewWidget& view = *dock.sceneView();
+  view.setTrackerTime(at(100));
+
+  QDomDocument doc;
+  QDomElement legacy = doc.createElement(u"scene3d"_s);
+  legacy.setAttribute(u"version"_s, u"1"_s);
+  legacy.setAttribute(u"fixed_frame_mode"_s, u"explicit"_s);
+  legacy.setAttribute(u"fixed_frame"_s, u"odom"_s);
+  legacy.setAttribute(u"follow_frame"_s, u"base"_s);
+  legacy.setAttribute(u"camera_state"_s, uR"({"focal": [0.8, 2.4, 0.4], "radius": 6.0})"_s);
+  ASSERT_TRUE(dock.xmlLoadState(legacy));
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("odom");
+
+  EXPECT_NEAR(view.camera().state().focal.x, 30.0f, 1e-3f);
+}
+
+// A state that names no camera (an MCP set_widget_state changing another attribute) keeps the camera where it is.
+TEST(Scene3DFollow, DockStateWithoutACameraKeepsTheCamera) {
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "odom", "base", 100, {30.0, 0.0, 0.0});
+
+  PJ::SessionManager session;
+  PJ::TransformService tf(session);
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&tf);
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return dock.sceneView() != nullptr; }));
+  SceneViewWidget& view = *dock.sceneView();
+  view.setTrackerTime(at(100));
+  pj::scene3d::CameraState camera = view.camera().state();
+  camera.focal = {5.0f, 0.0f, 0.0f};
+  view.camera().adoptState(camera);
+
+  QDomDocument doc;
+  QDomElement partial = doc.createElement(u"scene3d"_s);
+  partial.setAttribute(u"fixed_frame_mode"_s, u"explicit"_s);
+  partial.setAttribute(u"fixed_frame"_s, u"odom"_s);
+  partial.setAttribute(u"follow_frame"_s, u"base"_s);
+  ASSERT_TRUE(dock.xmlLoadState(partial));
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("odom");
+
+  EXPECT_NEAR(view.camera().state().focal.x, 5.0f, 1e-3f) << "no camera in the state: nothing to snap";
+}
+
 }  // namespace
