@@ -341,14 +341,11 @@ void LogDockWidget::relabel() {
   for (const Topic& topic : topics_) {
     const auto named = [&topic](const Topic& other) { return other.saved.topic == topic.saved.topic; };
     const bool shared = std::ranges::count_if(topics_, named) > 1;
-    if (!shared) {
-      view_->setTopicLabel(topic.id.id, topic.saved.topic);
-      continue;
-    }
-    const QString dataset = catalog_->datasetLabel(topic.saved.dataset_id).value_or(topic.saved.dataset_source);
-    view_->setTopicLabel(
-        topic.id.id,
-        QString::fromStdString(sdk::qualifiedSeriesName(dataset.toStdString(), topic.saved.topic.toStdString())));
+    const auto qualified = [&] {
+      const QString dataset = catalog_->datasetLabel(topic.saved.dataset_id).value_or(topic.saved.dataset_source);
+      return QString::fromStdString(sdk::qualifiedSeriesName(dataset.toStdString(), topic.saved.topic.toStdString()));
+    };
+    view_->setTopicLabel(topic.id.id, shared ? qualified() : topic.saved.topic);
   }
 }
 
@@ -381,15 +378,21 @@ void LogDockWidget::refresh() {
   const ObjectStore& objects = session_->objectStore();
   bool changed = false;
   for (auto it = topics_.begin(); it != topics_.end();) {
-    if (objects.isTopic(it->id, it->saved.dataset_id, it->saved.topic.toStdString()) && loadTopic(*it, full)) {
-      ++it;
-      continue;
+    // A merge reparents a topic only its consumed dataset had: it stays shown, under the anchor's identity.
+    const std::optional<DatasetId> holder = session_->dataEngine().mergeDestination(it->saved.dataset_id);
+    if (holder && objects.isTopic(it->id, *holder, it->saved.topic.toStdString())) {
+      if (*holder != it->saved.dataset_id) {
+        it->saved = savedIdentity(*holder, it->saved.topic);
+        changed = true;
+      }
+      if (loadTopic(*it, full)) {
+        ++it;
+        continue;
+      }
     }
-    // Removed, reparented by a merge or reissued: wait for it by the identity it was shown with, as a restore does;
-    // its dataset may be gone already.
-    if (std::ranges::find(pending_, it->saved, &SavedTopic::saved) == pending_.end()) {
-      pending_.push_back({.saved = it->saved, .hidden = view_->topicHidden(it->id.id), .session_id = true});
-    }
+    // Removed, folded by a merge into the anchor's topic of its name, or reissued: wait for it by the identity it was
+    // shown with, as a restore does; the resolver follows a merge, and its dataset may be gone already.
+    keepPending({.saved = it->saved, .hidden = view_->topicHidden(it->id.id)});
     view_->removeTopic(it->id.id);
     it = topics_.erase(it);
     changed = true;
@@ -402,11 +405,8 @@ void LogDockWidget::refresh() {
 }
 
 void LogDockWidget::addPendingTopic(DatasetId dataset_id, const QString& topic_name) {
-  SavedTopic pending{.saved = savedIdentity(dataset_id, topic_name), .session_id = true};
-  if (tryResolve(pending)) {
-    emit topicsChanged();
-  } else if (std::ranges::find(pending_, pending.saved, &SavedTopic::saved) == pending_.end()) {
-    pending_.push_back(std::move(pending));
+  SavedTopic pending{.saved = savedIdentity(dataset_id, topic_name)};
+  if (tryResolve(pending) || keepPending(std::move(pending))) {
     emit topicsChanged();
   }
 }
@@ -421,37 +421,14 @@ void LogDockWidget::discardDataset(DatasetId dataset_id) {
   discardIf([dataset_id](const SavedSeriesPath& saved) { return saved.dataset_id == dataset_id; });
 }
 
-void LogDockWidget::followMerge(DatasetId anchor, const QList<DatasetId>& consumed) {
-  bool moved = false;
-  for (Topic& topic : topics_) {
-    if (consumed.contains(topic.saved.dataset_id)) {
-      topic.saved = savedIdentity(anchor, topic.saved.topic);
-      moved = true;
-    }
-  }
-  std::vector<SavedTopic> pending;
-  for (SavedTopic& entry : std::exchange(pending_, {})) {
-    if (entry.session_id && consumed.contains(entry.saved.dataset_id)) {
-      entry.saved = savedIdentity(anchor, entry.saved.topic);
-      moved = true;
-    }
-    // Two datasets' pending topics of one name are one topic now.
-    if (std::ranges::find(pending, entry.saved, &SavedTopic::saved) == pending.end()) {
-      pending.push_back(std::move(entry));
-    }
-  }
-  pending_ = std::move(pending);
-  // A moved topic is shown again; one folded into the anchor's topic of its name goes pending and binds to that.
-  refresh();
-  retryPending();
-  relabel();
-  if (moved) {
-    emit topicsChanged();  // topic demand and the curve tree's shown state follow the new identities
-  }
-}
-
 void LogDockWidget::discardIf(const std::function<bool(const SavedSeriesPath&)>& matches) {
-  bool changed = std::erase_if(pending_, [&matches](const SavedTopic& pending) { return matches(pending.saved); }) > 0;
+  // A pending topic is matched by the dataset it resolves to: its saved id may be its saved session's (another file's
+  // here) or one a merge consumed.
+  bool changed = std::erase_if(pending_, [this, &matches](const SavedTopic& pending) {
+                   SavedSeriesPath resolved = pending.saved;
+                   resolved.dataset_id = resolveDataset(pending.saved).value_or(0);
+                   return matches(resolved);
+                 }) > 0;
   for (auto it = topics_.begin(); it != topics_.end();) {
     if (!matches(it->saved)) {
       ++it;
@@ -489,6 +466,14 @@ bool LogDockWidget::tryResolve(const SavedTopic& saved_topic) {
   }
   // A topic shown already is resolved: waiting for it would hold its demand and save it twice.
   return topic_id.has_value() && (shows(*topic_id) || addTopic(*topic_id, saved_topic.hidden));
+}
+
+bool LogDockWidget::keepPending(SavedTopic topic) {
+  if (std::ranges::find(pending_, topic.saved, &SavedTopic::saved) != pending_.end()) {
+    return false;
+  }
+  pending_.push_back(std::move(topic));
+  return true;
 }
 
 void LogDockWidget::retryPending() {
@@ -558,24 +543,23 @@ QDomElement LogDockWidget::xmlSaveState(QDomDocument& doc) const {
   root.setAttribute(u"text_filter"_s, state.text);
   root.setAttribute(u"future_rows"_s, state.show_future ? u"grey"_s : u"hide"_s);
 
-  const auto append_topic = [&doc, &root](const SavedTopic& saved_topic) {
-    const SavedSeriesPath& saved = saved_topic.saved;
+  const auto append_topic = [&doc, &root](const SavedSeriesPath& saved, bool hidden) {
     QDomElement topic = doc.createElement(kTopicTag);
     topic.setAttribute(u"dataset_id"_s, QString::number(saved.dataset_id));
     topic.setAttribute(u"dataset_source"_s, saved.dataset_source);
     topic.setAttribute(u"dataset_path"_s, saved.dataset_path);
     topic.setAttribute(u"topic"_s, saved.topic);
-    if (saved_topic.hidden) {
+    if (hidden) {
       topic.setAttribute(u"hidden"_s, u"true"_s);
     }
     root.appendChild(topic);
   };
   for (const Topic& topic : topics_) {
-    append_topic({.saved = topic.saved, .hidden = view_->topicHidden(topic.id.id)});
+    append_topic(topic.saved, view_->topicHidden(topic.id.id));
   }
   // Unresolved topics ride along verbatim: a save without their dataset loaded must not forget them.
   for (const SavedTopic& pending : pending_) {
-    append_topic(pending);
+    append_topic(pending.saved, pending.hidden);
   }
   return root;
 }
@@ -597,8 +581,8 @@ bool LogDockWidget::xmlLoadState(const QDomElement& element) {
   topics_.clear();
   pending_.clear();
   for (const SavedTopic& saved : parsed->topics) {
-    if (!tryResolve(saved) && std::ranges::find(pending_, saved.saved, &SavedTopic::saved) == pending_.end()) {
-      pending_.push_back(saved);
+    if (!tryResolve(saved)) {
+      keepPending(saved);
     }
   }
   emit topicsChanged();

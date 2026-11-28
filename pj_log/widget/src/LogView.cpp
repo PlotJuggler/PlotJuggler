@@ -14,6 +14,7 @@
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QStringList>
 #include <QStyle>
 #include <QTextDocument>
 #include <algorithm>
@@ -171,6 +172,7 @@ void LogView::setTopicHidden(uint32_t topic, bool hidden) {
       action->setChecked(!hidden);
     }
   }
+  updateTopicsButton();
   applyFilters();
 }
 
@@ -226,15 +228,16 @@ void LogView::removeTopic(uint32_t topic) {
   topics_.erase(topic);
   entry_sources_.erase(topic);
   refreshTopics();
-  changeStore([&] { return store_.removeWire(topic); });
-  if (hidden_topics_.erase(topic) > 0) {
-    applyFilters();  // the model's filter still hides the id, which a later topic may take
+  if (chosen_ && chosen_->wire == topic) {
+    chosen_.reset();  // a topic that takes the id later is not the user's choice
   }
+  changeStore([&] { return store_.removeWire(topic); });
+  setTopicHidden(topic, false);  // the model's filter still hides the id, which a later topic may take
 }
 
 void LogView::followChange(const StoreChange& change, std::optional<size_t> selected) {
   // Taken in the model's old rows: a list on the tracker stays on it however many rows land before it.
-  const bool on_tracker = trackerRowInView();
+  const bool on_tracker = !playing_ && trackerRowInView();
   // The detail pane's row is stale from old_tail on, and an eviction shifts every index. Checked before the model
   // follows the store: its signals may refresh the pane, in new coordinates.
   if (detail_row_ && (change.reset || change.dropped_front > 0 || *detail_row_ >= change.old_tail)) {
@@ -337,10 +340,7 @@ void LogView::applyFilters() {
 }
 
 void LogView::onFilterApplied() {
-  {
-    const QScopedValueRollback adjusting(adjusting_, true);
-    showChosen();
-  }
+  showChosen();
   if (playing_) {
     scrollToTracker(true);
   } else if (const QModelIndex current = ui_->logView->currentIndex(); current.isValid()) {
@@ -362,14 +362,9 @@ std::optional<size_t> LogView::selectedStoreRow() const {
 }
 
 bool LogView::trackerRowInView() const {
-  const QTreeView* view = ui_->logView;
-  const int tracker_row = model_->revealedRows() - 1;
-  const QModelIndex top = view->indexAt(QPoint(1, 0));
-  if (tracker_row < 0 || !top.isValid()) {
-    return false;
-  }
-  const QModelIndex bottom = view->indexAt(QPoint(1, view->viewport()->height() - 1));
-  return top.row() <= tracker_row && (!bottom.isValid() || tracker_row <= bottom.row());
+  // Vertical extent only: a list scrolled sideways still shows the row.
+  const QRect rect = ui_->logView->visualRect(model_->index(model_->revealedRows() - 1, 0));
+  return rect.isValid() && rect.bottom() >= 0 && rect.top() < ui_->logView->viewport()->height();
 }
 
 void LogView::onSelectionChanged() {
@@ -381,29 +376,28 @@ void LogView::onSelectionChanged() {
 }
 
 void LogView::showChosen() {
+  const QScopedValueRollback adjusting(adjusting_, true);
   const std::optional<size_t> index = chosen_ ? store_.indexOf(*chosen_) : std::nullopt;
-  if (index && model_->rowOf(*index) >= 0) {
+  if (const int row = index ? model_->rowOf(*index) : -1; row >= 0) {
     if (selectedStoreRow() != index) {
-      selectStoreRow(index);
+      selectRow(row);
     }
   } else if (chosen_ || ui_->logView->selectionModel()->hasSelection()) {
     ui_->logView->selectionModel()->clear();  // no neighbour in its place
   }
 }
 
-void LogView::selectStoreRow(std::optional<size_t> store_index) {
-  if (!store_index) {
-    return;
-  }
-  const int row = model_->rowOf(*store_index);
-  if (row < 0) {
-    return;
-  }
+void LogView::selectRow(int row) {
   const bool auto_scroll = ui_->logView->hasAutoScroll();
   ui_->logView->setAutoScroll(false);  // re-selecting must not move the view by itself
   ui_->logView->selectionModel()->setCurrentIndex(
       model_->index(row, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
   ui_->logView->setAutoScroll(auto_scroll);
+}
+
+void LogView::updateTopicsButton() {
+  // A hidden topic keeps the menu that unhides it, the only one left too.
+  ui_->topicsButton->setVisible(topics_.size() > 1 || !hidden_topics_.empty());
 }
 
 void LogView::refreshTopics() {
@@ -418,7 +412,7 @@ void LogView::refreshTopics() {
     connect(action, &QAction::triggered, this, &LogView::stateEdited);
   }
   const bool several = topics_.size() > 1;
-  ui_->topicsButton->setVisible(several);
+  updateTopicsButton();
   ui_->logView->setColumnHidden(LogTableModel::kTopic, !several);
   ui_->pages->setCurrentWidget(topics_.empty() ? ui_->emptyPage : ui_->contentPage);
 }

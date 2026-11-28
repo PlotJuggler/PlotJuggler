@@ -4,7 +4,6 @@
 
 #include <QDomDocument>
 #include <QDomElement>
-#include <QList>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -56,9 +55,6 @@ class LogDockWidget : public QWidget, public IDataWidget {
   struct SavedTopic {
     SavedSeriesPath saved;
     bool hidden = false;
-    /// `saved.dataset_id` is this session's (a topic shown or advertised here). A layout's id is its saved session's,
-    /// which another file may hold now: a merge must not move that topic.
-    bool session_id = false;
   };
 
   /// A topic the panel waits for: its name and the dataset its identity resolves to now, when exactly one does.
@@ -95,10 +91,6 @@ class LogDockWidget : public QWidget, public IDataWidget {
   /// Called before the store drops it.
   void discardTopic(DatasetId dataset_id, const QString& topic_name);
   void discardDataset(DatasetId dataset_id);
-  /// A merge folded @p consumed into @p anchor: their topics, shown or pending (by this session's ids only), follow to
-  /// the anchor; emits topicsChanged. Called by the shell after the store merged; without it they wait for a dataset
-  /// that is gone.
-  void followMerge(DatasetId anchor, const QList<DatasetId>& consumed);
 
   /// (dataset, topic name) of every topic shown, for demand tracking.
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> displayedTopics() const;
@@ -143,6 +135,8 @@ class LogDockWidget : public QWidget, public IDataWidget {
   /// Binds @p pending, adding its topic; true when it resolves, to a topic shown already too.
   bool tryResolve(const SavedTopic& pending);
   void retryPending();
+  /// Adds @p topic to pending_ unless its identity waits there already; true when added.
+  bool keepPending(SavedTopic topic);
   void discardIf(const std::function<bool(const SavedSeriesPath&)>& matches);
 
   SessionManager* session_ = nullptr;

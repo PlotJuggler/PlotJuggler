@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QString>
-#include <QStringList>
 #include <QTimer>
 #include <QWidget>
 #include <array>
@@ -115,16 +114,18 @@ class LogView : public QWidget {
   /// After the model applied a filter: the selection, the scroll position and the detail pane follow.
   void onFilterApplied();
   void refreshTopics();
+  void updateTopicsButton();
   void refreshOptionalColumns();
   [[nodiscard]] std::array<QToolButton*, log_view::kToggleLevelCount> levelToggles() const;
   void updateDetail();
-  void selectStoreRow(std::optional<size_t> store_index);
+  /// Selects model row @p row without scrolling to it.
+  void selectRow(int row);
   [[nodiscard]] std::optional<size_t> selectedStoreRow() const;
   /// The tracker's row (the last one revealed) is in the viewport.
   [[nodiscard]] bool trackerRowInView() const;
   /// A selection change: the user's unless the view is moving it (adjusting_).
   void onSelectionChanged();
-  /// Selects chosen_ if it is shown, else nothing. Call with adjusting_ set.
+  /// Selects chosen_ if it is shown, else nothing; its own selection moves are not the user's.
   void showChosen();
   void scrollToTracker(bool to_bottom);
   void onRowDoubleClicked(const QModelIndex& index);

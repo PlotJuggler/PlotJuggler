@@ -15,6 +15,5 @@ expect "Merge"
 until ui_tree {} "Merge datasets"
 ui_key {"keys":"Space"}
 until get_status {} "name":"rosout_a.mcap_merged"
-playback {"action":"seek","time_s":30}
 until ui_tree {} "29.750 | Error | node_b"
 expect "29.500 | Error | node_a"

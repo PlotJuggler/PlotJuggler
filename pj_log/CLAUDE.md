@@ -36,9 +36,10 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
   `XmlOptionsRecorder::noteOption`), the same parse `xmlLoadState` uses: one the validator never reads is missing from
   the MCP `widget_state` options. `ValidationDescribesTheSavedStateAndAgreesWithLoad` fails on it.
 - **Unresolved topics are written back verbatim** and retried on catalog and source-path changes; dropping them
-  loses the topic from the layout when its dataset is not loaded yet. A merge rewrites only those whose dataset id is
-  this session's (`SavedTopic::session_id`): a layout's id may name another file in this session, and rewriting it
-  binds the topic to the wrong dataset.
+  loses the topic from the layout when its dataset is not loaded yet. A pending topic is matched to a dataset only
+  through `resolveDataset` (the session's resolver, which follows merges), never by its raw `dataset_id`: a layout's id
+  is its saved session's and may name another file here, so a deletion (`discardTopic` / `discardDataset`) matched by
+  id would drop a topic of another file.
 - `core/` stays Qt-free: the store and the filter are unit-tested without an application.
 
 ## Layout
