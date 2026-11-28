@@ -661,7 +661,10 @@ constexpr std::size_t kMaxMetadataBytes = 4 * 1024;
     return PJ::unexpected(fmt::format("metadata is {} bytes; the limit is {}", text.size(), kMaxMetadataBytes));
   }
   const auto doc = nlohmann::json::parse(text.begin(), text.end(), nullptr, /*allow_exceptions=*/false);
-  if (doc.is_discarded() || !doc.is_object()) {
+  if (doc.is_discarded()) {
+    return PJ::unexpected(std::string("metadata is not valid UTF-8 JSON"));
+  }
+  if (!doc.is_object()) {
     return PJ::unexpected(std::string("metadata is not a JSON object"));
   }
   for (const auto& [key, value] : doc.items()) {
@@ -1859,7 +1862,11 @@ bool toolboxCreateDataSource(
       propagateError(out_error, impl->core.write.lastError());
       return false;
     }
-    impl->created.insert(out_source->id);
+    {
+      // Read by the ownership check under the engine lock, from whichever thread the toolbox writes on.
+      const auto lock = impl->core.write.engine.lockEngine();
+      impl->created.insert(out_source->id);
+    }
     return true;
   });
 }

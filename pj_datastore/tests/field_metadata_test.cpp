@@ -170,6 +170,18 @@ TEST_F(FieldMetadataTest, RejectsValuesThatAreNotStrings) {
   EXPECT_EQ(metadata(ax), kept);
 }
 
+TEST_F(FieldMetadataTest, RejectsTextThatIsNotUtf8AndSaysSo) {
+  const auto ax = field("ax");
+  const auto status = writer->setFieldMetadata(
+      ax,
+      "{\"unit\":\"\xB0"
+      "C\"}");  // Latin-1 degree sign
+
+  ASSERT_FALSE(status.has_value());
+  EXPECT_NE(status.error().find("UTF-8"), std::string::npos) << status.error();
+  EXPECT_TRUE(metadata(ax).empty());
+}
+
 TEST_F(FieldMetadataTest, AcceptsUpToTheByteBound) {
   const auto ax = field("ax");
 

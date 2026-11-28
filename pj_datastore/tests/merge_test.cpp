@@ -490,5 +490,42 @@ TEST(MergeDatasets, DocumentsFollowTheirColumnsAnchorFirst) {
   expect_described_by(merged_source_only, "source");
 }
 
+// The source lays its columns out in another order, so carrying by field id would mislabel them.
+TEST(MergeDatasets, FieldDocumentsFollowTheFieldPathAndTheFirstKeptSource) {
+  DataEngine engine;
+  const DatasetId anchor = makeDataset(engine, "anchor");
+  const DatasetId first = makeDataset(engine, "first");
+  const DatasetId second = makeDataset(engine, "second");
+  const std::vector<double> v{0.0, 1.0};
+  const auto col = [&](uint32_t i) { return ColumnData::float64(i, Span<const double>(v.data(), v.size())); };
+  const TopicId merged = writeTyped(engine, anchor, "m", {{"x", PrimitiveType::kFloat64}}, {0, 1000}, {col(0)});
+  const TopicId first_m = writeTyped(
+      engine, first, "m", {{"y", PrimitiveType::kFloat64}, {"x", PrimitiveType::kFloat64}}, {0, 1000},
+      {col(0), col(1)});
+  const TopicId second_m = writeTyped(engine, second, "m", {{"y", PrimitiveType::kFloat64}}, {0, 1000}, {col(0)});
+  {
+    auto lock = engine.lockEngine();
+    engine.getTopicStorage(first_m)->setFieldMetadata(0, R"({"description":"first y"})");
+    engine.getTopicStorage(first_m)->setFieldMetadata(1, R"({"description":"first x"})");
+    engine.getTopicStorage(second_m)->setFieldMetadata(0, R"({"description":"second y"})");
+  }
+
+  ASSERT_TRUE(engine.mergeDatasets(anchor, {{first, 2000}, {second, 4000}}).has_value());
+
+  auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(merged);
+  ASSERT_NE(storage, nullptr);
+  const auto document_of = [&](const std::string& path) -> std::string {
+    for (const ColumnDescriptor& c : storage->columnDescriptors()) {
+      if (c.field_path == path) {
+        return std::string(storage->fieldMetadata(c.field_id));
+      }
+    }
+    return "no column " + path;
+  };
+  EXPECT_EQ(document_of("x"), R"({"description":"first x"})");
+  EXPECT_EQ(document_of("y"), R"({"description":"first y"})");
+}
+
 }  // namespace
 }  // namespace PJ
