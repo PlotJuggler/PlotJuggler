@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: MPL-2.0
+name: plotjuggler4
+title: PlotJuggler 4
+base: core26
+adopt-info: plotjuggler
+summary: Explore, visualize and transform recorded and live data
+description: |
+  PlotJuggler 4 is an extensible C++20 and Qt 6 desktop application for
+  interactive time-series plotting, synchronized images and video, and 3D
+  visualization. Install loaders, streamers and tools through its marketplace
+  or supply compatible external plugins. This classic snap integrates with
+  sourced host ROS installations, custom message definitions and user plugins.
+license: MPL-2.0
+grade: stable
+confinement: classic
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  plotjuggler4:
+    command: bin/plotjuggler-launch
+    desktop: usr/share/applications/plotjuggler4.desktop
+
+parts:
+  snap-assets:
+    plugin: dump
+    source: snap/local
+    organize:
+      plotjuggler-launch: bin/plotjuggler-launch
+      plotjuggler4.desktop: usr/share/applications/plotjuggler4.desktop
+    stage:
+      - bin/plotjuggler-launch
+      - usr/share/applications/plotjuggler4.desktop
+
+  plotjuggler:
+    plugin: nil
+    source: .
+    build-attributes: [enable-patchelf]
+    build-packages:
+      # Native compiler and build drivers; Conan supplies its own library graph.
+      - build-essential
+      - gcc-13
+      - g++-13
+      - ninja-build
+      - git
+      - pkg-config
+      # venv provides pip; CMake/Conan/aqt versions are pinned in build.sh.
+      - python3-venv
+      - ca-certificates
+      - binutils
+      # Generate the MIME database used by GTK/Glycin in the staged payload.
+      - shared-mime-info
+      # Runtime game data for the separately built raster helper.
+      - doom-wad-shareware
+      # System targets imported by the downloaded Qt kit and QRhi compilation.
+      - libegl-dev
+      - libfreetype6
+      - libgl-dev
+      - libglib2.0-0t64
+      - libvulkan-dev
+      - libxkbcommon-dev
+      # Conan FFmpeg's system VAAPI wrapper and DRM development dependencies.
+      - libva-dev
+      - libdrm-dev
+    stage-packages:
+      # Desktop integration for the downloaded Qt kit. APT supplies dependencies.
+      - ca-certificates
+      - libfontconfig1
+      - libgtk-3-0t64
+      - libcups2t64
+      # GTK's pixbuf stack uses external Glycin helpers, not Qt image plugins.
+      - glycin-loaders
+      - shared-mime-info
+      # Required by the bundled SVG loader; Noble only provides libxml2.so.2.
+      - libxml2-16
+      # XCB support libraries not supplied by core26.
+      - libxcb-cursor0
+      - libxcb-icccm4
+      - libxcb-keysyms1
+      - libxcb-shape0
+      - libxkbcommon-x11-0
+      # Graphics/VAAPI closure is resolved at prime, then gpu-2604 removes it.
+      #- libegl1
+      #- libgl1
+      #- libgbm1
+      #- libx11-xcb1
+      #- libxcb-glx0
+      #- libxcb-randr0
+      #- libxcb-sync1
+      #- libxcb-xfixes0
+      - libva2
+      - libva-drm2
+      # Optional SQL plugins present in the full Qt plugin tree.
+      #- libfbclient2
+      #- libodbc2
+      #- libpq5
+    override-pull: |
+      craftctl default
+      git -C "${CRAFT_PART_SRC}" submodule update --init --recursive -- \
+        3rdparty/Qt-Advanced-Docking 3rdparty/doomgeneric
+      . "${CRAFT_PART_SRC}/versions.env"
+      version="${PJ_APP_VERSION}"
+      if ! git -C "${CRAFT_PART_SRC}" describe --tags --exact-match HEAD >/dev/null 2>&1; then
+        revision=$(git -C "${CRAFT_PART_SRC}" rev-parse --short HEAD)
+        version="${version}-g${revision}"
+      fi
+      # Local-source refreshes can repeat this hook within the same lifecycle.
+      if [ "$(craftctl get version)" != "${version}" ]; then
+        craftctl set version="${version}"
+      fi
+    override-build: |
+      bash "${CRAFT_PART_SRC}/snap/local/build.sh"
+
+  pj-extensions:
+    plugin: nil
+    source: https://github.com/PlotJuggler/pj-plugin-registry.git
+    # Rebuilding an old checkout may fetch extensions requiring a newer app/SDK.
+    # Pin `source-commit: XXX` for reproducible builds,
+    # updating it when refreshing bundled extensions.
+    source-depth: 1
+    build-packages: [python3, ca-certificates, git]
+    override-build: |
+      . "${CRAFT_PROJECT_DIR}/versions.env"
+      sdk_version=$(sed -n 's|^plotjuggler_sdk/||p' "${CRAFT_PROJECT_DIR}/conanfile.txt")
+      python3 "${CRAFT_PROJECT_DIR}/snap/local/install_extensions.py" \
+        "${CRAFT_PART_SRC}/registry.json" "${CRAFT_ARCH_BUILD_FOR}" \
+        "${CRAFT_PART_INSTALL}/usr/lib/plotjuggler/plugins" \
+        --app-version "${PJ_APP_VERSION}" --sdk-version "${sdk_version}"
+    stage:
+      - usr/lib/plotjuggler/plugins
+
+  gpu-2604:
+    after: [plotjuggler]
+    source: https://github.com/canonical/gpu-snap.git
+    source-depth: 1
+    plugin: dump
+    override-prime: |
+      craftctl default
+      # Keep bundled SVG/VAAPI libraries and their notices.
+      sed \
+        -e '\|/libxml2\.so\.16|d' \
+        -e '\|^usr/share/doc/libxml2-16/|d' \
+        -e '\|/libva.*\.so\.2|d' \
+        -e '\|^usr/share/doc/libva|d' \
+        "${CRAFT_PART_SRC}/lists/mesa-2604.${CRAFT_ARCH_BUILD_FOR}.list" \
+        > "${CRAFT_PART_SRC}/lists/plotjuggler-gpu.${CRAFT_ARCH_BUILD_FOR}.list"
+      "${CRAFT_PART_SRC}/bin/gpu-2604-cleanup" plotjuggler-gpu
+    prime:
+      - '-*'

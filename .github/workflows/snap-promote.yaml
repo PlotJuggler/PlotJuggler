@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Snap promotion
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    # Pinned by commit: it receives the Store credential.
+    uses: canonical/robotics-actions-workflows/.github/workflows/promote.yaml@36d487a3a49f3bf94a7e00a38869967a68bac87a
+    with:
+      snap: plotjuggler4
+      from-channel: latest/beta
+      to-channel: latest/candidate
+    secrets:
+      snapstore-login: ${{ secrets.STORE_LOGIN }}

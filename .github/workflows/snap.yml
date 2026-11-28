@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Snap CI
+
+# Manual only: one run builds the app from source for two architectures.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the snaps to the Snap Store, latest/beta (main or a tag only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A run may be publishing to the Store.
+  cancel-in-progress: false
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Normalize artifact ref
+        id: artifact-ref
+        env:
+          GIT_REF: ${{ github.ref }}
+        run: echo "name=${GIT_REF//[\/-]/_}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Snapcraft and LXD
+        uses: canonical/craft-actions/snapcraft/setup@v1
+        with:
+          # necessary due to
+          # https://github.com/canonical/snapcraft/issues/6410
+          channel: latest/edge
+
+      - name: Build snap
+        env:
+          CRAFT_VERBOSITY_LEVEL: verbose
+          SNAPCRAFT_BUILD_INFO: "1"
+        run: packaging/snap/build.sh
+
+      - name: Install host graphics for smoke test
+        # Classic uses host Mesa.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth weston libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libopengl0
+
+      - name: Install snap
+        run: sudo snap install --dangerous --classic packaging/snap/dist/*.snap
+
+      - name: Test startup, bundled extensions and Wayland rendering
+        run: bash packaging/snap/tests/smoke.sh
+
+      - name: Upload snap artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-build-snap-plotjuggler4-${{ matrix.arch }}-${{ steps.artifact-ref.outputs.name }}
+          path: packaging/snap/dist/*.snap
+          if-no-files-found: ignore
+          retention-days: 10
+
+      - name: Upload Snapcraft logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plotjuggler4-snap-logs-${{ matrix.arch }}
+          path: ~/.local/state/snapcraft/log/*.log
+          if-no-files-found: warn
+          retention-days: 10
+
+  publish:
+    needs: build-and-test
+    if: >-
+      inputs.publish &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    # Pinned by commit: it receives the Store credential.
+    uses: canonical/robotics-actions-workflows/.github/workflows/publish.yaml@36d487a3a49f3bf94a7e00a38869967a68bac87a
+    with:
+      snap-track: latest
+      snap-risk: beta
+    secrets:
+      snapstore-login: ${{ secrets.STORE_LOGIN }}
