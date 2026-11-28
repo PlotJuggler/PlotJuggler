@@ -232,7 +232,8 @@ class McpServer : public QObject {
       Caller caller, const QByteArray& body, const QString& header_client,
       std::function<void(int status, QByteArray body)> respond);
   void noteClient(const QString& client);
-  /// An app tool `caller` may not call reads as unknown. Under the user's modal dialog only what
+  /// An app tool `caller` may not call reads as unknown, and an argument its tools/list schema does not declare is
+  /// refused (mcp::undeclaredArgument). Under the user's modal dialog only what
   /// mcp::runsUnderUsersDialog allows runs. A throwing handler (a wrongly typed argument) becomes a
   /// tool error.
   void callTool(const std::string& name, const nlohmann::json& args, const Caller& caller, Reply reply);

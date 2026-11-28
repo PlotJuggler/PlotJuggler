@@ -1277,12 +1277,6 @@ void McpServer::removeScriptSeries(const json& args, const Caller& caller, Reply
 }
 
 void McpServer::screenshot(const json& args, const Caller&, Reply reply) {
-  if (args.contains("tab")) {
-    reply(fail(
-        "screenshot takes no tab: bring your tab forward first with plot_tab {\"action\": \"focus\"} or scene_view "
-        "{\"action\": \"focus\"}, then take the screenshot"));
-    return;
-  }
   grabScreenshot(args.value("max_width", mcp::kDefaultScreenshotWidth), [reply](const QByteArray& png) {
     reply(
         {{"content",

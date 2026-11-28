@@ -43,7 +43,7 @@ JoinForecast forecastJoin(
 
 // Canonicalized paths from the first of `keys` that yields any, as a bare
 // string or an array of strings (non-strings are skipped). `series` is an
-// undocumented alias for `paths`.
+// undocumented alias for `paths`, which the MCP server refuses as undeclared.
 std::vector<std::string> requestedPaths(
     const json& args, std::initializer_list<const char*> keys = {"paths", "series"});
 

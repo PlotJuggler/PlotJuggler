@@ -525,6 +525,12 @@ json McpServer::userDialogOpen(const QWidget& modal) {
 void McpServer::callTool(const std::string& name, const json& args, const Caller& caller, Reply reply) {
   quint64 job = 0;  // the job this call became, which then owns its reply
   try {
+    // A misspelt or invented argument would be dropped silently and the agent believe the call did what it asked.
+    if (auto refused =
+            mcp::undeclaredArgument(isPublic(caller) ? mcp::ToolSet::kFull : mcp::ToolSet::kAgentOnly, name, args)) {
+      reply(mcp::textResult(*refused, true));
+      return;
+    }
     // A modal dialog belongs to the user: acting under it would change state they are editing. Stopping
     // an agent's own work does not.
     const QWidget* modal = QApplication::activeModalWidget();

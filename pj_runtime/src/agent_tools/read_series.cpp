@@ -794,8 +794,8 @@ JoinForecast forecastJoin(
 // Collects the requested paths from a bare string or an array. The parameter is named `paths` rather than `series` on
 // purpose: the object store holds point clouds, images and occupancy grids behind the same read view, so `series`
 // would be the wrong word if this call ever summarizes those (reasoning, not measured). The model learns the name from
-// the description, so renaming later costs more. `series` still works, undocumented, so a conversation in flight does
-// not break.
+// the description, so renaming later costs more. `series` is still read, undocumented, for direct
+// ToolRegistry callers; the MCP server refuses it, as every argument the schema does not declare.
 std::vector<std::string> requestedPaths(const json& args, std::initializer_list<const char*> keys) {
   std::vector<std::string> out;
   for (const char* key : keys) {

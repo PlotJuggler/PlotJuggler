@@ -614,8 +614,7 @@ TEST_F(McpServerTest, WidgetStateReadsDescribesAndReplacesAUsersDock) {
   const auto [unknown_text, unknown_failed] = result(call("widget_state", {{"action", "get"}, {"dock", "nope"}}));
   EXPECT_TRUE(unknown_failed) << unknown_text;
   // widget_state only reads; asked to set, it names the tool that changes a dock.
-  const auto [old_set, old_set_failed] =
-      result(call("widget_state", {{"action", "set"}, {"dock", id}, {"xml", doc.toString().toStdString()}}));
+  const auto [old_set, old_set_failed] = result(call("widget_state", {{"action", "set"}, {"dock", id}}));
   EXPECT_TRUE(old_set_failed);
   EXPECT_NE(old_set.find("set_widget_state"), std::string::npos) << old_set;
 }
@@ -1281,6 +1280,20 @@ TEST_F(McpServerTest, AWronglyTypedArgumentIsAToolError) {
   EXPECT_NE(text.find("bad arguments for open_file"), std::string::npos) << text;
 }
 
+// An argument the tool does not declare is refused, naming those it takes: dropped silently, a misspelt or invented one
+// would leave the agent believing the call did what it asked (screenshot {"path": ...} writes no file).
+TEST_F(McpServerTest, AnArgumentTheToolDoesNotTakeIsRefusedWithTheOnesItTakes) {
+  const auto [refused, refused_error] = result(call("screenshot", {{"path", "/tmp/shot.png"}}));
+  EXPECT_TRUE(refused_error);
+  EXPECT_EQ(refused, "screenshot takes no argument 'path'; it takes: max_width");
+  const auto [status, status_error] = result(call("get_status", {{"verbose", true}}));
+  EXPECT_TRUE(status_error);
+  EXPECT_EQ(status, "get_status takes no argument 'verbose'; it takes no arguments");
+  const Answer shot = call("screenshot", {{"max_width", 64}});
+  EXPECT_FALSE(shot.body["result"].value("isError", false)) << shot.body.dump();
+  EXPECT_EQ(shot.body["result"]["content"][0].value("type", ""), "image");
+}
+
 // get_status says whether the main window draws: a playing session whose window is stalled reads the same otherwise.
 TEST_F(McpServerTest, GetStatusCountsTheMainWindowsFrames) {
   const auto rendering = [this] {
@@ -1764,8 +1777,7 @@ TEST_F(McpServerTest, ScreenshotTakesNoTabAndPlotTabFocusBringsOneForward) {
   ASSERT_FALSE(result(call("plot_tab", {{"action", "create"}, {"tab", "mine"}})).second);
   const auto [refused, refused_error] = result(call("screenshot", {{"tab", "mine"}}));
   EXPECT_TRUE(refused_error);
-  EXPECT_NE(refused.find("plot_tab"), std::string::npos) << refused;
-  EXPECT_NE(refused.find("focus"), std::string::npos) << refused;
+  EXPECT_EQ(refused, "screenshot takes no argument 'tab'; it takes: max_width");
   const auto [focused, focus_error] = result(call("plot_tab", {{"action", "focus"}, {"tab", "mine"}}));
   EXPECT_FALSE(focus_error) << focused;
 }

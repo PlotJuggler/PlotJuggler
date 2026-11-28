@@ -98,6 +98,12 @@ inline constexpr int kMaxUiTypedChars = 1000;
 /// uiToolsEnabled(). Static, so the bridge can list tools while no PlotJuggler runs.
 [[nodiscard]] nlohmann::json toolList(ToolSet set);
 
+/// Why a call of `name` with `args` is refused when an argument is not among the `inputSchema.properties` toolList(set)
+/// publishes for it, naming those; nullopt when every argument is declared or `set` has no tool `name`. GUI thread
+/// (the tables are built on first use).
+[[nodiscard]] std::optional<std::string> undeclaredArgument(
+    ToolSet set, const std::string& name, const nlohmann::json& args);
+
 /// The tools the stdio bridge answers itself (list_instances, select_instance, launch).
 [[nodiscard]] nlohmann::json bridgeToolEntries();
 
