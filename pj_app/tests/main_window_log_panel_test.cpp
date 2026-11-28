@@ -14,6 +14,7 @@
 #include <QToolButton>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
@@ -173,6 +174,47 @@ TEST_F(MainWindowLogPanelTest, RemovingTheDatasetOfAShownTopicLeavesNoPendingDem
   EXPECT_TRUE(log->displayedTopics().empty());
   EXPECT_FALSE(log->hasPendingTopic(u"/rosout"_s));
   EXPECT_TRUE(log->pendingDemands().empty());
+}
+
+// The other dataset starts earlier, so it is the merge's anchor: the shown /rosout folds into its /rosout, and the
+// shown dataset's /robot_log moves under it. The panel follows both topics to the merged dataset.
+TEST_F(MainWindowLogPanelTest, MergingTheShownDatasetIntoAnotherKeepsItsLogs) {
+  AppSession& app = Peer::session(*window_);
+  ObjectStore& objects = app.sessionManager().objectStore();
+  const auto log_topic = [&objects](DatasetId dataset, const std::string& name) {
+    auto topic = objects.registerTopic(
+        ObjectTopicDescriptor{
+            .dataset_id = dataset, .topic_name = name, .metadata_json = R"({"builtin_object_type":"kLog"})"});
+    EXPECT_TRUE(topic.has_value()) << topic.error();
+    return topic.has_value() ? *topic : ObjectTopicId{};
+  };
+  const auto push = [&objects](ObjectTopicId topic, Timestamp stamp, const std::string& message) {
+    sdk::Log log;
+    log.message = message;
+    ASSERT_TRUE(objects.pushOwned(topic, stamp, serializeLog(log)).has_value());
+  };
+  const ObjectTopicId robot_log = log_topic(dataset_, "/robot_log");
+  push(robot_log, 1'500'000'000LL, "robot 1.5");
+  const DatasetId other = pj_test::createDataset(app, "other.mcap");
+  push(log_topic(other, "/rosout"), 500'000'000LL, "other 0.5");
+  app.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(drop());
+  LogDockWidget* log = logOf(dock_);
+  ASSERT_NE(log, nullptr);
+  ASSERT_TRUE(log->tryAcceptObjectTopic(robot_log, sdk::BuiltinObjectType::kLog, {}));
+  ASSERT_EQ(log->view()->store().size(), 3U);
+
+  ASSERT_EQ(app.mergeDatasets({dataset_, other}), other);
+  QTest::qWait(LogDockWidget::kEntriesLandedIntervalMs + 50);
+  std::vector<std::string> messages;
+  for (size_t i = 0; i < log->view()->store().size(); ++i) {
+    messages.push_back(log->view()->store().row(i).message);
+  }
+  EXPECT_EQ(messages, (std::vector<std::string>{"other 0.5", "message 1", "robot 1.5", "message 2"}));
+  for (const auto& [dataset, topic] : log->displayedTopics()) {
+    EXPECT_EQ(dataset, other) << topic.toStdString();
+  }
+  EXPECT_TRUE(log->unresolvedRestores().isEmpty());
 }
 
 TEST_F(MainWindowLogPanelTest, TheTimeColumnFollowsTheDateTimeToggle) {

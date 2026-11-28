@@ -4,6 +4,7 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QList>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -83,6 +84,9 @@ class LogDockWidget : public QWidget, public IDataWidget {
   /// Called before the store drops it.
   void discardTopic(DatasetId dataset_id, const QString& topic_name);
   void discardDataset(DatasetId dataset_id);
+  /// A merge folded @p consumed into @p anchor: their topics, shown or pending, follow to the anchor. Called by the
+  /// shell after the store merged; without it they wait for a dataset that is gone.
+  void followMerge(DatasetId anchor, const QList<DatasetId>& consumed);
 
   /// (dataset, topic name) of every topic shown, for demand tracking.
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> displayedTopics() const;

@@ -1079,15 +1079,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       transform_service_->invalidateDataset(anchor);
       transform_service_->ingestFrameTransformsForDataset(anchor);
     }
-#else
-    Q_UNUSED(anchor);
-    Q_UNUSED(consumed);
 #endif
     if (browser_layout_runtime_ != nullptr) {
       std::erase_if(browser_layout_runtime_->preset_data.datasets, [anchor, &consumed](DatasetId dataset_id) {
         return dataset_id == anchor || consumed.contains(dataset_id);
       });
     }
+    forEachLogPanel([anchor, &consumed](LogDockWidget* log) { log->followMerge(anchor, consumed); });
     syncWidgetsToCatalog();
     resetUndoHistory();
   });

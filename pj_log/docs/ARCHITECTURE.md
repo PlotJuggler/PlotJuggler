@@ -52,10 +52,13 @@ per `kEntriesLandedIntervalMs`. Each update reads the topic's identity; unless `
 a merge) or the display offset changed, which re-index the whole topic, it drops the rows the store evicted and indexes
 the entries with a UID above the newest indexed, late ones in their place. A topic no longer stored as `LogEntries`
 leaves the panel and waits as pending. Rows the store's retention evicts leave the panel: a live
-log keeps what the streaming window keeps, like every other topic. A topic that leaves the store (removed, reparented by a merge) goes back to pending and binds again by the identity it
-was added with (its dataset's id, source and path, kept from when the dataset was loaded). A topic or dataset the user
-deletes leaves the panel instead (`discardTopic` / `discardDataset`, called by the shell before the store drops it).
-A pending topic that resolves to a topic shown already counts as resolved.
+log keeps what the streaming window keeps, like every other topic. A topic that leaves the store (removed, reissued)
+goes back to pending and binds again by the identity it was added with (its dataset's id, source and path, kept from
+when the dataset was loaded). A topic or dataset the user deletes leaves the panel instead (`discardTopic` /
+`discardDataset`, called by the shell before the store drops it). A merge moves the identity of the consumed datasets'
+topics, shown or pending, to the merged dataset (`followMerge`, called by the shell on `AppSession::datasetsMerged`):
+a topic the merge reparented shows again, and one it folded into the merged dataset's topic of the same name binds to
+that one. A pending topic that resolves to a topic shown already counts as resolved.
 
 ## Tracker and seeking
 

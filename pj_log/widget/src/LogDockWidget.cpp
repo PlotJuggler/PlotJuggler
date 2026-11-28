@@ -395,6 +395,22 @@ void LogDockWidget::discardDataset(DatasetId dataset_id) {
   discardIf([dataset_id](const SavedSeriesPath& saved) { return saved.dataset_id == dataset_id; });
 }
 
+void LogDockWidget::followMerge(DatasetId anchor, const QList<DatasetId>& consumed) {
+  for (Topic& topic : topics_) {
+    if (consumed.contains(topic.saved.dataset_id)) {
+      topic.saved = savedIdentity(anchor, topic.saved.topic);
+    }
+  }
+  for (SavedSeriesPath& pending : pending_) {
+    if (consumed.contains(pending.dataset_id)) {
+      pending = savedIdentity(anchor, pending.topic);
+    }
+  }
+  // A moved topic is shown again; one folded into the anchor's topic of its name goes pending and binds to that.
+  refresh();
+  retryPending();
+}
+
 void LogDockWidget::discardIf(const std::function<bool(const SavedSeriesPath&)>& matches) {
   bool changed = std::erase_if(pending_, matches) > 0;
   for (auto it = topics_.begin(); it != topics_.end();) {
