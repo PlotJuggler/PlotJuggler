@@ -135,8 +135,10 @@ does not link it.
   apart). `resolveDatasetIdentity(id, source, path)` never guesses by load order: exact
   live id (trusted only while the saved qualifiers agree) → unique full-path match →
   unique source-name match → reject with `DatasetIdentityResolution::ambiguous` (a nullopt
-  id with `ambiguous=false` means "not loaded yet"). `resolveObjectDatasetIdentity` adds
-  an object-topic-name tiebreak for same-file fan-out siblings.
+  id with `ambiguous=false` means "not loaded yet"). A match a merge consumed resolves to
+  the anchor now holding its data (`DataEngine::mergeDestination`), so every holder of a
+  saved identity follows a merge with no per-widget hook. `resolveObjectDatasetIdentity` adds an object-topic-name tiebreak for
+  same-file fan-out siblings.
 - **Token-addressed progressive ingest.** `beginIngest(DatasetId, label, total,
   cancellable, cancel_fn)` returns an `IngestToken` (`quint64`; 0 = invalid). A new
   `beginIngest` on a dataset supersedes the prior token: the old token's later

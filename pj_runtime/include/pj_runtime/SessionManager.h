@@ -265,7 +265,9 @@ class SessionManager : public QObject {
   ///  2. exactly one dataset whose registered path (and source label) matches;
   ///  3. without a path, exactly one source-label match.
   /// Several candidates at 2 or 3 return `{nullopt, ambiguous=true}`. An id with neither source nor path is valid
-  /// only while that exact id exists; otherwise it resolves to nothing (not ambiguous).
+  /// only while that exact id exists; otherwise it resolves to nothing (not ambiguous). A match a merge consumed
+  /// resolves to the dataset now holding its data (DataEngine::mergeDestination): the consumed one stays registered,
+  /// empty, with its name and path, so every holder of a saved identity follows the merge.
   [[nodiscard]] DatasetIdentityResolution resolveDatasetIdentity(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path = {}) const;
 

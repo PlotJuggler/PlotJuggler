@@ -19,7 +19,8 @@ from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time
   another dataset holds it. Assigned at creation and held until `removeDataset()`, so another dataset coming or going
   never renames one, and a freed label names a later dataset, never a survivor; a relabel from the base the label was
   made from (a reload naming the dataset after its file again) keeps it. A merge source keeps its label but is listed
-  nowhere (`isMergedAway()`), and `datasetByLabel()` maps that label to the anchor holding its data. The app's tree,
+  nowhere (`isMergedAway()`), and `datasetByLabel()` maps that label to the anchor holding its data
+  (`mergeDestination()`, which the session's identity resolver uses too). The app's tree,
   the plugin catalog snapshot and every `label:topic/field` qualifier read it. Only the primary engine's labels are
   read: a staging or streaming mirror labels its datasets on its own. A label is a session name: layouts persist the
   id and `source_name`.

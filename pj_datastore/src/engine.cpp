@@ -155,12 +155,7 @@ std::optional<DatasetId> DataEngine::datasetByLabel(std::string_view label) cons
   if (held == impl_->labels.end()) {
     return std::nullopt;
   }
-  DatasetId id = held->first;
-  for (auto merged = impl_->merged_into.find(id); merged != impl_->merged_into.end();
-       merged = impl_->merged_into.find(id)) {
-    id = merged->second;
-  }
-  return impl_->datasets.contains(id) ? std::optional{id} : std::nullopt;
+  return mergeDestination(held->first);
 }
 
 std::vector<std::string> DataEngine::datasetLabels() const {
@@ -191,6 +186,15 @@ std::string DataEngine::setDatasetLabel(DatasetId id, std::string_view base) {
 bool DataEngine::isMergedAway(DatasetId id) const {
   const auto lock = lockEngine();
   return impl_->merged_into.contains(id);
+}
+
+std::optional<DatasetId> DataEngine::mergeDestination(DatasetId id) const {
+  const auto lock = lockEngine();
+  for (auto merged = impl_->merged_into.find(id); merged != impl_->merged_into.end();
+       merged = impl_->merged_into.find(id)) {
+    id = merged->second;
+  }
+  return impl_->datasets.contains(id) ? std::optional{id} : std::nullopt;
 }
 
 const DatasetInfo* DataEngine::getDataset(DatasetId id) const {

@@ -591,7 +591,7 @@ DatasetIdentityResolution SessionManager::resolveDatasetIdentity(
   if (saved_id != 0) {
     const DatasetInfo* exact = data_engine_.getDataset(saved_id);
     if (source_matches(exact) && path_matches(saved_id) && record_matches(saved_id)) {
-      return DatasetIdentityResolution{.id = saved_id};
+      return DatasetIdentityResolution{.id = data_engine_.mergeDestination(saved_id)};
     }
   }
 
@@ -624,10 +624,15 @@ DatasetIdentityResolution SessionManager::resolveDatasetIdentity(
     if (!source_matches(info) || !path_matches(candidate)) {
       continue;
     }
-    if (match.has_value()) {
+    // Sources folded into one dataset are one candidate; a consumed file opened again is another.
+    const std::optional<DatasetId> holder = data_engine_.mergeDestination(candidate);
+    if (!holder) {
+      continue;
+    }
+    if (match.has_value() && *match != *holder) {
       return DatasetIdentityResolution{.id = std::nullopt, .ambiguous = true};
     }
-    match = candidate;
+    match = holder;
   }
   return DatasetIdentityResolution{.id = match};
 }

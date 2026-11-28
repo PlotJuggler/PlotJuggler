@@ -640,9 +640,8 @@ it, so a log topic dropped on an empty area opens a Log panel (the drop factory 
 (`TopicDemandController::handleLogDockPlaceholderDrop`) while `PendingDisplayBinder::addPendingLogTopic` holds its
 demand; a restored layout's unresolved topics are collected the same way. Deleting a topic or a dataset from the
 Datasets panel calls `discardTopic` / `discardDataset` first, next to the scene docks' `discardPendingRestoresFor*`,
-so the panel drops it instead of waiting for it. A merge calls `followMerge` on every panel (`datasetsMerged`), so the
-consumed datasets' topics follow to the merged dataset. `applyTimeLabelFormat` reaches every panel through
-`forEachLogPanel`. The curve list badges a log row with the Log glyph (`objectTypeBadgeIcon`).
+so the panel drops it instead of waiting for it. `applyTimeLabelFormat` reaches every panel
+through `forEachLogPanel`. The curve list badges a log row with the Log glyph (`objectTypeBadgeIcon`).
 
 ## Browser (WebAssembly) boundary
 
