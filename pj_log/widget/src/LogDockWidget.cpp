@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "pj_base/builtin/log.hpp"
+#include "pj_base/sdk/dataset_qualified_name.hpp"
 #include "pj_datastore/log_entries.hpp"
 #include "pj_log/LogView.h"
 #include "pj_runtime/CatalogModel.h"
@@ -145,18 +146,20 @@ class StoreLogSource final : public LogRowSource {
 
 struct ParsedLogState {
   LogViewState view;
-  std::vector<SavedSeriesPath> topics;
+  std::vector<LogDockWidget::SavedTopic> topics;
 };
 
-// Tolerated: an empty or unparsable dataset_id reads as 0, an unqualified topic.
-SavedSeriesPath readTopic(const QDomElement& child) {
-  SavedSeriesPath saved;
+// Tolerated: an empty or unparsable dataset_id reads as 0, an unqualified topic; a bad hidden as shown.
+LogDockWidget::SavedTopic readTopic(const QDomElement& child) {
+  LogDockWidget::SavedTopic topic;
+  SavedSeriesPath& saved = topic.saved;
   saved.topic = readXmlText(child, u"topic"_s);
   (void)readXmlInt<uint32_t>(
       child, u"dataset_id"_s, 0, 0, std::numeric_limits<uint32_t>::max(), saved.dataset_id, XmlBadValue::kTolerate);
   saved.dataset_source = readXmlText(child, u"dataset_source"_s);
   saved.dataset_path = readXmlText(child, u"dataset_path"_s);
-  return saved;
+  (void)readXmlBool(child, u"hidden"_s, false, topic.hidden, XmlBadValue::kTolerate);
+  return topic;
 }
 
 const QStringList& levelKeys() {
@@ -171,9 +174,9 @@ const QStringList& levelKeys() {
 }
 
 // The one reader of a <log> payload, for xmlLoadState and xmlValidateState. Every attribute is read through a
-// reporting reader, and under a recorder the children's too when the payload has none of that tag, so a state without
-// topics still lists what a topic accepts. Tolerated, and noted as rejections: an unknown level key (ignored), a
-// future_rows other than "grey" (it hides) and an unparsable dataset_id (0).
+// reporting reader, and under a recorder a topic's too, so a state without topics still lists what a topic accepts.
+// Tolerated, and noted as rejections: an unknown level key (ignored), a future_rows other than "grey" (it hides), an
+// unparsable dataset_id (0) and a hidden other than true/false (shown).
 std::optional<ParsedLogState> parseLogState(const QDomElement& element) {
   if (element.tagName() != kPayloadTag) {
     XmlOptionsRecorder::noteRejection(element, {}, u"expected a <log> element"_s);
@@ -207,18 +210,19 @@ std::optional<ParsedLogState> parseLogState(const QDomElement& element) {
   (void)readXmlEnum(element, u"future_rows"_s, {u"grey"_s, u"hide"_s}, u"hide"_s, future_rows, XmlBadValue::kTolerate);
   state.show_future = future_rows == u"grey"_s;
 
+  QStringList hidden_names;
   for (QDomElement hidden = element.firstChildElement(kHiddenTopicTag); !hidden.isNull();
        hidden = hidden.nextSiblingElement(kHiddenTopicTag)) {
-    state.hidden_topics.append(readXmlText(hidden, u"topic"_s));
+    hidden_names.append(readXmlText(hidden, u"topic"_s));
   }
   for (QDomElement child = element.firstChildElement(kTopicTag); !child.isNull();
        child = child.nextSiblingElement(kTopicTag)) {
-    parsed.topics.push_back(readTopic(child));
+    LogDockWidget::SavedTopic& topic = parsed.topics.emplace_back(readTopic(child));
+    topic.hidden = topic.hidden || hidden_names.contains(topic.saved.topic);
   }
 
   if (XmlOptionsRecorder::active()) {
     QDomDocument schema;
-    readXmlText(schema.createElement(kHiddenTopicTag), u"topic"_s);
     (void)readTopic(schema.createElement(kTopicTag));
   }
   return parsed;
@@ -244,9 +248,14 @@ LogDockWidget::LogDockWidget(SessionManager* session, CatalogModel* catalog, Pla
   connect(view_, &LogView::seekRequested, playback_, [this](double time) {
     playback_->setCurrentTime(displaySeconds(time));
   });
-  // A topic saved against a dataset that had not loaded yet binds the moment its items surface.
-  connect(catalog_, &CatalogModel::itemsAdded, this, &LogDockWidget::retryPending);
-  connect(catalog_, &CatalogModel::itemsChanged, this, &LogDockWidget::retryPending);
+  // A topic saved against a dataset that had not loaded yet binds the moment its items surface; a dataset renamed
+  // relabels its qualified topics.
+  const auto on_items = [this]() {
+    relabel();
+    retryPending();
+  };
+  connect(catalog_, &CatalogModel::itemsAdded, this, on_items);
+  connect(catalog_, &CatalogModel::itemsChanged, this, on_items);
   connect(catalog_, &CatalogModel::itemsRemoved, this, [this]() { entries_landed_.request(); });
   connect(catalog_, &CatalogModel::cleared, this, [this]() { entries_landed_.request(); });
   const auto on_offset_changed = [this]() {
@@ -311,7 +320,7 @@ SavedSeriesPath LogDockWidget::savedIdentity(DatasetId dataset_id, const QString
   };
 }
 
-bool LogDockWidget::addTopic(ObjectTopicId topic_id) {
+bool LogDockWidget::addTopic(ObjectTopicId topic_id, bool hidden) {
   const ObjectStore& objects = session_->objectStore();
   if (shows(topic_id) || !isLogTopic(objects, topic_id)) {
     return false;
@@ -322,9 +331,25 @@ bool LogDockWidget::addTopic(ObjectTopicId topic_id) {
           .id = topic_id,
           .saved = savedIdentity(descriptor.dataset_id, QString::fromStdString(descriptor.topic_name)),
           .identity = {}});
-  view_->setTopicLabel(topic_id.id, topic.saved.topic);
+  view_->setTopicHidden(topic_id.id, hidden);
+  relabel();
   loadTopic(topic, /*full=*/true);
   return true;
+}
+
+void LogDockWidget::relabel() {
+  for (const Topic& topic : topics_) {
+    const auto named = [&topic](const Topic& other) { return other.saved.topic == topic.saved.topic; };
+    const bool shared = std::ranges::count_if(topics_, named) > 1;
+    if (!shared) {
+      view_->setTopicLabel(topic.id.id, topic.saved.topic);
+      continue;
+    }
+    const QString dataset = catalog_->datasetLabel(topic.saved.dataset_id).value_or(topic.saved.dataset_source);
+    view_->setTopicLabel(
+        topic.id.id,
+        QString::fromStdString(sdk::qualifiedSeriesName(dataset.toStdString(), topic.saved.topic.toStdString())));
+  }
 }
 
 bool LogDockWidget::loadTopic(Topic& topic, bool full) {
@@ -362,24 +387,25 @@ void LogDockWidget::refresh() {
     }
     // Removed, reparented by a merge or reissued: wait for it by the identity it was shown with, as a restore does;
     // its dataset may be gone already.
-    if (std::ranges::find(pending_, it->saved) == pending_.end()) {
-      pending_.push_back(it->saved);
+    if (std::ranges::find(pending_, it->saved, &SavedTopic::saved) == pending_.end()) {
+      pending_.push_back({.saved = it->saved, .hidden = view_->topicHidden(it->id.id), .session_id = true});
     }
     view_->removeTopic(it->id.id);
     it = topics_.erase(it);
     changed = true;
   }
   if (changed) {
+    relabel();
     retryPending();
     emit topicsChanged();
   }
 }
 
 void LogDockWidget::addPendingTopic(DatasetId dataset_id, const QString& topic_name) {
-  SavedSeriesPath pending = savedIdentity(dataset_id, topic_name);
+  SavedTopic pending{.saved = savedIdentity(dataset_id, topic_name), .session_id = true};
   if (tryResolve(pending)) {
     emit topicsChanged();
-  } else if (std::ranges::find(pending_, pending) == pending_.end()) {
+  } else if (std::ranges::find(pending_, pending.saved, &SavedTopic::saved) == pending_.end()) {
     pending_.push_back(std::move(pending));
     emit topicsChanged();
   }
@@ -396,23 +422,36 @@ void LogDockWidget::discardDataset(DatasetId dataset_id) {
 }
 
 void LogDockWidget::followMerge(DatasetId anchor, const QList<DatasetId>& consumed) {
+  bool moved = false;
   for (Topic& topic : topics_) {
     if (consumed.contains(topic.saved.dataset_id)) {
       topic.saved = savedIdentity(anchor, topic.saved.topic);
+      moved = true;
     }
   }
-  for (SavedSeriesPath& pending : pending_) {
-    if (consumed.contains(pending.dataset_id)) {
-      pending = savedIdentity(anchor, pending.topic);
+  std::vector<SavedTopic> pending;
+  for (SavedTopic& entry : std::exchange(pending_, {})) {
+    if (entry.session_id && consumed.contains(entry.saved.dataset_id)) {
+      entry.saved = savedIdentity(anchor, entry.saved.topic);
+      moved = true;
+    }
+    // Two datasets' pending topics of one name are one topic now.
+    if (std::ranges::find(pending, entry.saved, &SavedTopic::saved) == pending.end()) {
+      pending.push_back(std::move(entry));
     }
   }
+  pending_ = std::move(pending);
   // A moved topic is shown again; one folded into the anchor's topic of its name goes pending and binds to that.
   refresh();
   retryPending();
+  relabel();
+  if (moved) {
+    emit topicsChanged();  // topic demand and the curve tree's shown state follow the new identities
+  }
 }
 
 void LogDockWidget::discardIf(const std::function<bool(const SavedSeriesPath&)>& matches) {
-  bool changed = std::erase_if(pending_, matches) > 0;
+  bool changed = std::erase_if(pending_, [&matches](const SavedTopic& pending) { return matches(pending.saved); }) > 0;
   for (auto it = topics_.begin(); it != topics_.end();) {
     if (!matches(it->saved)) {
       ++it;
@@ -423,6 +462,7 @@ void LogDockWidget::discardIf(const std::function<bool(const SavedSeriesPath&)>&
     changed = true;
   }
   if (changed) {
+    relabel();
     emit topicsChanged();
   }
 }
@@ -432,7 +472,8 @@ std::optional<DatasetId> LogDockWidget::resolveDataset(const SavedSeriesPath& sa
       .id;
 }
 
-bool LogDockWidget::tryResolve(const SavedSeriesPath& pending) {
+bool LogDockWidget::tryResolve(const SavedTopic& saved_topic) {
+  const SavedSeriesPath& pending = saved_topic.saved;
   if (pending.topic.isEmpty()) {
     return false;
   }
@@ -447,12 +488,12 @@ bool LogDockWidget::tryResolve(const SavedSeriesPath& pending) {
     topic_id = session_->objectStore().findTopic(*dataset, pending.topic.toStdString());
   }
   // A topic shown already is resolved: waiting for it would hold its demand and save it twice.
-  return topic_id.has_value() && (shows(*topic_id) || addTopic(*topic_id));
+  return topic_id.has_value() && (shows(*topic_id) || addTopic(*topic_id, saved_topic.hidden));
 }
 
 void LogDockWidget::retryPending() {
   // No signal while pending_ is being erased from: a slot reading it would see it half done.
-  if (std::erase_if(pending_, [this](const SavedSeriesPath& pending) { return tryResolve(pending); }) > 0) {
+  if (std::erase_if(pending_, [this](const SavedTopic& pending) { return tryResolve(pending); }) > 0) {
     emit topicsChanged();
   }
 }
@@ -479,9 +520,9 @@ std::vector<std::pair<DatasetId, ObjectTopicId>> LogDockWidget::displayedObjectT
 
 std::vector<LogDockWidget::PendingDemand> LogDockWidget::pendingDemands() const {
   std::vector<PendingDemand> out;
-  for (const SavedSeriesPath& pending : pending_) {
+  for (const SavedTopic& pending : pending_) {
     // The dataset tryResolve() would bind to, so the demand starts the source the topic will come from.
-    PendingDemand demand{pending.topic, resolveDataset(pending)};
+    PendingDemand demand{pending.saved.topic, resolveDataset(pending.saved)};
     if (std::ranges::find(out, demand) == out.end()) {
       out.push_back(std::move(demand));
     }
@@ -491,13 +532,13 @@ std::vector<LogDockWidget::PendingDemand> LogDockWidget::pendingDemands() const 
 
 bool LogDockWidget::hasPendingTopic(const QString& topic_name) const {
   return std::ranges::any_of(
-      pending_, [&topic_name](const SavedSeriesPath& pending) { return pending.topic == topic_name; });
+      pending_, [&topic_name](const SavedTopic& pending) { return pending.saved.topic == topic_name; });
 }
 
 QStringList LogDockWidget::unresolvedRestores() const {
   QStringList topics;
-  for (const SavedSeriesPath& pending : pending_) {
-    topics.append(pending.topic);
+  for (const SavedTopic& pending : pending_) {
+    topics.append(pending.saved.topic);
   }
   return topics;
 }
@@ -517,25 +558,24 @@ QDomElement LogDockWidget::xmlSaveState(QDomDocument& doc) const {
   root.setAttribute(u"text_filter"_s, state.text);
   root.setAttribute(u"future_rows"_s, state.show_future ? u"grey"_s : u"hide"_s);
 
-  const auto append_topic = [&doc, &root](const SavedSeriesPath& saved) {
+  const auto append_topic = [&doc, &root](const SavedTopic& saved_topic) {
+    const SavedSeriesPath& saved = saved_topic.saved;
     QDomElement topic = doc.createElement(kTopicTag);
     topic.setAttribute(u"dataset_id"_s, QString::number(saved.dataset_id));
     topic.setAttribute(u"dataset_source"_s, saved.dataset_source);
     topic.setAttribute(u"dataset_path"_s, saved.dataset_path);
     topic.setAttribute(u"topic"_s, saved.topic);
+    if (saved_topic.hidden) {
+      topic.setAttribute(u"hidden"_s, u"true"_s);
+    }
     root.appendChild(topic);
   };
   for (const Topic& topic : topics_) {
-    append_topic(topic.saved);
+    append_topic({.saved = topic.saved, .hidden = view_->topicHidden(topic.id.id)});
   }
   // Unresolved topics ride along verbatim: a save without their dataset loaded must not forget them.
-  for (const SavedSeriesPath& pending : pending_) {
+  for (const SavedTopic& pending : pending_) {
     append_topic(pending);
-  }
-  for (const QString& hidden : state.hidden_topics) {
-    QDomElement element = doc.createElement(kHiddenTopicTag);
-    element.setAttribute(u"topic"_s, hidden);
-    root.appendChild(element);
   }
   return root;
 }
@@ -556,8 +596,8 @@ bool LogDockWidget::xmlLoadState(const QDomElement& element) {
   }
   topics_.clear();
   pending_.clear();
-  for (const SavedSeriesPath& saved : parsed->topics) {
-    if (!tryResolve(saved) && std::ranges::find(pending_, saved) == pending_.end()) {
+  for (const SavedTopic& saved : parsed->topics) {
+    if (!tryResolve(saved) && std::ranges::find(pending_, saved.saved, &SavedTopic::saved) == pending_.end()) {
       pending_.push_back(saved);
     }
   }

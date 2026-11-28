@@ -126,16 +126,20 @@ TEST_F(LogViewTest, EmptyStateAndTopicColumn) {
   ASSERT_EQ(topics->menu()->actions().size(), 2);
   topics->menu()->actions()[0]->setChecked(false);  // listed by topic id: /rosout first
   EXPECT_EQ(model()->rowCount(), 2);
-  EXPECT_EQ(view_.state().hidden_topics, QStringList{"/rosout"});
+  EXPECT_TRUE(view_.topicHidden(0));
+  EXPECT_FALSE(view_.topicHidden(1));
+  // Renamed, a hidden topic stays hidden: hiding belongs to the topic, not to its label.
+  view_.setTopicLabel(0, "/renamed");
+  EXPECT_EQ(model()->rowCount(), 2);
+  EXPECT_FALSE(topics->menu()->actions()[0]->isChecked());
 
   view_.removeTopic(1);
   EXPECT_EQ(model()->rowCount(), 0);  // /rosout is still hidden
   view_.removeTopic(0);
   EXPECT_EQ(pages->currentWidget()->objectName(), "emptyPage");
-  // A topic coming back under a label the user hid stays hidden.
-  fill(2, "/rosout", 3);
-  EXPECT_EQ(model()->rowCount(), 0);
-  view_.setTopicLabel(2, "/renamed");
+  // A removed topic is forgotten: a topic taking its id shows.
+  fill(0, "/rosout", 3);
+  EXPECT_FALSE(view_.topicHidden(0));
   EXPECT_EQ(model()->rowCount(), 3);
 }
 
@@ -320,7 +324,6 @@ TEST_F(LogViewTest, AppliedStateRoundTripsAndIsNotAGesture) {
   state.source = "/x";
   state.category = "cat";
   state.text = "boom";
-  state.hidden_topics = {"/rosout"};
   state.show_future = false;
   view_.applyState(state);
   EXPECT_EQ(view_.state(), state);

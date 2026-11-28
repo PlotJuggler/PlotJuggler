@@ -39,16 +39,27 @@ class SessionManager;
 /// are accepted. GUI thread only.
 ///
 /// Persistence: one `<topic>` child per topic with the scene-dock identity attributes (`dataset_id`,
-/// `dataset_source`, `dataset_path`, `topic`), so LayoutXml's dataset relocation applies, plus the filters, the
-/// enabled levels and the future-rows choice. A topic keeps the identity it was added with, so one whose dataset left
-/// still names it. A topic that does not resolve (its dataset is not loaded) is kept, re-serialized and retried
-/// whenever the catalog or a dataset's source path changes; `finishRestore` makes the last attempt.
+/// `dataset_source`, `dataset_path`, `topic`), so LayoutXml's dataset relocation applies, and `hidden="true"` when the
+/// Topics menu hides it, plus the filters, the enabled levels and the future-rows choice. A `<hidden_topic topic>`
+/// child (layouts saved before hidden belonged to a topic) hides every topic of that name. A topic keeps the identity
+/// it was added with, so one whose dataset left still names it. A topic that does not resolve (its dataset is not
+/// loaded) is kept, re-serialized and retried whenever the catalog or a dataset's source path changes; `finishRestore`
+/// makes the last attempt.
 class LogDockWidget : public QWidget, public IDataWidget {
   Q_OBJECT
  public:
   /// Entries landing bring an update at once, then at most one more per interval: a progressive load commits many
   /// times a second.
   static constexpr int kEntriesLandedIntervalMs = 250;
+
+  /// A topic as the layout keeps it: its identity and whether the Topics menu hides it.
+  struct SavedTopic {
+    SavedSeriesPath saved;
+    bool hidden = false;
+    /// `saved.dataset_id` is this session's (a topic shown or advertised here). A layout's id is its saved session's,
+    /// which another file may hold now: a merge must not move that topic.
+    bool session_id = false;
+  };
 
   /// A topic the panel waits for: its name and the dataset its identity resolves to now, when exactly one does.
   struct PendingDemand {
@@ -84,8 +95,9 @@ class LogDockWidget : public QWidget, public IDataWidget {
   /// Called before the store drops it.
   void discardTopic(DatasetId dataset_id, const QString& topic_name);
   void discardDataset(DatasetId dataset_id);
-  /// A merge folded @p consumed into @p anchor: their topics, shown or pending, follow to the anchor. Called by the
-  /// shell after the store merged; without it they wait for a dataset that is gone.
+  /// A merge folded @p consumed into @p anchor: their topics, shown or pending (by this session's ids only), follow to
+  /// the anchor; emits topicsChanged. Called by the shell after the store merged; without it they wait for a dataset
+  /// that is gone.
   void followMerge(DatasetId anchor, const QList<DatasetId>& consumed);
 
   /// (dataset, topic name) of every topic shown, for demand tracking.
@@ -119,14 +131,17 @@ class LogDockWidget : public QWidget, public IDataWidget {
   [[nodiscard]] std::optional<DatasetId> resolveDataset(const SavedSeriesPath& saved) const;
   /// Adds `topic_id` and reads its history; false when it is not a kLog topic or already shown. Emits nothing: the
   /// caller emits topicsChanged.
-  bool addTopic(ObjectTopicId topic_id);
+  bool addTopic(ObjectTopicId topic_id, bool hidden = false);
+  /// Labels each topic by its name, qualified by its dataset's label (`label:topic`) while another shown topic has
+  /// that name.
+  void relabel();
   /// Brings one topic's index up to date: the rows added since, or everything when `full` or a row it indexed was
   /// removed. False when the topic is no longer stored as a log (the caller drops it).
   bool loadTopic(Topic& topic, bool full);
   /// Follows the store: drops topics that vanished (back to pending), loads new entries, everything on `reload_all_`.
   void refresh();
   /// Binds @p pending, adding its topic; true when it resolves, to a topic shown already too.
-  bool tryResolve(const SavedSeriesPath& pending);
+  bool tryResolve(const SavedTopic& pending);
   void retryPending();
   void discardIf(const std::function<bool(const SavedSeriesPath&)>& matches);
 
@@ -136,7 +151,7 @@ class LogDockWidget : public QWidget, public IDataWidget {
   LogView* view_ = nullptr;
   std::vector<Topic> topics_;
   /// Saved but unresolved, written back verbatim.
-  std::vector<SavedSeriesPath> pending_;
+  std::vector<SavedTopic> pending_;
   bool reload_all_ = false;
   CoalescingTrigger entries_landed_;
 };

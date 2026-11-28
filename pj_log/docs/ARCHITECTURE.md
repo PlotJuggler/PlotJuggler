@@ -34,7 +34,10 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
   `FrameworkTokens`.
 - **`LogView`** is the list, the toolbar (level toggles, filters, Topics menu, future-rows choice) and the detail pane
   with Copy. The Source and Category columns and their filter fields show while a row in the store fills them
-  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. It is runtime-agnostic: the host hands it a `LogRowSource` per topic (`setTopicRows`, `updateTopicRows`) or
+  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. The Topics menu hides a
+  topic by its id (`setTopicHidden`); the dock labels a topic by its name, qualified by its dataset's label
+  (`sdk::qualifiedSeriesName`, `label:topic`) while another shown topic has that name, so two datasets' `/rosout`
+  read apart; labels follow catalog changes, a dataset renamed included. It is runtime-agnostic: the host hands it a `LogRowSource` per topic (`setTopicRows`, `updateTopicRows`) or
   `LogEntry` rows, sets the tracker and the `TimeLabelFormat`, and answers `seekRequested`. It keeps the entry the
   user selected (its `RowKey`: time, topic, rank among the topic's rows of that time, so a re-index finds it) and
   selects it whenever it is shown; while it is not (filtered out, hidden after the tracker, absent while a reload
@@ -65,7 +68,9 @@ when the dataset was loaded). A topic or dataset the user deletes leaves the pan
 `discardDataset`, called by the shell before the store drops it). A merge moves the identity of the consumed datasets'
 topics, shown or pending, to the merged dataset (`followMerge`, called by the shell on `AppSession::datasetsMerged`):
 a topic the merge reparented shows again, and one it folded into the merged dataset's topic of the same name binds to
-that one. A pending topic that resolves to a topic shown already counts as resolved.
+that one; `topicsChanged` tells topic demand and the curve tree. Only a pending topic whose id is this session's
+(`SavedTopic::session_id`: shown or advertised here) moves: a layout's ids are its saved session's, and the consumed id
+may be another file's there. A pending topic that resolves to a topic shown already counts as resolved.
 
 ## Tracker and seeking
 
@@ -75,8 +80,10 @@ seeks the playback. The shell sets the app-wide `TimeLabelFormat` on every panel
 
 ## Persistence
 
-The filters, enabled levels, hidden topics and future-rows choice are attributes and children of `<log>`, with one
-`<topic>` per topic carrying `dataset_id`, `dataset_source`, `dataset_path` and `topic`. Future rows are hidden unless `future_rows` says `grey`.
+The filters, enabled levels and future-rows choice are attributes of `<log>`, with one `<topic>` per topic carrying
+`dataset_id`, `dataset_source`, `dataset_path` and `topic`, and `hidden="true"` when the Topics menu hides it: hiding
+belongs to a topic, so one of two same-name topics hides alone, and a pending topic keeps it until it binds. A
+`<hidden_topic topic>` child, from layouts that kept hidden topics by name, hides every topic of that name. Future rows are hidden unless `future_rows` says `grey`.
 Topics that do not resolve are written back verbatim and retried on catalog and source-path changes; `finishRestore` makes the last attempt.
 Advertised topics with no storage yet (a placeholder drop) wait as pending, and the shell holds their demand.
 

@@ -28,13 +28,17 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
   keyed by a host-chosen topic id and never reaches the session. A source's rows are in ascending time, or
   `LogStore`'s merge order breaks; `appendEntries` merges earlier entries into place.
 - **Persisted names are a layout-file contract:** the `<log>` tag, its `<topic>` children with the scene-dock identity
-  attributes (so `LayoutXml`'s dataset relocation applies) and the level keys in `log_view::kLevelNames`. Renaming one
-  drops the setting from saved layouts.
+  attributes (so `LayoutXml`'s dataset relocation applies) and their `hidden` flag, the name-only `<hidden_topic>` older
+  layouts carry, and the level keys in `log_view::kLevelNames`. Renaming one drops the setting from saved layouts.
+- **A hidden topic is a topic, never a label:** `LogView` hides by topic id and the layout writes `hidden` on the
+  topic's own `<topic>`. Keyed by label, two datasets' `/rosout` share one Topics menu entry and hide together.
 - **Every attribute `xmlSaveState` writes is read in `xmlValidateState` through a reporting reader** (`readXmlText`,
   `XmlOptionsRecorder::noteOption`), the same parse `xmlLoadState` uses: one the validator never reads is missing from
   the MCP `widget_state` options. `ValidationDescribesTheSavedStateAndAgreesWithLoad` fails on it.
 - **Unresolved topics are written back verbatim** and retried on catalog and source-path changes; dropping them
-  loses the topic from the layout when its dataset is not loaded yet.
+  loses the topic from the layout when its dataset is not loaded yet. A merge rewrites only those whose dataset id is
+  this session's (`SavedTopic::session_id`): a layout's id may name another file in this session, and rewriting it
+  binds the topic to the wrong dataset.
 - `core/` stays Qt-free: the store and the filter are unit-tested without an application.
 
 ## Layout

@@ -151,13 +151,31 @@ void LogView::setTopicLabel(uint32_t topic, const QString& label) {
   if (topics_.contains(topic) && topics_.at(topic) == label) {
     return;
   }
-  // A topic named, or renamed, from or to a label the user hid: its rows follow the label.
-  const bool was_hidden = topics_.contains(topic) && hidden_topics_.contains(topics_.at(topic));
   topics_[topic] = label;
   refreshTopics();
-  if (was_hidden || hidden_topics_.contains(label)) {
-    applyFilters();
+  ui_->logView->viewport()->update();  // the Topic column
+}
+
+void LogView::setTopicHidden(uint32_t topic, bool hidden) {
+  if (hidden == topicHidden(topic)) {
+    return;
   }
+  if (hidden) {
+    hidden_topics_.insert(topic);
+  } else {
+    hidden_topics_.erase(topic);
+  }
+  for (QAction* action : ui_->topicsButton->menu()->actions()) {
+    if (action->data().toUInt() == topic) {
+      const QSignalBlocker blocker(action);
+      action->setChecked(!hidden);
+    }
+  }
+  applyFilters();
+}
+
+bool LogView::topicHidden(uint32_t topic) const {
+  return hidden_topics_.contains(topic);
 }
 
 std::array<QToolButton*, log_view::kToggleLevelCount> LogView::levelToggles() const {
@@ -209,6 +227,9 @@ void LogView::removeTopic(uint32_t topic) {
   entry_sources_.erase(topic);
   refreshTopics();
   changeStore([&] { return store_.removeWire(topic); });
+  if (hidden_topics_.erase(topic) > 0) {
+    applyFilters();  // the model's filter still hides the id, which a later topic may take
+  }
 }
 
 void LogView::followChange(const StoreChange& change, std::optional<size_t> selected) {
@@ -305,11 +326,7 @@ log_view::LogFilter LogView::currentFilter() const {
   filter.source = now.source.trimmed().toStdString();
   filter.category = now.category.trimmed().toStdString();
   filter.text = now.text.trimmed().toStdString();
-  for (const auto& [id, label] : topics_) {
-    if (hidden_topics_.contains(label)) {
-      filter.hidden_wires.push_back(id);
-    }
-  }
+  filter.hidden_wires.assign(hidden_topics_.begin(), hidden_topics_.end());
   return filter;
 }
 
@@ -395,15 +412,9 @@ void LogView::refreshTopics() {
   for (const auto& [id, label] : topics_) {
     QAction* action = menu->addAction(label);
     action->setCheckable(true);
-    action->setChecked(!hidden_topics_.contains(label));
-    connect(action, &QAction::toggled, this, [this, label](bool shown) {
-      if (shown) {
-        hidden_topics_.removeAll(label);
-      } else if (!hidden_topics_.contains(label)) {
-        hidden_topics_.append(label);
-      }
-      applyFilters();
-    });
+    action->setChecked(!topicHidden(id));
+    action->setData(id);
+    connect(action, &QAction::toggled, this, [this, id](bool shown) { setTopicHidden(id, !shown); });
     connect(action, &QAction::triggered, this, &LogView::stateEdited);
   }
   const bool several = topics_.size() > 1;
@@ -554,7 +565,6 @@ LogViewState LogView::state() const {
   state.source = ui_->sourceEdit->text();
   state.category = ui_->categoryEdit->text();
   state.text = ui_->filterEdit->text();
-  state.hidden_topics = hidden_topics_;
   state.show_future = ui_->futureButton->isChecked();
   return state;
 }
@@ -572,8 +582,6 @@ void LogView::applyState(const LogViewState& state) {
     edit->setText(*text);
   }
   refreshOptionalColumns();  // a restored filter keeps its field visible
-  hidden_topics_ = state.hidden_topics;
-  refreshTopics();
   setShowFuture(state.show_future);
   applyFilters();
 }

@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,8 +34,6 @@ struct LogViewState {
   QString source;
   QString category;
   QString text;
-  /// Labels of the topics the user hid in the Topics menu.
-  QStringList hidden_topics;
   /// Entries later than the tracker are shown greyed (true) or hidden.
   bool show_future = false;
 
@@ -64,6 +63,10 @@ class LogView : public QWidget {
 
   /// Names (or renames) topic @p topic; a topic shows in the Topic column and the Topics menu once named.
   void setTopicLabel(uint32_t topic, const QString& label);
+  /// Hides or shows the rows of @p topic, as its Topics menu item does (without emitting stateEdited()). A topic is
+  /// shown until hidden; removeTopic() forgets it.
+  void setTopicHidden(uint32_t topic, bool hidden);
+  [[nodiscard]] bool topicHidden(uint32_t topic) const;
   void appendEntries(uint32_t topic, std::vector<LogEntry> entries);
   void replaceEntries(uint32_t topic, std::vector<LogEntry> entries);
   /// Shows every row of @p source as topic @p topic, in place of what the topic showed.
@@ -93,7 +96,7 @@ class LogView : public QWidget {
   }
 
  signals:
-  /// A user gesture changed state(): a toggle, a filter edit, the Topics menu.
+  /// A user gesture changed state() or a topic's topicHidden(): a toggle, a filter edit, the Topics menu.
   void stateEdited();
   /// A double click on a row while paused: seek the playback to @p time (display-axis seconds).
   void seekRequested(double time);
@@ -141,7 +144,7 @@ class LogView : public QWidget {
   /// Set while the view changes the model or the selection: Qt moves the selection off removed rows, and that move is
   /// not the user's choice.
   bool adjusting_ = false;
-  QStringList hidden_topics_;
+  std::set<uint32_t> hidden_topics_;
   QTimer text_timer_;
 
   /// The store row the detail pane shows (nullopt: none); valid while detail_valid_.
