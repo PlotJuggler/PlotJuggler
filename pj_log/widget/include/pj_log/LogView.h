@@ -130,7 +130,8 @@ class LogView : public QWidget {
   void scrollToTracker(bool to_bottom);
   void onRowDoubleClicked(const QModelIndex& index);
   [[nodiscard]] int fitWidth(const QString& text, int column) const;
-  bool fitTimeColumn();
+  /// Fits the Time column to the widest time the store holds; @p over_user also over a width the user dragged.
+  void fitTimeColumn(bool over_user);
   void autoSizeColumns();
   void setShowFuture(bool show);
 
@@ -156,7 +157,8 @@ class LogView : public QWidget {
   double tracker_;
   bool playing_ = false;
   bool shown_rows_ = false;  ///< the list was positioned on the tracker once since it had rows
-  bool columns_fitted_ = false;
+  bool level_fitted_ = false;
+  int time_width_ = 0;  ///< the Time width last fitted, 0 before the first fit; another width is the user's
   bool splitter_sized_ = false;
   std::optional<double> pending_seek_;
 };

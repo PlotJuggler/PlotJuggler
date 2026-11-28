@@ -34,7 +34,9 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
   `FrameworkTokens`.
 - **`LogView`** is the list, the toolbar (level toggles, filters, Topics menu, future-rows choice) and the detail pane
   with Copy. The Source and Category columns and their filter fields show while a row in the store fills them
-  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. The Topics menu, shown
+  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. The Time column fits the
+  widest time in the store, rows after the playhead included, and follows the store's times, unless the user dragged
+  it; a time-format change or a double click on its divider fits it again. The Topics menu, shown
   while several topics are or one is hidden (so a lone hidden topic can be shown again), hides a topic by its id
   (`setTopicHidden`); the dock labels a topic by its name, qualified by its dataset's label
   (`sdk::qualifiedSeriesName`, `label:topic`) while another shown topic has that name, so two datasets' `/rosout`
